@@ -1,24 +1,21 @@
-
 """
 trend_scout.py
 
-Current-signal discovery for Cosmic Curious.
+Current-signal discovery for Animals & Wildlife.
 
-V2 strategy:
+Strategy:
 
 YouTube -> optional Reddit -> Gemini synthesis
 
 Reddit is treated as an optional signal only.
 
-If Reddit returns 403/429/network errors, the system continues silently
-without it.
+If Reddit returns 403/429/network errors, the system continues without it.
 
 If no trend source works, the caller falls back to Topic Brain/static topics.
 
 The trend system never becomes a hard dependency for video generation.
 
-Gemini calls are routed through gemini_client.py so the project uses the
-current chat.send_message() flow instead of direct models.generate_content().
+Gemini calls are routed through gemini_client.py.
 """
 
 import os
@@ -37,13 +34,11 @@ except ImportError:
         GEMINI_AVAILABLE = False
 
 
-def _fetch_reddit_trending(subreddit: str, limit: int = 12) -> list:
-    """
-    Optional Reddit signal.
-
-    Reddit can block automated requests, so failures are deliberately
-    ignored.
-    """
+def _fetch_reddit_trending(
+    subreddit: str,
+    limit: int = 12,
+) -> list:
+    """Optional Reddit signal."""
 
     try:
         resp = requests.get(
@@ -75,24 +70,23 @@ def _fetch_reddit_trending(subreddit: str, limit: int = 12) -> list:
         ]
 
     except Exception:
-        # Reddit is optional. Don't spam the pipeline logs with a 403
-        # every run.
         return []
 
 
-def _fetch_youtube_trending(query: str, max_results: int = 15) -> list:
+def _fetch_youtube_trending(
+    query: str,
+    max_results: int = 15,
+) -> list:
     """
     Use YouTube Data API search as the primary trend signal.
 
     Requires:
-
         YOUTUBE_DATA_API_KEY
-
-    This is intentionally separate from the OAuth credentials used for
-    uploading videos.
     """
 
-    api_key = os.environ.get("YOUTUBE_DATA_API_KEY")
+    api_key = os.environ.get(
+        "YOUTUBE_DATA_API_KEY"
+    )
 
     if not api_key:
         return []
@@ -130,19 +124,21 @@ def _fetch_youtube_trending(query: str, max_results: int = 15) -> list:
     except Exception as e:
         print(
             f"WARNING: YouTube trend fetch failed ({e}); "
-            f"skipping this signal."
+            "skipping this signal."
         )
 
         return []
 
 
-def _synthesize_topic(signal_titles: list, config: dict) -> str:
+def _synthesize_topic(
+    signal_titles: list,
+    config: dict,
+) -> str:
     """
-    Convert current trend signals into ONE original topic.
+    Convert current trend signals into ONE original
+    animal/wildlife topic.
 
     Never copies a source title verbatim.
-
-    Gemini is accessed through the centralized gemini_client wrapper.
     """
 
     signal_text = "\n".join(
@@ -151,13 +147,14 @@ def _synthesize_topic(signal_titles: list, config: dict) -> str:
     )
 
     prompt = f"""
-You are a trend researcher for a high-retention science YouTube channel.
+You are a trend researcher for a high-retention
+Animals & Wildlife YouTube channel.
 
 CHANNEL:
 {config['display_name']}
 
 NICHE:
-{config['niche']}
+Animals & wildlife facts
 
 TONE:
 {config['tone']}
@@ -166,30 +163,47 @@ These are recent titles getting attention:
 
 {signal_text}
 
-Find the underlying scientific themes that are attracting attention.
+Find the underlying animal or wildlife themes
+that are attracting attention.
 
-Then create ONE completely ORIGINAL topic for this channel.
+Then create ONE completely ORIGINAL topic
+for this channel.
 
 IMPORTANT:
+
+The topic MUST be about animals or wildlife.
+
+Do NOT create topics about:
+- Space
+- Planets
+- Stars
+- Galaxies
+- Black holes
+- Astronomy
+- NASA
+- Physics unrelated to animals
+- Generic science unrelated to animals
 
 Do NOT copy any title.
 
 Do NOT simply paraphrase a title.
 
-Instead, identify the scientific curiosity behind the trend and create a
-new, specific question or phenomenon.
+Instead, identify the interesting animal or wildlife
+idea behind the trend and create a new,
+specific question or fact.
 
 The topic must:
 
-- be scientifically defensible
+- be factually defensible
 - have a surprising answer
 - work in a 30-60 second Short
 - have strong visual potential
 - create a strong curiosity gap
 - be understandable to a general audience
-- avoid generic school-level science
+- avoid generic school-style facts
 - avoid fake mystery
 - avoid unsupported speculation
+- be interesting enough to tell a friend
 
 DO NOT use phrases such as:
 
@@ -198,7 +212,7 @@ DO NOT use phrases such as:
 "This changes everything"
 "Scientists can't explain"
 
-unless literally supported by the evidence.
+unless literally supported by evidence.
 
 Return ONLY the topic itself.
 
@@ -207,15 +221,12 @@ No quotes.
 No explanation.
 """
 
-    # IMPORTANT:
-    # Do not use client.models.generate_content() here.
-    # gemini_generate() internally uses:
-    #
-    #     client.chats.create(...)
-    #     chat.send_message(...)
-    #
-    # which avoids the AFC warning from the old direct model call.
-    topic = gemini_generate(prompt).strip().strip('"').strip("'")
+    topic = (
+        gemini_generate(prompt)
+        .strip()
+        .strip('"')
+        .strip("'")
+    )
 
     if not topic or len(topic) > 200:
         raise ValueError(
@@ -225,12 +236,14 @@ No explanation.
     return topic
 
 
-def get_trending_topic(channel_id: str, config: dict):
+def get_trending_topic(
+    channel_id: str,
+    config: dict,
+):
     """
     Main entry point.
 
     Strategy:
-
         1. YouTube signal
         2. Reddit signal
         3. Gemini synthesis
@@ -254,7 +267,10 @@ def get_trending_topic(channel_id: str, config: dict):
     # ---------------------------------------------------------
 
     youtube_signal = _fetch_youtube_trending(
-        config.get("niche", channel_id)
+        config.get(
+            "niche",
+            "Animals & wildlife facts",
+        )
     )
 
     if youtube_signal:
@@ -269,7 +285,9 @@ def get_trending_topic(channel_id: str, config: dict):
     # Reddit = OPTIONAL SIGNAL
     # ---------------------------------------------------------
 
-    subreddit = config.get("trend_subreddit")
+    subreddit = config.get(
+        "trend_subreddit"
+    )
 
     if subreddit:
         reddit_signal = _fetch_reddit_trending(
@@ -297,7 +315,9 @@ def get_trending_topic(channel_id: str, config: dict):
         return None
 
     # Remove duplicates while preserving order.
-    signal = list(dict.fromkeys(signal))
+    signal = list(
+        dict.fromkeys(signal)
+    )
 
     # ---------------------------------------------------------
     # Gemini synthesis
@@ -318,8 +338,8 @@ def get_trending_topic(channel_id: str, config: dict):
 
     except Exception as e:
         print(
-            f"WARNING: Trend Scout synthesis failed ({e}); "
-            f"falling back to Topic Brain/static topics."
+            f"WARNING: Trend Scout synthesis failed "
+            f"({e}); falling back to Topic Brain/static topics."
         )
 
         return None
