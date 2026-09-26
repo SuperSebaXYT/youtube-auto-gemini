@@ -1,57 +1,55 @@
 channel_id: cosmic_curious
 display_name: "Cosmic Curious"
+
 niche: "Animals & wildlife facts"
-tone: "curious, awe-struck, punchy — like telling a friend a mind-bending fact about the universe"
-video_length_seconds: 300 # ~5 min long-form
+
+tone: "curious, surprising, energetic, punchy, conversational — like telling a friend an amazing animal fact"
+
+video_length_seconds: 300
 short_length_seconds: 45
-voice: "en-US-AndrewNeural" # legacy fallback, kept for any code path still using it
+
+voice: "en-US-AndrewNeural"
 languages: ["en"]
+
 voices:
   en: "en-US-AndrewNeural"
+
 topics_seed_file: "channels/cosmic_curious_topics.txt"
-# Trend Scout: pulls real current signal (r/space top posts this week +
-# recent YouTube search results for the niche) and has Gemini synthesize
-# a fresh, original topic from it, instead of always drawing from the
-# static file above. Fails safe -- falls back to the static list if
-# trend data isn't available for any reason (missing YOUTUBE_DATA_API_KEY
-# secret, network issue, empty results). YOUTUBE_DATA_API_KEY is optional;
-# Reddit signal alone still works without it.
+
 trend_aware: true
-# Daily Brain: a 5-stage vetted research pipeline (Topic Hunter, Novelty
-# Guardian, Science Guardian, Chief Editor, Production Director) that
-# picks and ranks 5 winning topics once per day, distributed across the
-# day's long-form + Shorts slots. Runs before Trend Scout in the topic
-# selection chain; falls back to it (and then the static list) if the
-# Daily Brain fails for any reason. Uses only GEMINI_API_KEY -- no new
-# credentials needed.
 use_daily_brain: true
-# Editorial pass: hook_agent (best opening line), seo_agent (title/tags),
-# thumbnail_agent (banner text concept), retention_agent (pacing review)
-# -- runs after the script passes quality_gate's science fact-check.
-# Every step fails safe to the existing value if its agent call fails.
 use_editorial_agents: true
-# Hashtag Agent: pulls REAL trending hashtags from currently top-ranking
-# videos on each video's exact topic (via YOUTUBE_DATA_API_KEY, same key
-# as Trend Scout) -- not Gemini guessing. Runs right before upload.
-# Silently skips (empty list, no error) if YOUTUBE_DATA_API_KEY isn't set.
 use_hashtag_agent: true
-# Varied pacing: synthesizes sentence-by-sentence with a slightly
-# different rate per sentence (punchy short lines a touch faster, long
-# explanatory ones a touch slower) instead of one flat rate for the
-# whole script. Falls back to standard single-rate TTS on any failure.
 use_varied_pacing: true
-trend_subreddit: "space"
-upload_time_utc: "13:30" # long-form upload time
-longform_interval_days: 2 # every other day, not daily
+
+trend_subreddit: "animals"
+
+upload_time_utc: "13:30"
+
+longform_interval_days: 2
+
 shorts_upload_times_utc:
-  ["07:30", "09:30", "11:30", "13:30", "15:30", "17:30", "19:30", "21:30"]
+  [
+    "07:30",
+    "09:30",
+    "11:30",
+    "13:30",
+    "15:30",
+    "17:30",
+    "19:30",
+    "21:30"
+  ]
+
 tags:
   [
-    "space facts",
-    "science facts",
-    "astronomy",
+    "animal facts",
+    "wildlife facts",
+    "animal facts you didn't know",
+    "amazing animals",
+    "wildlife",
+    "nature facts",
     "did you know",
-    "universe facts",
-    "physics facts",
+    "animal behavior"
   ]
-category_id: "27" # YouTube category: Education
+
+category_id: "15"
