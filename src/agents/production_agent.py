@@ -1,17 +1,27 @@
-"""Production brief agent for Cosmic Curious.
+"""Production brief agent for Animals & Wildlife.
 
-Turns one approved topic into a structured handoff for the existing
-video-production pipeline. This is planning only; it does not upload.
+Turns one approved animal or wildlife topic into a structured handoff
+for the existing video-production pipeline. This is planning only;
+it does not upload.
 """
+
 from src.agents.orchestrator import run_json_batch
 
 
-def build_brief(topic: str, winner: dict, config: dict) -> dict:
+def build_brief(
+    topic: str,
+    winner: dict,
+    config: dict,
+) -> dict:
+
     return run_json_batch(
         "Production Director",
-        "Turn an approved science topic into a production-ready creative brief without inventing facts.",
+        "Turn an approved animal or wildlife topic into a production-ready creative brief without inventing facts.",
         f"""
-Create a production brief for this approved Cosmic Curious topic.
+Create a production brief for this approved animal/wildlife topic.
+
+IMPORTANT:
+The content must stay focused on animals and wildlife.
 
 TOPIC:
 {topic}
@@ -20,11 +30,12 @@ EDITOR WINNER DATA:
 {winner}
 
 Return exactly this JSON shape:
+
 {{
   "topic": "...",
   "format": "short" or "both",
   "core_question": "...",
-  "scientific_reveal": "...",
+  "animal_reveal": "...",
   "safe_framing": "...",
   "hook_options": ["...", "...", "...", "...", "..."],
   "preferred_hook": "...",
@@ -47,17 +58,31 @@ Return exactly this JSON shape:
   ],
   "title_options": ["...", "...", "...", "...", "..."],
   "description_angle": "...",
-  "science_risks": ["..."],
+  "fact_risks": ["..."],
   "success_hypothesis": "..."
 }}
 
-Rules:
-- Keep the science defensible.
+RULES:
+
+- The topic MUST be about animals or wildlife.
+- Do not introduce space, astronomy, planets, stars, galaxies,
+  black holes, NASA, or unrelated science.
+- Keep factual claims defensible.
 - Do not invent observations, numbers, discoveries, or citations.
-- Use conditional language for hypothetical outcomes.
-- Do not use generic visual queries when a specific visual can be named.
+- Do not exaggerate animal abilities or behavior.
+- Use conditional language when something is uncertain.
+- Prefer specific animal visuals over generic nature footage.
+- Make stock queries specific enough to find the correct animal.
 - Keep the Short plan compatible with 30-60 seconds.
+- Make the hook surprising and conversational.
+- The final result should feel like an amazing fact being told to a friend,
+  not like a school textbook.
+
 """,
-        f"CHANNEL: {config['display_name']}\nNICHE: {config['niche']}\nTONE: {config['tone']}",
+        f"""
+CHANNEL: {config['display_name']}
+NICHE: Animals & wildlife facts
+TONE: {config['tone']}
+""",
         max_output_tokens=4500,
     )
