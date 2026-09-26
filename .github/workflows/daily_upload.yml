@@ -76,6 +76,16 @@ jobs:
 
       # Manual single-channel run (for testing via "Run workflow" button)
       - name: Manual run
+            - name: Check Pexels secret
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          if [ -z "$PEXELS_API_KEY" ]; then
+            echo "PEXELS_API_KEY IS EMPTY"
+            exit 1
+          else
+            echo "PEXELS_API_KEY IS PRESENT"
+          fi
         if: github.event_name == 'workflow_dispatch' && inputs.channel != ''
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
