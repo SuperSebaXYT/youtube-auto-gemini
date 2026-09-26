@@ -542,425 +542,52 @@ def generate_with_gemini(
         language,
     )
 
-    prompt = f"""
-You are the lead science writer for a premium faceless YouTube channel
-called "{config['display_name']}".
+ prompt = f"""
+You generate topic ideas for a faceless YouTube channel.
 
 CHANNEL NICHE:
-{config['niche']}
+Animals and wildlife facts.
 
 CHANNEL TONE:
-{config['tone']}
+Curious, surprising, energetic, conversational, and easy to understand.
 
-TOPIC:
-{topic}
+Generate fresh YouTube topic ideas ONLY about animals and wildlife.
 
-Write a SHORT, highly engaging science/space voiceover.
-
-The viewer should feel:
-
-"I had no idea that was possible."
+TOPIC TYPES:
+- Strange animal abilities
+- Incredible animal senses
+- Animal behavior
+- Survival skills
+- Unusual adaptations
+- Record-breaking animals
+- Dangerous animals
+- Cute but surprising animal facts
+- Deep-sea animals
+- Rare animals
+- Animal intelligence
+- Predator and prey facts
+- Unexpected animal relationships
 
 IMPORTANT:
-
-This is NOT a generic motivational video.
-This is NOT a list of random facts.
-This is NOT an introduction to science.
-
-The entire script must be specifically about the supplied topic.
-
-FACTUAL STANDARD:
-
-- Use established scientific knowledge whenever possible.
-- Do not invent statistics, discoveries, quotes, experiments, or findings.
-- Do not present speculation as fact.
-- If the topic involves a hypothesis or controversial idea, clearly signal
-  that scientists have proposed it or that it is a hypothesis.
-- Prefer concrete physical explanations over vague descriptions.
-- If a precise number is uncertain or unnecessary, don't invent one.
-- Avoid sensational claims that contradict established science.
-- Do not use physically impossible explanations just to make the story
-  sound dramatic.
-
-RETENTION STRUCTURE:
-
-1. HOOK
-
-Start with the most surprising consequence, question, or image.
-
-Do NOT simply repeat the topic.
-
-2. SETUP
-
-Give just enough context for the viewer to understand what is happening.
-
-3. ESCALATION
-
-Explain the physical process step by step.
-
-Each sentence should make the situation more interesting.
-
-4. PAYOFF
-
-Reveal the strangest, most surprising, or least-known consequence.
-
-5. FINAL LINE
-
-End on a memorable scientific thought connected directly to the topic.
-
-Do NOT say:
-subscribe
-like
-follow
-in conclusion
-
-WRITING RULES:
-
-- Conversational spoken language.
-- Short sentences mixed with occasional longer sentences.
-- No academic-paper language.
-- No unnecessary definitions.
-- No filler.
-- No motivational life lessons.
-- No generic phrases such as:
-  "Here's something most people don't know"
-  "It sounds simple"
-  "This reveals a lot about science"
-  "Once you understand"
-  "you'll start noticing"
-  "changes how you see the world"
-  "in the world of science"
-  "the universe is full of mysteries"
-- Do not begin by repeating the topic.
-- Do not use rhetorical filler every few sentences.
-- Every sentence must either create curiosity, explain something,
-  or deliver a payoff.
-- Do not use emojis.
-- Do not use stage directions.
-- Do not use visual notes.
-- Do not use markdown.
-- Do not mention that you are an AI.
-- The narration must sound natural when read by text-to-speech.
-
-VISUAL THINKING:
-
-Write sentences that naturally correspond to visual moments.
-
-For example, if explaining a black hole, the narration might naturally
-move through:
-
-star -> black hole -> approach -> tidal forces -> destruction -> debris.
-
-Do not literally write those visual labels into the script.
-
-LANGUAGE:
-
-Write entirely in {language_name}.
-
-If the requested language is Hindi, use natural modern Hindi in Devanagari,
-not Romanized Hindi.
-
-LENGTH:
-
-Approximately {words_target} words.
-
-Do not pad the script merely to reach the word count.
-
-A slightly shorter excellent script is better than a longer repetitive one.
-
-OUTPUT FORMAT:
-
-Respond in EXACTLY this format and nothing else:
-
-TITLE: <punchy YouTube title under 90 characters>
-
-SCRIPT:
-<spoken narration only>
-"""
-
-    max_tokens = _max_output_tokens_for(
-        words_target
-    )
-
-    response = _generate_with_token_budget(
-        client,
-        prompt,
-        max_tokens,
-    )
-
-    result = _parse_titled_response(
-        response.text,
-        fallback_topic=topic,
-    )
-
-    result["title"] = (
-        result["title"]
-        .strip()
-        .strip('"')
-        .strip("'")
-    )
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Emergency template fallback
-# ---------------------------------------------------------------------------
-
-def generate_with_template(
-    topic: str,
-    config: dict,
-    language: str,
-) -> dict:
-
-    if language == "hi":
-
-        script = (
-            f"क्या आपने कभी सोचा है कि {topic} के पीछे असल में क्या होता है? "
-            f"यह सवाल जितना आसान लगता है, इसकी असली कहानी उतनी ही दिलचस्प है। "
-            f"वैज्ञानिक इस घटना को समझने के लिए इसके पीछे काम करने वाली "
-            f"प्राकृतिक प्रक्रियाओं का अध्ययन करते हैं। और सबसे दिलचस्प बात यह है "
-            f"कि इसका जवाब हमारी सोच से कहीं ज्यादा जटिल है।"
-        )
-
-        title = f"{topic}"
-
-    else:
-
-        script = (
-            f"{topic}. "
-            f"The surprising part is what happens next. "
-            f"Scientists can explain this using the basic physics behind "
-            f"{config['niche'].lower()}. "
-            f"And once you understand the real reason, "
-            f"the universe suddenly looks a little stranger."
-        )
-
-        title = (
-            topic[0].upper() + topic[1:]
-            if topic
-            else topic
-        )
-
-    return {
-        "title": title,
-        "script": script,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Public Cosmic Curious API
-# ---------------------------------------------------------------------------
-
-def generate_script(
-    channel_id: str,
-    is_short: bool = False,
-    forced_topic: str = None,
-) -> dict:
-
-    config = load_channel_config(
-        channel_id
-    )
-
-    if forced_topic:
-
-        topic = forced_topic
-
-    else:
-
-        topic = (
-            get_daily_brain_topic(
-                channel_id,
-                config,
-                is_short,
-            )
-            or get_trending_topic(
-                channel_id,
-                config,
-            )
-            or pick_next_topic(
-                channel_id,
-                config,
-            )
-        )
-
-        mark_topic_used(
-            channel_id,
-            topic,
-        )
-
-    language = pick_language(
-        config
-    )
-
-    length = (
-        config["short_length_seconds"]
-        if is_short
-        else config["video_length_seconds"]
-    )
-
-    if (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-
-        try:
-
-            generated = generate_with_gemini(
-                topic,
-                config,
-                length,
-                language,
-            )
-
-        except Exception as e:
-
-            print(
-                f"WARNING: Gemini call failed ({e}); "
-                "using template fallback."
-            )
-
-            generated = generate_with_template(
-                topic,
-                config,
-                language,
-            )
-
-    else:
-
-        generated = generate_with_template(
-            topic,
-            config,
-            language,
-        )
-
-    return {
-        "channel_id": channel_id,
-        "topic": topic,
-        "title": generated["title"],
-        "script": generated["script"],
-        "language": language,
-        "voice": _voice_for_language(
-            config,
-            language,
-        ),
-        "is_short": is_short,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Kids content
-# ---------------------------------------------------------------------------
-
-KIDS_CONTENT_TYPES = [
-    "rhyme",
-    "story",
-    "learning",
-]
-
-
-def pick_content_type(
-    config: dict,
-) -> str:
-
-    return random.choice(
-        config.get("content_types")
-        or KIDS_CONTENT_TYPES
-    )
-
-
-def _kids_seed_path(
-    config: dict,
-    content_type: str,
-) -> Path:
-
-    return (
-        ROOT
-        / config["topics_seed_files"][content_type]
-    )
-
-
-def _kids_dedupe_key(
-    channel_id: str,
-    content_type: str,
-) -> str:
-
-    return (
-        f"{channel_id}__{content_type}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Kids topic generation
-# ---------------------------------------------------------------------------
-
-def _generate_more_kids_topics(
-    config: dict,
-    content_type: str,
-    existing: list,
-    count: int = 20,
-) -> list:
-
-    if not (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-        return []
-
-    try:
-
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
-        )
-
-        existing_sample = "\n".join(
-            f"- {topic}"
-            for topic in existing[-40:]
-        )
-
-        kind_description = {
-            "rhyme": (
-                "short original Hindi rhyme/poem themes "
-                "for young children ages 2-6"
-            ),
-            "story": (
-                "short moral story premises for young "
-                "children, gentle and positive"
-            ),
-            "learning": (
-                "simple learning topics for young children "
-                "such as letters, numbers, colors, shapes, "
-                "and categories"
-            ),
-        }[content_type]
-
-        prompt = f"""
-You generate video theme ideas for a children's YouTube channel.
-
-Channel:
+- Do NOT generate topics about space.
+- Do NOT generate topics about planets, stars, galaxies, black holes, astronomy, physics, or the universe.
+- Do NOT generate generic science topics unrelated to animals.
+- Do NOT repeat topics already used.
+- Use real, well-established facts.
+- Make every topic interesting enough to become a YouTube Short.
+- Avoid boring school-style topics.
+- Make the ideas sound surprising and clickable without being misleading.
+
+CHANNEL:
 {config['display_name']}
 
-This batch is for:
-{kind_description}
+NICHE:
+{config['niche']}
 
-Already-used themes:
+TONE:
+{config['tone']}
 
-{existing_sample}
-
-Do NOT repeat these or close variations.
-
-Generate {count} brand new theme ideas.
-
-Each theme must:
-- Be one short line.
-- Be specific enough to build one video from.
-- Be clearly different from the existing themes.
-
-No numbering.
-No markdown.
-No quotes.
-
-Just one theme per line.
+Generate a list of fresh topic ideas.
 """
 
         response = _generate_with_token_budget(
