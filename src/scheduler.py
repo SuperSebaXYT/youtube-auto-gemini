@@ -141,7 +141,11 @@ def main():
         done_slots = set(state["done_slots"])
 
         jobs_due = []  # list of (slot_id, is_short)
-        
+       long_slot_id = f"long:{config['upload_time_utc']}"
+        if (long_slot_id not in done_slots
+        and _time_to_minutes(config["upload_time_utc"]) <= now_minutes
+        and _is_longform_day(channel_id, config, today)):
+    jobs_due.append((long_slot_id, False)) 
         for t in config["shorts_upload_times_utc"]:
             short_slot_id = f"short:{t}"
             if short_slot_id not in done_slots and _time_to_minutes(t) <= now_minutes:
