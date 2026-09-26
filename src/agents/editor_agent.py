@@ -1,58 +1,89 @@
-"""Final opportunity-ranking agent."""
+"""Final opportunity-ranking agent for Animals & Wildlife."""
+
 
 from src.agents.orchestrator import run_json_batch
 
 
-def select_winners(finalists: list[dict], config: dict, count: int = 5,
-                    performance_summary: str = None) -> dict:
+def select_winners(
+    finalists: list[dict],
+    config: dict,
+    count: int = 5,
+    performance_summary: str = None,
+) -> dict:
+
     packed = "\n\n".join(
-        f"INDEX: {i+1}\nTOPIC: {x['topic']}\n"
+        f"INDEX: {i + 1}\n"
+        f"TOPIC: {x['topic']}\n"
         f"CURIOSITY: {x.get('curiosity', 0)}\n"
         f"NOVELTY: {x.get('novelty_score', x.get('novelty', 0))}\n"
         f"VISUAL: {x.get('visual', 0)}\n"
-        f"SCIENCE CONFIDENCE: {x.get('science_confidence', x.get('accuracy_score', 0))}\n"
+        f"FACT CONFIDENCE: "
+        f"{x.get('science_confidence', x.get('accuracy_score', 0))}\n"
         f"ORIGINALITY NOTE: {x.get('novelty_reason', '')}\n"
-        f"SCIENCE NOTE: {x.get('safe_framing', '')}"
+        f"FACT-CHECK NOTE: {x.get('safe_framing', '')}"
         for i, x in enumerate(finalists)
     )
 
     performance_block = ""
+
     if performance_summary:
         performance_block = f"""
 
 REAL CHANNEL PERFORMANCE DATA (use this to inform your ranking -- prefer
-candidates that resemble the style/subject/angle of what has genuinely
-performed well on THIS channel before, and be more cautious about
-patterns resembling what has underperformed):
+candidates that resemble the style, subject, or angle of what has genuinely
+performed well on THIS channel before, and be more cautious about patterns
+resembling what has underperformed):
+
 {performance_summary}
 """
 
     return run_json_batch(
         "Chief Editor",
-        "Choose the strongest science-video opportunities while protecting long-term channel quality.",
+        "Choose the strongest animal and wildlife video opportunities while protecting long-term channel quality.",
         f"""
 Rank the candidates and choose the top {count}.
 
-Use these weighted dimensions (only score what you can actually see data
-for above -- curiosity, novelty, visual, science confidence):
+IMPORTANT:
+ALL selected topics MUST be about animals or wildlife.
+
+Do NOT select topics about:
+- Space
+- Planets
+- Stars
+- Galaxies
+- Black holes
+- Astronomy
+- NASA
+- Physics unrelated to animals
+- Generic science unrelated to animals
+
+Use these weighted dimensions:
+
 - curiosity 35%
 - novelty 25%
 - visual potential 20%
-- science confidence 20%
+- factual confidence 20%
+
 {performance_block}
-SCORING RULES (read carefully -- this matters):
+
+SCORING RULES:
 - "score" must be an integer from 1 to 100.
 - Scores MUST reflect genuine relative differences between candidates.
-  It would be unusual for multiple different topics to be exactly or
-  nearly equally strong -- find the real differences and reflect them.
-  Do NOT assign identical or near-identical scores (e.g. all 95+, or
-  all exactly the same number) across your top picks just because they
-  all passed earlier screening. A ranked top 5 should show a real
-  spread, not a flat ceiling.
-- "rank" 1 must have the highest "score"; rank {count} the lowest among
-  your picks.
+- Do NOT assign identical or near-identical scores to every candidate.
+- A ranked list should show meaningful differences in strength.
+- "rank" 1 must have the highest score.
+- "rank" {count} must have the lowest score among the selected picks.
+
+The selected topics should be:
+- surprising
+- visually interesting
+- based on real animal or wildlife facts
+- suitable for YouTube Shorts
+- easy to understand
+- engaging without misleading viewers
 
 Return JSON object:
+
 {{
   "winners": [
     {{
@@ -70,6 +101,10 @@ Return JSON object:
 CANDIDATES:
 {packed}
 """,
-        f"CHANNEL: {config['display_name']}\nNICHE: {config['niche']}",
+        f"""
+CHANNEL: {config['display_name']}
+NICHE: Animals & wildlife facts
+TONE: {config['tone']}
+""",
         max_output_tokens=3500,
     )
