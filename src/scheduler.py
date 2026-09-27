@@ -326,12 +326,77 @@ def main():
                             )
                         )
 
-            # =================================================
-            # RUN DUE JOBS
-            # =================================================
+# =================================================
+# RUN ONLY ONE DUE JOB
+# =================================================
 
-            for slot_id, is_short in jobs_due:
+if jobs_due:
 
+    # Run only the earliest overdue slot.
+    # This prevents multiple Shorts from being uploaded
+    # at the same time if GitHub Actions was delayed.
+    jobs_due.sort(
+        key=lambda job: _time_to_minutes(
+            job[0].split(":", 1)[1]
+        )
+    )
+
+    slot_id, is_short = jobs_due[0]
+
+    ran_any = True
+
+    label = (
+        "SHORT"
+        if is_short
+        else "LONG-FORM"
+    )
+
+    print(
+        f"\n### {channel_id} — "
+        f"{label} due "
+        f"(slot {slot_id}, "
+        f"now {now.strftime('%H:%M')} UTC) "
+        f"###\n"
+    )
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "src.main",
+        channel_id,
+    ]
+
+    if is_short:
+        cmd.append("--short")
+
+    result = subprocess.run(
+        cmd
+    )
+
+    if result.returncode != 0:
+
+        print(
+            f"WARNING: {channel_id} "
+            f"{label} failed "
+            f"(exit {result.returncode}). "
+            f"Slot will be retried on "
+            f"the next scheduler run.",
+            file=sys.stderr,
+        )
+
+    else:
+
+        _mark_slot_done(
+            channel_id,
+            state,
+            slot_id,
+        )
+
+        if not is_short:
+            _mark_longform_ran(
+                channel_id,
+                today,
+            )
                 ran_any = True
 
                 label = (
