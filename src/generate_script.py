@@ -203,9 +203,6 @@ def _generate_with_token_budget(
         client.chats.create()
         chat.send_message()
 
-    and never:
-
-
     The Chat API is used throughout this file for text generation.
     """
 
@@ -282,7 +279,7 @@ def _generate_more_topics(
         )
 
         prompt = f"""
-You generate topic ideas for a faceless YouTube channel.
+You generate topic ideas for a faceless YouTube channel focused on animals and wildlife facts.
 
 Channel: {config['display_name']}
 Niche: {config['niche']}
@@ -292,7 +289,7 @@ Here are topics already covered. Do NOT repeat these or close variations:
 
 {existing_sample}
 
-Generate {count} brand new topic ideas for this channel.
+Generate {count} brand new topic ideas for this channel focusing on animals, wildlife, animal behavior, biology, and ecology.
 
 Each topic must:
 - Be a single line.
@@ -508,7 +505,7 @@ def _parse_titled_response(
 
 
 # ---------------------------------------------------------------------------
-# Main Cosmic Curious Gemini generation
+# Main Animals & Wildlife Facts Gemini generation
 # ---------------------------------------------------------------------------
 
 def generate_with_gemini(
@@ -527,14 +524,6 @@ def generate_with_gemini(
     elif length_seconds <= 55:
         words_target = 135
     else:
-        # Scale properly for real long-form durations instead of capping
-        # at a Short-sized word count -- ~140 words/minute is a
-        # reasonable narrated pace (accounts for natural pauses and the
-        # slight pacing slowdown applied in tts.py). Without this
-        # scaling, EVERY long-form video was getting the same ~150-word
-        # target regardless of video_length_seconds -- confirmed by
-        # real published videos consistently landing at ~100-150 words
-        # even when video_length_seconds was set to 300 (5 minutes).
         words_target = round(length_seconds / 60 * 140)
 
     language_name = LANGUAGE_NAMES.get(
@@ -543,7 +532,7 @@ def generate_with_gemini(
     )
 
     prompt = f"""
-You are the lead science writer for a premium faceless YouTube channel
+You are the lead wildlife and biology writer for a premium faceless YouTube channel
 called "{config['display_name']}".
 
 CHANNEL NICHE:
@@ -555,28 +544,28 @@ CHANNEL TONE:
 TOPIC:
 {topic}
 
-Write a SHORT, highly engaging science/space voiceover.
+Write a SHORT, highly engaging wildlife, animal behavior, and biology voiceover.
 
 The viewer should feel:
 
-"I had no idea that was possible."
+"I had no idea animals could do that."
 
 IMPORTANT:
 
 This is NOT a generic motivational video.
 This is NOT a list of random facts.
-This is NOT an introduction to science.
+This is NOT an introduction to basic biology.
 
 The entire script must be specifically about the supplied topic.
 
 FACTUAL STANDARD:
 
-- Use established scientific knowledge whenever possible.
+- Use established biological and ecological knowledge whenever possible.
 - Do not invent statistics, discoveries, quotes, experiments, or findings.
 - Do not present speculation as fact.
-- If the topic involves a hypothesis or controversial idea, clearly signal
-  that scientists have proposed it or that it is a hypothesis.
-- Prefer concrete physical explanations over vague descriptions.
+- If the topic involves a hypothesis or unusual animal behavior, clearly signal
+  that researchers have observed it or that it is studied by biologists.
+- Prefer concrete biological explanations over vague descriptions.
 - If a precise number is uncertain or unnecessary, don't invent one.
 - Avoid sensational claims that contradict established science.
 - Do not use physically impossible explanations just to make the story
@@ -586,27 +575,27 @@ RETENTION STRUCTURE:
 
 1. HOOK
 
-Start with the most surprising consequence, question, or image.
+Start with the most surprising consequence, question, or image about the animal.
 
 Do NOT simply repeat the topic.
 
 2. SETUP
 
-Give just enough context for the viewer to understand what is happening.
+Give just enough context for the viewer to understand the animal and its environment.
 
 3. ESCALATION
 
-Explain the physical process step by step.
+Explain the biological process or behavior step by step.
 
 Each sentence should make the situation more interesting.
 
 4. PAYOFF
 
-Reveal the strangest, most surprising, or least-known consequence.
+Reveal the strangest, most surprising, or least-known consequence of this animal trait.
 
 5. FINAL LINE
 
-End on a memorable scientific thought connected directly to the topic.
+End on a memorable biological thought connected directly to the topic.
 
 Do NOT say:
 subscribe
@@ -625,12 +614,12 @@ WRITING RULES:
 - No generic phrases such as:
   "Here's something most people don't know"
   "It sounds simple"
-  "This reveals a lot about science"
+  "This reveals a lot about nature"
   "Once you understand"
   "you'll start noticing"
   "changes how you see the world"
-  "in the world of science"
-  "the universe is full of mysteries"
+  "in the wild"
+  "nature is full of mysteries"
 - Do not begin by repeating the topic.
 - Do not use rhetorical filler every few sentences.
 - Every sentence must either create curiosity, explain something,
@@ -646,10 +635,10 @@ VISUAL THINKING:
 
 Write sentences that naturally correspond to visual moments.
 
-For example, if explaining a black hole, the narration might naturally
+For example, if explaining an animal hunting or defense mechanism, the narration might naturally
 move through:
 
-star -> black hole -> approach -> tidal forces -> destruction -> debris.
+habitat -> stealth -> ambush -> pursuit -> escape.
 
 Do not literally write those visual labels into the script.
 
@@ -718,8 +707,8 @@ def generate_with_template(
         script = (
             f"क्या आपने कभी सोचा है कि {topic} के पीछे असल में क्या होता है? "
             f"यह सवाल जितना आसान लगता है, इसकी असली कहानी उतनी ही दिलचस्प है। "
-            f"वैज्ञानिक इस घटना को समझने के लिए इसके पीछे काम करने वाली "
-            f"प्राकृतिक प्रक्रियाओं का अध्ययन करते हैं। और सबसे दिलचस्प बात यह है "
+            f"वैज्ञानिक और जीव-विज्ञान विशेषज्ञ इस व्यवहार को समझने के लिए "
+            f"प्राकृतिक अनुकूलन का अध्ययन करते हैं। और सबसे दिलचस्प बात यह है "
             f"कि इसका जवाब हमारी सोच से कहीं ज्यादा जटिल है।"
         )
 
@@ -730,10 +719,10 @@ def generate_with_template(
         script = (
             f"{topic}. "
             f"The surprising part is what happens next. "
-            f"Scientists can explain this using the basic physics behind "
+            f"Biologists can explain this using the remarkable adaptations behind "
             f"{config['niche'].lower()}. "
             f"And once you understand the real reason, "
-            f"the universe suddenly looks a little stranger."
+            f"the natural world suddenly looks a little stranger."
         )
 
         title = (
@@ -749,7 +738,7 @@ def generate_with_template(
 
 
 # ---------------------------------------------------------------------------
-# Public Cosmic Curious API
+# Public API
 # ---------------------------------------------------------------------------
 
 def generate_script(
@@ -998,7 +987,7 @@ Just one theme per line.
 
 
 def pick_next_kids_topic(
-    channel_id: str,
+channel_id: str,
     config: dict,
     content_type: str,
 ) -> str:
