@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 """
 generate_script.py
 
 Generates scripts for the Autotube channels using Google's current
-google-genai SDK. Refactored 100% for animal and wildlife content.
+google-genai SDK.
 
 IMPORTANT:
 - Uses client.chats.create() + chat.send_message()
@@ -124,7 +123,7 @@ def _todays_longform_path(channel_id: str) -> Path:
 
 def save_todays_longform_topic(channel_id: str, topic: str) -> None:
     """
-    Records today's long-form animal topic so one Short can reuse it as a recap.
+    Records today's long-form topic so one Short can reuse it as a recap.
     """
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -146,7 +145,7 @@ def save_todays_longform_topic(channel_id: str, topic: str) -> None:
 
 def get_recap_topic_for_short(channel_id: str) -> str | None:
     """
-    Returns today's long-form animal topic if it has not already been used
+    Returns today's long-form topic if it has not already been used
     for a recap Short today.
     """
 
@@ -195,6 +194,21 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
+    """
+    Generate text using the google-genai Chat API.
+
+    IMPORTANT:
+    This intentionally uses:
+
+        client.chats.create()
+        chat.send_message()
+
+    and never:
+
+
+    The Chat API is used throughout this file for text generation.
+    """
+
     try:
         from google.genai import types
 
@@ -239,7 +253,7 @@ def _generate_with_token_budget(
 
 
 # ---------------------------------------------------------------------------
-# Topic generation (Animals)
+# Topic generation
 # ---------------------------------------------------------------------------
 
 def _generate_more_topics(
@@ -248,7 +262,7 @@ def _generate_more_topics(
     count: int = 20,
 ) -> list:
     """
-    Ask Gemini for fresh animal and wildlife topic ideas.
+    Ask Gemini for fresh topic ideas.
     """
 
     if not (
@@ -268,23 +282,23 @@ def _generate_more_topics(
         )
 
         prompt = f"""
-You generate animal and wildlife topic ideas for a faceless YouTube channel.
+You generate topic ideas for a faceless YouTube channel.
 
 Channel: {config['display_name']}
 Niche: {config['niche']}
 Tone: {config['tone']}
 
-Here are animal topics already covered. Do NOT repeat these or close variations:
+Here are topics already covered. Do NOT repeat these or close variations:
 
 {existing_sample}
 
-Generate {count} brand new animal or wildlife topic ideas for this channel.
+Generate {count} brand new topic ideas for this channel.
 
 Each topic must:
-- Be a single line focusing on animals, wildlife, pet behavior, or zoology.
+- Be a single line.
 - Be specific enough to script a video from.
 - Be genuinely different from the existing topics.
-- Be interesting to animal lovers.
+- Be interesting to viewers.
 
 No numbering.
 No markdown.
@@ -319,7 +333,7 @@ Just one topic per line.
 
     except Exception as e:
         print(
-            "WARNING: animal topic auto-generation failed "
+            "WARNING: topic auto-generation failed "
             f"({e}); will loop existing topics instead."
         )
 
@@ -364,7 +378,7 @@ def pick_next_topic(
                 )
 
             print(
-                f"Added {len(new_topics)} new animal topics "
+                f"Added {len(new_topics)} new topics "
                 f"to {topics_file.name}"
             )
 
@@ -394,6 +408,7 @@ def pick_next_topic(
 
 def pick_language(config: dict) -> str:
     languages = config.get("languages") or ["en"]
+
     return random.choice(languages)
 
 
@@ -493,7 +508,7 @@ def _parse_titled_response(
 
 
 # ---------------------------------------------------------------------------
-# Main Animal Wildlife Gemini generation
+# Main Cosmic Curious Gemini generation
 # ---------------------------------------------------------------------------
 
 def generate_with_gemini(
@@ -512,6 +527,14 @@ def generate_with_gemini(
     elif length_seconds <= 55:
         words_target = 135
     else:
+        # Scale properly for real long-form durations instead of capping
+        # at a Short-sized word count -- ~140 words/minute is a
+        # reasonable narrated pace (accounts for natural pauses and the
+        # slight pacing slowdown applied in tts.py). Without this
+        # scaling, EVERY long-form video was getting the same ~150-word
+        # target regardless of video_length_seconds -- confirmed by
+        # real published videos consistently landing at ~100-150 words
+        # even when video_length_seconds was set to 300 (5 minutes).
         words_target = round(length_seconds / 60 * 140)
 
     language_name = LANGUAGE_NAMES.get(
@@ -520,7 +543,7 @@ def generate_with_gemini(
     )
 
     prompt = f"""
-You are the lead wildlife and zoology writer for a premium faceless YouTube channel
+You are the lead science writer for a premium faceless YouTube channel
 called "{config['display_name']}".
 
 CHANNEL NICHE:
@@ -532,53 +555,58 @@ CHANNEL TONE:
 TOPIC:
 {topic}
 
-Write a SHORT, highly engaging animal/wildlife voiceover.
+Write a SHORT, highly engaging science/space voiceover.
 
 The viewer should feel:
 
-"I had no idea animals could do that."
+"I had no idea that was possible."
 
 IMPORTANT:
 
 This is NOT a generic motivational video.
-This is NOT a random list of pet care tips.
-This is NOT a school textbook introduction.
+This is NOT a list of random facts.
+This is NOT an introduction to science.
 
-The entire script must be specifically about the supplied animal topic.
+The entire script must be specifically about the supplied topic.
 
 FACTUAL STANDARD:
 
-- Use established zoological and biological knowledge whenever possible.
-- Do not invent statistics, animal behaviors, quotes, or findings.
-- Do not present speculation as absolute biological fact.
-- Prefer concrete behavioral and physical explanations over vague descriptions.
-- Avoid sensational wildlife myths that contradict established science.
+- Use established scientific knowledge whenever possible.
+- Do not invent statistics, discoveries, quotes, experiments, or findings.
+- Do not present speculation as fact.
+- If the topic involves a hypothesis or controversial idea, clearly signal
+  that scientists have proposed it or that it is a hypothesis.
+- Prefer concrete physical explanations over vague descriptions.
+- If a precise number is uncertain or unnecessary, don't invent one.
+- Avoid sensational claims that contradict established science.
+- Do not use physically impossible explanations just to make the story
+  sound dramatic.
 
 RETENTION STRUCTURE:
 
 1. HOOK
 
-Start with the most surprising animal behavior, question, or survival adaptation.
+Start with the most surprising consequence, question, or image.
 
 Do NOT simply repeat the topic.
 
 2. SETUP
 
-Give just enough natural habitat context for the viewer to understand the animal's challenge.
+Give just enough context for the viewer to understand what is happening.
 
 3. ESCALATION
 
-Explain the process or adaptation step by step.
+Explain the physical process step by step.
 
-Each sentence should make the situation more fascinating.
+Each sentence should make the situation more interesting.
 
 4. PAYOFF
 
-Reveal the strangest, most surprising, or least-known evolutionary trait or consequence.
+Reveal the strangest, most surprising, or least-known consequence.
 
 5. FINAL LINE
 
-End on a memorable thought connected directly to the animal world.
+End on a memorable scientific thought connected directly to the topic.
 
 Do NOT say:
 subscribe
@@ -588,19 +616,42 @@ in conclusion
 
 WRITING RULES:
 
-- Conversational spoken language suitable for nature documentaries.
+- Conversational spoken language.
 - Short sentences mixed with occasional longer sentences.
-- No heavy academic-paper language.
-- No unnecessary jargon.
-- No filler or motivational life lessons.
-- Every sentence must either create curiosity, explain an animal trait, or deliver a payoff.
-- Do not use emojis, stage directions, visual notes, or markdown.
+- No academic-paper language.
+- No unnecessary definitions.
+- No filler.
+- No motivational life lessons.
+- No generic phrases such as:
+  "Here's something most people don't know"
+  "It sounds simple"
+  "This reveals a lot about science"
+  "Once you understand"
+  "you'll start noticing"
+  "changes how you see the world"
+  "in the world of science"
+  "the universe is full of mysteries"
+- Do not begin by repeating the topic.
+- Do not use rhetorical filler every few sentences.
+- Every sentence must either create curiosity, explain something,
+  or deliver a payoff.
+- Do not use emojis.
+- Do not use stage directions.
+- Do not use visual notes.
+- Do not use markdown.
 - Do not mention that you are an AI.
 - The narration must sound natural when read by text-to-speech.
 
 VISUAL THINKING:
 
-Write sentences that naturally correspond to visual wildlife moments.
+Write sentences that naturally correspond to visual moments.
+
+For example, if explaining a black hole, the narration might naturally
+move through:
+
+star -> black hole -> approach -> tidal forces -> destruction -> debris.
+
+Do not literally write those visual labels into the script.
 
 LANGUAGE:
 
@@ -614,6 +665,17 @@ LENGTH:
 Approximately {words_target} words.
 
 Do not pad the script merely to reach the word count.
+
+A slightly shorter excellent script is better than a longer repetitive one.
+
+OUTPUT FORMAT:
+
+Respond in EXACTLY this format and nothing else:
+
+TITLE: <punchy YouTube title under 90 characters>
+
+SCRIPT:
+<spoken narration only>
 """
 
     max_tokens = _max_output_tokens_for(
@@ -642,7 +704,7 @@ Do not pad the script merely to reach the word count.
 
 
 # ---------------------------------------------------------------------------
-# Emergency template fallback (Animals)
+# Emergency template fallback
 # ---------------------------------------------------------------------------
 
 def generate_with_template(
@@ -654,10 +716,11 @@ def generate_with_template(
     if language == "hi":
 
         script = (
-            f"क्या आपने कभी सोचा है कि {topic} के पीछे असल में क्या रहस्य है? "
-            f"यह सवाल जितना आसान लगता है, प्रकृति की दुनिया उतनी ही दिलचस्प है। "
-            f"वैज्ञानिक इस व्यवहार को समझने के लिए जीवों की आदतों का अध्ययन करते हैं। "
-            f"और सबसे दिलचस्प बात यह है कि इसका जवाब हमारी सोच से कहीं ज्यादा अनोखा है।"
+            f"क्या आपने कभी सोचा है कि {topic} के पीछे असल में क्या होता है? "
+            f"यह सवाल जितना आसान लगता है, इसकी असली कहानी उतनी ही दिलचस्प है। "
+            f"वैज्ञानिक इस घटना को समझने के लिए इसके पीछे काम करने वाली "
+            f"प्राकृतिक प्रक्रियाओं का अध्ययन करते हैं। और सबसे दिलचस्प बात यह है "
+            f"कि इसका जवाब हमारी सोच से कहीं ज्यादा जटिल है।"
         )
 
         title = f"{topic}"
@@ -666,11 +729,11 @@ def generate_with_template(
 
         script = (
             f"{topic}. "
-            f"The surprising part is how this animal behaves in the wild. "
-            f"Zoologists explain this using the natural adaptations of "
+            f"The surprising part is what happens next. "
+            f"Scientists can explain this using the basic physics behind "
             f"{config['niche'].lower()}. "
             f"And once you understand the real reason, "
-            f"the animal kingdom suddenly looks a lot more fascinating."
+            f"the universe suddenly looks a little stranger."
         )
 
         title = (
@@ -686,7 +749,7 @@ def generate_with_template(
 
 
 # ---------------------------------------------------------------------------
-# Public Main API
+# Public Cosmic Curious API
 # ---------------------------------------------------------------------------
 
 def generate_script(
@@ -700,8 +763,11 @@ def generate_script(
     )
 
     if forced_topic:
+
         topic = forced_topic
+
     else:
+
         topic = (
             get_daily_brain_topic(
                 channel_id,
@@ -737,24 +803,31 @@ def generate_script(
         GEMINI_AVAILABLE
         and os.environ.get("GEMINI_API_KEY")
     ):
+
         try:
+
             generated = generate_with_gemini(
                 topic,
                 config,
                 length,
                 language,
             )
+
         except Exception as e:
+
             print(
                 f"WARNING: Gemini call failed ({e}); "
                 "using template fallback."
             )
+
             generated = generate_with_template(
                 topic,
                 config,
                 language,
             )
+
     else:
+
         generated = generate_with_template(
             topic,
             config,
@@ -776,7 +849,7 @@ def generate_script(
 
 
 # ---------------------------------------------------------------------------
-# Kids Animal Content
+# Kids content
 # ---------------------------------------------------------------------------
 
 KIDS_CONTENT_TYPES = [
@@ -817,6 +890,10 @@ def _kids_dedupe_key(
     )
 
 
+# ---------------------------------------------------------------------------
+# Kids topic generation
+# ---------------------------------------------------------------------------
+
 def _generate_more_kids_topics(
     config: dict,
     content_type: str,
@@ -831,6 +908,7 @@ def _generate_more_kids_topics(
         return []
 
     try:
+
         client = genai_client.Client(
             api_key=os.environ["GEMINI_API_KEY"]
         )
@@ -842,21 +920,22 @@ def _generate_more_kids_topics(
 
         kind_description = {
             "rhyme": (
-                "short original animal rhymes/poems themes "
-                "for young children ages 2-6 (e.g. cute monkeys, jumping frogs)"
+                "short original Hindi rhyme/poem themes "
+                "for young children ages 2-6"
             ),
             "story": (
-                "short animal moral story premises for young "
-                "children, featuring forest animals or pets"
+                "short moral story premises for young "
+                "children, gentle and positive"
             ),
             "learning": (
-                "simple animal learning topics for young children "
-                "such as animal sounds, habitats, wild animals, and baby animals"
+                "simple learning topics for young children "
+                "such as letters, numbers, colors, shapes, "
+                "and categories"
             ),
         }[content_type]
 
         prompt = f"""
-You generate animal video theme ideas for a children's YouTube channel.
+You generate video theme ideas for a children's YouTube channel.
 
 Channel:
 {config['display_name']}
@@ -864,18 +943,18 @@ Channel:
 This batch is for:
 {kind_description}
 
-Already-used animal themes:
+Already-used themes:
 
 {existing_sample}
 
 Do NOT repeat these or close variations.
 
-Generate {count} brand new animal theme ideas.
+Generate {count} brand new theme ideas.
 
 Each theme must:
-- Be one short line about animals.
-- Be specific enough to build one kids video from.
-- Be clearly different from existing themes.
+- Be one short line.
+- Be specific enough to build one video from.
+- Be clearly different from the existing themes.
 
 No numbering.
 No markdown.
@@ -909,10 +988,12 @@ Just one theme per line.
         return new_topics
 
     except Exception as e:
+
         print(
-            "WARNING: kids animal topic auto-generation failed "
+            "WARNING: kids topic auto-generation failed "
             f"({e}); will loop existing topics instead."
         )
+
         return []
 
 
@@ -949,6 +1030,7 @@ def pick_next_kids_topic(
     ]
 
     if not unused:
+
         new_topics = _generate_more_kids_topics(
             config,
             content_type,
@@ -956,6 +1038,7 @@ def pick_next_kids_topic(
         )
 
         if new_topics:
+
             with topics_file.open("a") as f:
                 f.write(
                     "\n"
@@ -964,13 +1047,15 @@ def pick_next_kids_topic(
                 )
 
             print(
-                f"Added {len(new_topics)} new animal "
+                f"Added {len(new_topics)} new "
                 f"{content_type} themes to "
                 f"{topics_file.name}"
             )
 
             unused = new_topics
+
         else:
+
             unused = all_topics
 
     if not unused:
@@ -979,7 +1064,9 @@ def pick_next_kids_topic(
             f"content type '{content_type}'."
         )
 
-    topic = random.choice(unused)
+    topic = random.choice(
+        unused
+    )
 
     mark_topic_used(
         dedupe_key,
@@ -988,6 +1075,10 @@ def pick_next_kids_topic(
 
     return topic
 
+
+# ---------------------------------------------------------------------------
+# Kids Gemini generation
+# ---------------------------------------------------------------------------
 
 def generate_kids_script_with_gemini(
     topic: str,
@@ -1012,51 +1103,98 @@ def generate_kids_script_with_gemini(
     )
 
     if content_type == "rhyme":
+
         content_instructions = f"""
-Write an ORIGINAL animal rhyme/poem for young children ages 2-6,
+Write an ORIGINAL Hindi rhyme/poem for young children ages 2-6,
 themed around:
 
 {topic}
 
 CRITICAL:
-This must be a completely original composition about animals.
-Do NOT reproduce or imitate copyrighted nursery rhymes.
-Write it purely in Hindi using Devanagari script (or matching target language).
-Use simple everyday words a toddler knows about animals.
-Include a repeated animal sound or chorus.
-Include at least one action kids can copy, such as: jump like a frog, walk like a bear.
-The animal mascot {mascot_name} should lead it, mentioned warmly by name.
-Keep the mood joyful and friendly.
+
+This must be a completely original composition.
+
+Do NOT reproduce, translate, or closely imitate any existing,
+traditional, or copyrighted nursery rhyme, song, or poem.
+
+Write it purely in Hindi using Devanagari script.
+
+Use simple everyday words a toddler already knows.
+
+Keep a clear, consistent rhythm and rhyme scheme.
+
+Include a short repeated refrain or chorus.
+
+Include at least one simple action kids can copy, such as:
+clap, jump, sway.
+
+The character {mascot_name} should be the one singing or leading it,
+mentioned warmly by name at least once.
+
+Keep the mood joyful and gentle.
 """
 
     elif content_type == "story":
+
         content_instructions = f"""
-Write an ORIGINAL short animal moral story for young children ages 3-7,
+Write an ORIGINAL short moral story for young children ages 3-7,
 themed around:
 
 {topic}
 
-The story should feature friendly animal characters led by {mascot_name}.
-Teach a simple positive lesson like sharing, friendship, or helping others.
-Show the lesson through the animal characters' actions.
-Language style: Natural children's story style, simple and warm.
-Nothing scary or sad.
+The story should feature {mascot_name}.
+
+Teach one simple positive lesson such as:
+sharing, kindness, honesty, or trying again.
+
+Show the lesson through what happens rather than lecturing.
+
+Only state the lesson gently at the very end.
+
+Language style:
+
+Natural Hinglish code-mixing commonly heard in Indian children's
+content.
+
+Mostly simple Hindi with a handful of everyday English words
+mixed naturally.
+
+Keep sentences short and simple.
+
+Nothing scary, violent, or sad.
+
+Any conflict should be gentle and resolved warmly.
 """
 
     else:
+
         content_instructions = f"""
-Write an ORIGINAL short animal learning segment for young children ages 2-6,
-teaching about:
+Write an ORIGINAL short learning segment for young children ages 2-6,
+teaching:
 
 {topic}
 
-{mascot_name} the animal mascot should teach directly to the viewer.
-Use a warm, encouraging, educational tone about animals and nature.
-Use call-and-response phrasing.
+{mascot_name} should teach directly to the viewer.
+
+Use a warm and encouraging tone.
+
+Language style:
+
+Natural bilingual teaching commonly used in Indian children's
+educational content.
+
+Introduce concepts in Hindi and reinforce them with simple English
+equivalents.
+
+Use call-and-response phrasing such as:
+
+"bolo mere saath..."
+
+Keep it repetitive and simple.
 """
 
     prompt = f"""
-You are writing an animal-themed script for a children's YouTube video.
+You are writing a script for a children's YouTube video.
 
 Channel:
 {config['display_name']}
@@ -1071,7 +1209,7 @@ Language:
 
 Respond in EXACTLY this format and nothing else:
 
-TITLE: <a warm, simple title about animals in {language_name}, under 90 characters>
+TITLE: <a warm, simple title in {language_name}, under 90 characters>
 
 SCRIPT:
 <spoken narration only>
@@ -1079,9 +1217,13 @@ SCRIPT:
 No markdown.
 No stage directions.
 No visual cues.
+No commentary.
 
 Target script length:
 approximately {words_target} words.
+
+End on a warm, gentle closing line.
+Do not end abruptly.
 """
 
     max_tokens = _max_output_tokens_for(
@@ -1100,6 +1242,10 @@ approximately {words_target} words.
     )
 
 
+# ---------------------------------------------------------------------------
+# Kids template fallback
+# ---------------------------------------------------------------------------
+
 def generate_kids_template(
     topic: str,
     config: dict,
@@ -1109,37 +1255,60 @@ def generate_kids_template(
 ) -> dict:
 
     if content_type == "rhyme":
+
         script = (
-            f"चलो सब मिलकर जानवरों की आवाज़ निकालें, {mascot_name} के साथ! "
-            f"आज की प्यारी कविता है {topic} के बारे में। "
-            f"छलांग लगाओ, खुश रहो! "
-            f"बाय बाय दोस्तों!"
+            f"चलो सब मिलकर गाएं, {mascot_name} के साथ। "
+            f"आज की कहानी है {topic} के बारे में। "
+            f"ताली बजाओ, संग गाओ, मज़ा करो, हाँ! "
+            f"यही तो है हमारी प्यारी सी धुन, "
+            f"फिर मिलेंगे, बाय बाय!"
         )
-        title = f"{mascot_name} और प्यारे जानवर की कविता"
+
+        title = (
+            f"{mascot_name} की मस्ती भरी कविता"
+        )
 
     elif content_type == "story":
+
         script = (
-            f"एक बार की बात है, जंगल में {mascot_name} रहता था। "
-            f"उसने सीखा {topic} के बारे में एक बहुत प्यारी बात। "
-            f"सब जानवर मिलकर खुश हुए। "
+            f"एक बार की बात है, {mascot_name} नाम का "
+            f"एक प्यारा दोस्त था। "
+            f"एक दिन उसे पता चला {topic} के बारे में "
+            f"एक important lesson। "
+            f"उसने सीखा कि हमेशा kind और honest रहना चाहिए। "
+            f"अंत में सब दोस्त बहुत खुश हुए। "
             f"The end!"
         )
-        title = f"{mascot_name} की एनिमल स्टोरी"
+
+        title = (
+            f"{mascot_name} की एक प्यारी कहानी"
+        )
 
     else:
+
         script = (
             f"नमस्ते दोस्तों! मैं हूँ {mascot_name}। "
-            f"आज हम जानेंगे {topic} के बारे में। "
-            f"Animals are our friends! "
-            f"Great job, दोस्तों!"
+            f"आज हम सीखेंगे {topic}। "
+            f"बोलो मेरे साथ! "
+            f"बहुत बढ़िया! "
+            f"अब आप भी जान गए। "
+            f"Great job, दोस्तों! "
+            f"फिर मिलेंगे अगली सीख के साथ!"
         )
-        title = f"{mascot_name} के साथ सीखो: {topic}"
+
+        title = (
+            f"{mascot_name} के साथ सीखो: {topic}"
+        )
 
     return {
         "title": title,
         "script": script,
     }
 
+
+# ---------------------------------------------------------------------------
+# Public kids API
+# ---------------------------------------------------------------------------
 
 def generate_kids_script(
     channel_id: str,
@@ -1160,16 +1329,28 @@ def generate_kids_script(
         content_type,
     )
 
-    mascot = config["mascot_map"][content_type]
-    mascot_name = config["mascot_names"][mascot]
+    mascot = config["mascot_map"][
+        content_type
+    ]
 
+    mascot_name = config["mascot_names"][
+        mascot
+    ]
+
+    # Rhymes use Hindi only so the rhyme scheme remains consistent.
     if (
         content_type == "rhyme"
-        and config.get("rhymes_hindi_only", True)
+        and config.get(
+            "rhymes_hindi_only",
+            True,
+        )
     ):
         language = "hi"
+
     else:
-        language = pick_language(config)
+        language = pick_language(
+            config
+        )
 
     length = (
         config["short_length_seconds"]
@@ -1181,7 +1362,9 @@ def generate_kids_script(
         GEMINI_AVAILABLE
         and os.environ.get("GEMINI_API_KEY")
     ):
+
         try:
+
             generated = generate_kids_script_with_gemini(
                 topic,
                 config,
@@ -1190,11 +1373,14 @@ def generate_kids_script(
                 length,
                 language,
             )
+
         except Exception as e:
+
             print(
                 f"WARNING: Gemini call failed ({e}); "
                 "using template fallback."
             )
+
             generated = generate_kids_template(
                 topic,
                 config,
@@ -1202,7 +1388,9 @@ def generate_kids_script(
                 mascot_name,
                 language,
             )
+
     else:
+
         generated = generate_kids_template(
             topic,
             config,
@@ -1233,11 +1421,20 @@ def generate_kids_script(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("channel_id")
-    parser.add_argument("--short", action="store_true")
+
+    parser.add_argument(
+        "channel_id"
+    )
+
+    parser.add_argument(
+        "--short",
+        action="store_true",
+    )
+
     parser.add_argument(
         "--out",
         default=None,
@@ -1258,6 +1455,8 @@ if __name__ == "__main__":
     )
 
     if args.out:
-        Path(args.out).write_text(output)
+        Path(args.out).write_text(
+            output
+        )
 
     print(output)
