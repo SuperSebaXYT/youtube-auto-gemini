@@ -7,12 +7,9 @@ CURRENT MODE:
 - Shorts: ENABLED
 - Long-form: DISABLED by default
 
-Long-form code is intentionally kept in this file so it can be enabled
-later without rebuilding the scheduler.
-
-The scheduler checks which Shorts upload slots are due and runs them once
-per day. If GitHub's cron is delayed, an overdue slot is picked up on the
-next run instead of being lost.
+The scheduler checks which Shorts upload slots are due and runs
+only ONE job per scheduler run. This prevents multiple Shorts
+from being uploaded at the same time if GitHub Actions is delayed.
 
 Channels are controlled by the ENABLED_CHANNELS environment variable.
 """
@@ -30,15 +27,13 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
 
+
 # ============================================================
 # MAIN SWITCHES
 # ============================================================
 
-# Shorts are enabled.
 ENABLE_SHORTS = True
 
-# Long-form is kept in the code but disabled for now.
-# Change to True later when you want Long-form back.
 ENABLE_LONGFORM = False
 
 
@@ -109,11 +104,7 @@ def _is_longform_day(
     config: dict,
     today: str,
 ) -> bool:
-    """
-    Check whether Long-form is allowed today.
-
-    This function is inactive while ENABLE_LONGFORM = False.
-    """
+    """Check whether Long-form is allowed today."""
 
     interval_days = config.get("longform_interval_days", 1)
 
@@ -280,19 +271,13 @@ def main():
                             (
                                 slot_id,
                                 True,
+                                time_str,
                             )
                         )
 
             # =================================================
             # LONG-FORM
             # =================================================
-            # Disabled for now.
-            #
-            # To enable later:
-            #
-            # ENABLE_LONGFORM = True
-            #
-            # The code below is intentionally kept here.
 
             if ENABLE_LONGFORM:
 
@@ -307,8 +292,7 @@ def main():
                     )
 
                     if (
-                        long_slot_id
-                        not in done_slots
+                        long_slot_id not in done_slots
                         and _time_to_minutes(
                             upload_time
                         ) <= now_minutes
@@ -318,85 +302,30 @@ def main():
                             today,
                         )
                     ):
-
                         jobs_due.append(
                             (
                                 long_slot_id,
                                 False,
+                                upload_time,
                             )
                         )
 
-# =================================================
-# RUN ONLY ONE DUE JOB
-# =================================================
+            # =================================================
+            # RUN ONLY ONE DUE JOB
+            # =================================================
 
-if jobs_due:
+            if jobs_due:
 
-    # Run only the earliest overdue slot.
-    # This prevents multiple Shorts from being uploaded
-    # at the same time if GitHub Actions was delayed.
-    jobs_due.sort(
-        key=lambda job: _time_to_minutes(
-            job[0].split(":", 1)[1]
-        )
-    )
+                # Sort by scheduled time and select only
+                # the earliest overdue job.
+                jobs_due.sort(
+                    key=lambda job: _time_to_minutes(
+                        job[2]
+                    )
+                )
 
-    slot_id, is_short = jobs_due[0]
+                slot_id, is_short, scheduled_time = jobs_due[0]
 
-    ran_any = True
-
-    label = (
-        "SHORT"
-        if is_short
-        else "LONG-FORM"
-    )
-
-    print(
-        f"\n### {channel_id} — "
-        f"{label} due "
-        f"(slot {slot_id}, "
-        f"now {now.strftime('%H:%M')} UTC) "
-        f"###\n"
-    )
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "src.main",
-        channel_id,
-    ]
-
-    if is_short:
-        cmd.append("--short")
-
-    result = subprocess.run(
-        cmd
-    )
-
-    if result.returncode != 0:
-
-        print(
-            f"WARNING: {channel_id} "
-            f"{label} failed "
-            f"(exit {result.returncode}). "
-            f"Slot will be retried on "
-            f"the next scheduler run.",
-            file=sys.stderr,
-        )
-
-    else:
-
-        _mark_slot_done(
-            channel_id,
-            state,
-            slot_id,
-        )
-
-        if not is_short:
-            _mark_longform_ran(
-                channel_id,
-                today,
-            )
                 ran_any = True
 
                 label = (
@@ -409,6 +338,7 @@ if jobs_due:
                     f"\n### {channel_id} — "
                     f"{label} due "
                     f"(slot {slot_id}, "
+                    f"scheduled {scheduled_time} UTC, "
                     f"now {now.strftime('%H:%M')} UTC) "
                     f"###\n"
                 )
@@ -420,7 +350,6 @@ if jobs_due:
                     channel_id,
                 ]
 
-                # Shorts ALWAYS receive --short.
                 if is_short:
                     cmd.append("--short")
 
@@ -438,28 +367,28 @@ if jobs_due:
                         f"WARNING: {channel_id} "
                         f"{label} failed "
                         f"(exit {result.returncode}). "
-                        f"Slot will be retried on "
-                        f"the next scheduler run.",
+                        f"Slot will be retried "
+                        f"on the next scheduler run.",
                         file=sys.stderr,
                     )
-
-                    continue
 
                 # ------------------------------------------------
                 # SUCCESS
                 # ------------------------------------------------
 
-                _mark_slot_done(
-                    channel_id,
-                    state,
-                    slot_id,
-                )
+                else:
 
-                if not is_short:
-                    _mark_longform_ran(
+                    _mark_slot_done(
                         channel_id,
-                        today,
+                        state,
+                        slot_id,
                     )
+
+                    if not is_short:
+                        _mark_longform_ran(
+                            channel_id,
+                            today,
+                        )
 
         except Exception as exc:
 
@@ -486,3 +415,7 @@ if jobs_due:
 
 if __name__ == "__main__":
     main()
+
+Po wklejeniu nie zmieniaj niczego więcej w tym pliku.
+
+Kluczowa zmiana: "jobs_due" może zawierać kilka zaległych slotów, ale scheduler wybiera "jobs_due[0]", więc jedno uruchomienie GitHub Actions = maksymalnie jeden film.
