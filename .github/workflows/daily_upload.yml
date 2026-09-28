@@ -7,7 +7,7 @@ on:
     # so the real output stays at exactly 1 long-form + 5 shorts per
     # channel per day, spread across the day, no matter how often this
     # cron ticks.
-    - cron: "0 * * * *"
+    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       channel:
@@ -88,11 +88,11 @@ jobs:
       # Normal scheduled run — the scheduler decides what's due.
       # ENABLED_CHANNELS restricts this to Cosmic Curious only.
       # Mind Bites is deliberately excluded (its YouTube token needs
-      # regenerating -- see README/troubleshooting notes -- and uploads to
-      # it are paused until that's resolved). Jungle Ke Dost, Then and Now,
-      # and Money Simple aren't wired up yet either. Add a channel_id here
-      # once its token is restored above and confirmed working (or delete
-      # the ENABLED_CHANNELS line entirely to run all channels).
+      # regenerating -- see README/troubleshooting notes -- and uploads
+      # to it are paused until that's resolved). Jungle Ke Dost, Then and
+      # Now, and Money Simple aren't wired up yet either. Add a channel_id
+      # here once its token is restored above and confirmed working (or
+      # delete the ENABLED_CHANNELS line entirely to run all channels).
       - name: Scheduled run
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == '')
         env:
