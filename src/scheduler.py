@@ -415,7 +415,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-Po wklejeniu nie zmieniaj niczego więcej w tym pliku.
-
-Kluczowa zmiana: "jobs_due" może zawierać kilka zaległych slotów, ale scheduler wybiera "jobs_due[0]", więc jedno uruchomienie GitHub Actions = maksymalnie jeden film.
