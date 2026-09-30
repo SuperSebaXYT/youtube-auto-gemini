@@ -11,29 +11,23 @@ from typing import List, Tuple, Any
 LANDSCAPE = (1920, 1080)
 PORTRAIT = (1080, 1920)
 
-# Cute / bubble font
 FONT_NAME = "Chewy"
 
-# Larger captions
 PORTRAIT_FONT_SIZE = 112
 LANDSCAPE_FONT_SIZE = 88
 
 MIN_PORTRAIT_FONT_SIZE = 62
 MIN_LANDSCAPE_FONT_SIZE = 52
 
-# Thick bubble-like outline
 OUTLINE_SIZE = 10
 SHADOW_SIZE = 2
 
-# Text + outline must stay inside this side margin.
 SIDE_MARGIN = 10
 
-# Keep the existing vertical position.
 PORTRAIT_MARGIN_V = 430
 LANDSCAPE_MARGIN_V = 270
 
 
-# ASS colours are &HAABBGGRR
 CAPTION_COLORS = {
     "green": "&H0058D63F",
     "blue": "&H00FFB347",
@@ -103,16 +97,6 @@ def _get_audio_duration(audio_path: str) -> float:
 def _extract_timing_items(
     data: Any,
 ) -> List[Tuple[float, float, str]]:
-    """
-    Convert timing data into:
-
-        (start_seconds, end_seconds, text)
-
-    Supports:
-        start/end
-        start_time/end_time
-        offset_seconds/duration_seconds
-    """
 
     items: List[Tuple[float, float, str]] = []
 
@@ -501,8 +485,6 @@ def _build_caption_chunks(
         else:
             group_size = 4
 
-            # If the fourth word is separated by a noticeable
-            # pause, don't hold the previous words on screen.
             if i + 3 < len(words):
                 previous_end = words[i + 2][1]
                 next_start = words[i + 3][0]
@@ -618,12 +600,6 @@ def _estimate_text_width(
     text: str,
     font_size: int,
 ) -> float:
-    """
-    Conservative width estimate.
-
-    Chewy is rounded and relatively wide, so the estimate
-    intentionally leaves room for the thick outline.
-    """
 
     words = text.split()
 
@@ -677,7 +653,6 @@ def _caption_font_size(
         min_size = MIN_LANDSCAPE_FONT_SIZE
         width = LANDSCAPE[0]
 
-    # Leave 10 px on each side AND enough room for the outline.
     max_width = (
         width
         - (SIDE_MARGIN * 2)
@@ -710,12 +685,6 @@ def _caption_font_size(
 def _caption_color(
     text: str,
 ) -> str:
-    """
-    Select a colour based on the animal/topic words
-    visible in the caption.
-
-    This is deterministic rather than random.
-    """
 
     t = text.lower()
 
@@ -871,8 +840,6 @@ def _write_ass(
             text
         )
 
-        # Keep the whole caption inside the video width.
-        # The outline is included in the width calculation.
         override = (
             "{"
             f"\\c{color}"
@@ -905,6 +872,101 @@ def _write_ass(
 
     print(
         f"[CAPTIONS] ASS created: "
+        f"{len(captions)} captions"
+    )
+
+
+def _write_ass_subtitles(
+    captions: List[
+        Tuple[float, float, str]
+    ],
+    ass_path: str | Path,
+    width: int,
+    height: int,
+    font_size: int,
+    portrait: bool,
+) -> None:
+
+    if portrait:
+        margin_v = PORTRAIT_MARGIN_V
+    else:
+        margin_v = LANDSCAPE_MARGIN_V
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, "
+            "PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, "
+            "Underline, StrikeOut, ScaleX, ScaleY, "
+            "Spacing, Angle, BorderStyle, Outline, "
+            "Shadow, Alignment, MarginL, MarginR, "
+            "MarginV, Encoding"
+        ),
+        (
+            f"Style: Bubble,{FONT_NAME},"
+            f"{font_size},"
+            f"&H00FFFFFF,&H00FFFFFF,"
+            f"&H00000000,&H00000000,"
+            f"1,0,0,0,100,100,0,0,1,"
+            f"{OUTLINE_SIZE},{SHADOW_SIZE},2,"
+            f"{SIDE_MARGIN},{SIDE_MARGIN},"
+            f"{margin_v},1"
+        ),
+        "",
+        "[Events]",
+        (
+            "Format: Layer, Start, End, Style, Name, "
+            "MarginL, MarginR, MarginV, Effect, Text"
+        ),
+    ]
+
+    for start, end, text in captions:
+
+        if end <= start:
+            continue
+
+        color = _caption_color(text)
+        safe_text = _escape_ass_text(text)
+
+        override = (
+            "{"
+            f"\\c{color}"
+            f"\\fs{font_size}"
+            f"\\bord{OUTLINE_SIZE}"
+            f"\\shad{SHADOW_SIZE}"
+            f"\\fscx105"
+            f"\\fscy105"
+            f"\\an2"
+            f"\\q2"
+            "}"
+        )
+
+        lines.append(
+            f"Dialogue: 0,"
+            f"{_ass_time(start)},"
+            f"{_ass_time(end)},"
+            f"Bubble,,"
+            f"{SIDE_MARGIN},"
+            f"{SIDE_MARGIN},"
+            f"{margin_v},,"
+            f"{override}"
+            f"{safe_text}"
+        )
+
+    Path(ass_path).write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+    print(
+        f"[CAPTIONS] Kids ASS created: "
         f"{len(captions)} captions"
     )
 
