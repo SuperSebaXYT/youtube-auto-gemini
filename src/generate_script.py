@@ -1,1845 +1,1313 @@
-"""
-generate_script.py
+from __future__ import annotations
 
-Generates scripts for the Autotube channels using Google's current
-google-genai SDK.
-
-IMPORTANT:
-- Uses client.chats.create() + chat.send_message()
-- Does NOT use client.models.generate_content() for text generation.
-- Integrates the separate winner_hunter.py module.
-- Winner Hunter learns from real YouTube Analytics performance.
-- Falls back safely if Winner Hunter / Analytics is unavailable.
-- Falls back to template scripts if Gemini is unavailable.
-"""
-
-import os
 import json
-import random
+import os
 import re
-from datetime import datetime, timezone
+import subprocess
 from pathlib import Path
-from difflib import SequenceMatcher
-
-import yaml
-
-from src.trend_scout import get_trending_topic
-from src.daily_brain_topics import get_daily_brain_topic
+from typing import List, Tuple, Any
 
 
-# ---------------------------------------------------------------------------
-# Winner Hunter
-# ---------------------------------------------------------------------------
+LANDSCAPE = (1920, 1080)
+PORTRAIT = (1080, 1920)
 
-try:
-    from src.winner_hunter import build_winner_context
-except Exception:
-    build_winner_context = None
+FONT_NAME = "Chewy"
 
+PORTRAIT_FONT_SIZE = 112
+LANDSCAPE_FONT_SIZE = 88
 
-# ---------------------------------------------------------------------------
-# Gemini
-# ---------------------------------------------------------------------------
+MIN_PORTRAIT_FONT_SIZE = 62
+MIN_LANDSCAPE_FONT_SIZE = 52
 
-try:
-    from google import genai as genai_client
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
+OUTLINE_SIZE = 10
+SHADOW_SIZE = 2
 
+SIDE_MARGIN = 10
 
-GEMINI_MODEL = "gemini-3.5-flash-lite"
+PORTRAIT_MARGIN_V = 430
+LANDSCAPE_MARGIN_V = 270
 
 
-# ---------------------------------------------------------------------------
-# Token budgeting
-# ---------------------------------------------------------------------------
-
-TOKENS_PER_WORD = 2.2
-MIN_OUTPUT_TOKENS = 512
-TOKEN_SAFETY_MARGIN = 200
-
-
-def _max_output_tokens_for(words_target: int) -> int:
-    return max(
-        MIN_OUTPUT_TOKENS,
-        int(words_target * TOKENS_PER_WORD) + TOKEN_SAFETY_MARGIN,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Languages
-# ---------------------------------------------------------------------------
-
-LANGUAGE_NAMES = {
-    "en": "English",
-    "hi": "Hindi (written in Devanagari script, not transliterated/Roman Hindi)",
+CAPTION_COLORS = {
+    "green": "&H0058D63F",
+    "blue": "&H00FFB347",
+    "gold": "&H0000C8FF",
+    "orange": "&H000080FF",
+    "purple": "&H00D080E8",
+    "pink": "&H00B070FF",
+    "red": "&H004040FF",
+    "brown": "&H004080A0",
+    "cyan": "&H00E0D000",
+    "yellow": "&H0000DFFF",
+    "white": "&H00FFFFFF",
 }
 
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
+def _run(cmd: List[str]) -> None:
+    print("Running:", " ".join(str(x) for x in cmd))
 
-ROOT = Path(__file__).resolve().parent.parent
-STATE_DIR = ROOT / "state"
-STATE_DIR.mkdir(exist_ok=True)
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
 
+    if result.stdout:
+        print(result.stdout)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-def load_channel_config(channel_id: str) -> dict:
-    path = ROOT / "channels" / f"{channel_id}.yaml"
-
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-# ---------------------------------------------------------------------------
-# Topic state
-# ---------------------------------------------------------------------------
-
-def _used_topics_path(channel_id: str) -> Path:
-    return STATE_DIR / f"{channel_id}_used_topics.json"
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Command failed with exit code {result.returncode}: "
+            + " ".join(str(x) for x in cmd)
+        )
 
 
-def get_used_topics(channel_id: str) -> set:
-    path = _used_topics_path(channel_id)
+def _get_audio_duration(audio_path: str) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            audio_path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
-    if path.exists():
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Could not read audio duration: {result.stderr}"
+        )
+
+    try:
+        return float(result.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid audio duration returned by ffprobe: "
+            f"{result.stdout!r}"
+        ) from exc
+
+
+def _extract_timing_items(
+    data: Any,
+) -> List[Tuple[float, float, str]]:
+
+    items: List[Tuple[float, float, str]] = []
+
+    if isinstance(data, dict):
+
+        for key in (
+            "words",
+            "word_timings",
+            "timings",
+            "segments",
+            "alignment",
+        ):
+            if key in data:
+                return _extract_timing_items(data[key])
+
+        if all(
+            k in data
+            for k in ("start", "end")
+        ):
+            text = (
+                data.get("word")
+                or data.get("text")
+                or data.get("content")
+                or ""
+            )
+
+            try:
+                start = float(data["start"])
+                end = float(data["end"])
+
+                if (
+                    start >= 0
+                    and end > start
+                    and str(text).strip()
+                ):
+                    items.append(
+                        (
+                            start,
+                            end,
+                            str(text).strip(),
+                        )
+                    )
+
+            except (
+                ValueError,
+                TypeError,
+            ):
+                pass
+
+        elif all(
+            k in data
+            for k in (
+                "offset_seconds",
+                "duration_seconds",
+            )
+        ):
+            text = (
+                data.get("text")
+                or data.get("word")
+                or data.get("content")
+                or ""
+            )
+
+            try:
+                start = float(
+                    data["offset_seconds"]
+                )
+
+                duration = float(
+                    data["duration_seconds"]
+                )
+
+                end = start + duration
+
+                if (
+                    start >= 0
+                    and duration > 0
+                    and end > start
+                    and str(text).strip()
+                ):
+                    items.append(
+                        (
+                            start,
+                            end,
+                            str(text).strip(),
+                        )
+                    )
+
+            except (
+                ValueError,
+                TypeError,
+            ):
+                pass
+
+        return items
+
+    if isinstance(data, list):
+
+        for item in data:
+
+            if isinstance(item, dict):
+
+                start = (
+                    item.get("start")
+                    if item.get("start") is not None
+                    else item.get("start_time")
+                )
+
+                end = (
+                    item.get("end")
+                    if item.get("end") is not None
+                    else item.get("end_time")
+                )
+
+                text = (
+                    item.get("word")
+                    or item.get("text")
+                    or item.get("content")
+                    or ""
+                )
+
+                if (
+                    start is None
+                    and end is None
+                    and item.get(
+                        "offset_seconds"
+                    ) is not None
+                    and item.get(
+                        "duration_seconds"
+                    ) is not None
+                ):
+                    try:
+                        start = float(
+                            item["offset_seconds"]
+                        )
+
+                        duration = float(
+                            item["duration_seconds"]
+                        )
+
+                        end = start + duration
+
+                    except (
+                        ValueError,
+                        TypeError,
+                    ):
+                        continue
+
+                if (
+                    start is None
+                    or end is None
+                ):
+                    continue
+
+                try:
+                    start = float(start)
+                    end = float(end)
+
+                    cleaned_text = str(
+                        text
+                    ).strip()
+
+                    if (
+                        start >= 0
+                        and end > start
+                        and cleaned_text
+                    ):
+                        items.append(
+                            (
+                                start,
+                                end,
+                                cleaned_text,
+                            )
+                        )
+
+                except (
+                    ValueError,
+                    TypeError,
+                ):
+                    continue
+
+            elif (
+                isinstance(
+                    item,
+                    (list, tuple),
+                )
+                and len(item) >= 3
+            ):
+                try:
+                    start = float(item[0])
+                    end = float(item[1])
+                    text = str(
+                        item[2]
+                    ).strip()
+
+                    if (
+                        start >= 0
+                        and end > start
+                        and text
+                    ):
+                        items.append(
+                            (
+                                start,
+                                end,
+                                text,
+                            )
+                        )
+
+                except (
+                    ValueError,
+                    TypeError,
+                ):
+                    continue
+
+    return items
+
+
+def _read_timing_file(
+    timing_path: str,
+) -> List[Tuple[float, float, str]]:
+
+    if not timing_path or not os.path.exists(
+        timing_path
+    ):
+        print(
+            f"[CAPTIONS] Timing file not found: "
+            f"{timing_path}"
+        )
+        return []
+
+    path = Path(timing_path)
+
+    if path.suffix.lower() == ".json":
+
         try:
-            return set(json.loads(path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
-            return set()
+            with open(
+                path,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                data = json.load(f)
 
-    return set()
+            items = _extract_timing_items(data)
+
+            cleaned = [
+                (s, e, t)
+                for s, e, t in items
+                if t and e > s
+            ]
+
+            if cleaned:
+                print(
+                    f"[CAPTIONS] Read "
+                    f"{len(cleaned)} word timings"
+                )
+                return cleaned
+
+        except (
+            json.JSONDecodeError,
+            OSError,
+        ) as exc:
+            print(
+                f"[CAPTIONS] Could not read JSON "
+                f"timing file: {exc}"
+            )
+
+    words: List[
+        Tuple[float, float, str]
+    ] = []
+
+    try:
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+        ) as f:
+
+            for raw_line in f:
+
+                line = raw_line.strip()
+
+                if not line:
+                    continue
+
+                if line.lower().startswith(
+                    (
+                        "start",
+                        "word",
+                        "time",
+                        "begin",
+                    )
+                ):
+                    continue
+
+                parts = re.split(
+                    r"[|,\t]+",
+                    line,
+                )
+
+                if len(parts) < 3:
+                    parts = line.split()
+
+                if len(parts) < 3:
+                    continue
+
+                try:
+                    start = float(parts[0])
+                    end = float(parts[1])
+                except ValueError:
+                    continue
+
+                text = " ".join(
+                    parts[2:]
+                ).strip()
+
+                if (
+                    text
+                    and end > start
+                ):
+                    words.append(
+                        (
+                            start,
+                            end,
+                            text,
+                        )
+                    )
+
+    except OSError as exc:
+        print(
+            f"[CAPTIONS] Could not read timing "
+            f"file: {exc}"
+        )
+        return []
+
+    print(
+        f"[CAPTIONS] Read "
+        f"{len(words)} word timings"
+    )
+
+    return words
 
 
-def mark_topic_used(channel_id: str, topic: str) -> None:
-    used = get_used_topics(channel_id)
-    used.add(topic)
+def _build_caption_chunks(
+    timing_path: str,
+    words_per_caption: int = 4,
+    max_words: int | None = None,
+) -> List[Tuple[float, float, str]]:
 
-    _used_topics_path(channel_id).write_text(
-        json.dumps(
-            sorted(used),
-            ensure_ascii=False,
-            indent=2,
+    if max_words is not None:
+        words_per_caption = max_words
+
+    words_per_caption = max(
+        2,
+        min(
+            4,
+            int(words_per_caption),
         ),
+    )
+
+    words = _read_timing_file(
+        timing_path
+    )
+
+    if not words:
+        print(
+            "[CAPTIONS] No usable timings."
+        )
+        return []
+
+    chunks: List[
+        Tuple[float, float, str]
+    ] = []
+
+    i = 0
+
+    while i < len(words):
+
+        remaining = len(words) - i
+
+        if remaining <= 2:
+            group_size = remaining
+
+        elif remaining == 3:
+            group_size = 3
+
+        else:
+            group_size = 4
+
+            if i + 3 < len(words):
+                previous_end = words[i + 2][1]
+                next_start = words[i + 3][0]
+
+                if next_start - previous_end > 0.28:
+                    group_size = 3
+
+        group = words[
+            i:i + group_size
+        ]
+
+        start = group[0][0]
+        end = group[-1][1]
+
+        text = " ".join(
+            item[2]
+            for item in group
+        ).strip()
+
+        if (
+            text
+            and end > start
+        ):
+            chunks.append(
+                (
+                    start,
+                    end,
+                    text,
+                )
+            )
+
+        i += group_size
+
+    print(
+        f"[CAPTIONS] Created "
+        f"{len(chunks)} captions "
+        f"using 2–4 words per caption"
+    )
+
+    return chunks
+
+
+def _ass_time(seconds: float) -> str:
+
+    seconds = max(
+        0.0,
+        float(seconds),
+    )
+
+    hours = int(
+        seconds // 3600
+    )
+
+    minutes = int(
+        (seconds % 3600) // 60
+    )
+
+    secs = int(
+        seconds % 60
+    )
+
+    centiseconds = int(
+        round(
+            (
+                seconds
+                - int(seconds)
+            ) * 100
+        )
+    )
+
+    if centiseconds >= 100:
+        centiseconds = 0
+        secs += 1
+
+    if secs >= 60:
+        secs = 0
+        minutes += 1
+
+    if minutes >= 60:
+        minutes = 0
+        hours += 1
+
+    return (
+        f"{hours}:"
+        f"{minutes:02d}:"
+        f"{secs:02d}."
+        f"{centiseconds:02d}"
+    )
+
+
+def _escape_ass_text(
+    text: str,
+) -> str:
+
+    return (
+        str(text)
+        .replace(
+            "\\",
+            r"\\",
+        )
+        .replace(
+            "{",
+            r"\{",
+        )
+        .replace(
+            "}",
+            r"\}",
+        )
+    )
+
+
+def _estimate_text_width(
+    text: str,
+    font_size: int,
+) -> float:
+
+    words = text.split()
+
+    if not words:
+        return 0.0
+
+    total = 0.0
+
+    for word in words:
+
+        for char in word:
+
+            if char in "ilI.,'!|":
+                factor = 0.30
+
+            elif char in "mwMW@#":
+                factor = 0.88
+
+            elif char.isupper():
+                factor = 0.70
+
+            elif char.isdigit():
+                factor = 0.64
+
+            else:
+                factor = 0.59
+
+            total += (
+                font_size * factor
+            )
+
+        total += (
+            font_size * 0.24
+        )
+
+    return total
+
+
+def _caption_font_size(
+    text: str,
+    portrait: bool,
+) -> int:
+
+    if portrait:
+        max_size = PORTRAIT_FONT_SIZE
+        min_size = MIN_PORTRAIT_FONT_SIZE
+        width = PORTRAIT[0]
+
+    else:
+        max_size = LANDSCAPE_FONT_SIZE
+        min_size = MIN_LANDSCAPE_FONT_SIZE
+        width = LANDSCAPE[0]
+
+    max_width = (
+        width
+        - (SIDE_MARGIN * 2)
+        - (OUTLINE_SIZE * 2)
+        - 4
+    )
+
+    size = max_size
+
+    while size > min_size:
+
+        estimated_width = (
+            _estimate_text_width(
+                text,
+                size,
+            )
+        )
+
+        if estimated_width <= max_width:
+            break
+
+        size -= 2
+
+    return max(
+        min_size,
+        size,
+    )
+
+
+def _caption_color(
+    text: str,
+) -> str:
+
+    t = text.lower()
+
+    animal_colors = {
+        "snail": "green",
+        "slug": "green",
+        "caterpillar": "green",
+        "frog": "green",
+        "lizard": "green",
+        "iguana": "green",
+        "parrot": "green",
+
+        "fish": "blue",
+        "shark": "blue",
+        "whale": "blue",
+        "dolphin": "blue",
+        "seal": "blue",
+        "octopus": "purple",
+        "jellyfish": "purple",
+        "squid": "purple",
+
+        "bird": "blue",
+        "penguin": "blue",
+        "eagle": "gold",
+        "hawk": "gold",
+        "falcon": "gold",
+
+        "lion": "gold",
+        "tiger": "orange",
+        "cheetah": "gold",
+        "leopard": "gold",
+        "giraffe": "gold",
+        "zebra": "white",
+
+        "fox": "orange",
+        "wolf": "cyan",
+        "bear": "brown",
+        "panda": "white",
+
+        "butterfly": "pink",
+        "moth": "purple",
+        "bee": "yellow",
+        "wasp": "yellow",
+        "spider": "purple",
+
+        "crab": "red",
+        "lobster": "red",
+        "shrimp": "pink",
+
+        "sea": "blue",
+        "ocean": "blue",
+        "marine": "blue",
+        "underwater": "blue",
+    }
+
+    for word, color_name in animal_colors.items():
+
+        if re.search(
+            rf"\b{re.escape(word)}\b",
+            t,
+        ):
+            return CAPTION_COLORS[color_name]
+
+    return CAPTION_COLORS["white"]
+
+
+def _write_ass(
+    ass_path: str,
+    captions: List[
+        Tuple[float, float, str]
+    ],
+    portrait: bool,
+) -> None:
+
+    if portrait:
+        default_font_size = (
+            PORTRAIT_FONT_SIZE
+        )
+
+        margin_v = (
+            PORTRAIT_MARGIN_V
+        )
+
+        width = 1080
+        height = 1920
+
+    else:
+        default_font_size = (
+            LANDSCAPE_FONT_SIZE
+        )
+
+        margin_v = (
+            LANDSCAPE_MARGIN_V
+        )
+
+        width = 1920
+        height = 1080
+
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, "
+            "PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, "
+            "Underline, StrikeOut, ScaleX, ScaleY, "
+            "Spacing, Angle, BorderStyle, Outline, "
+            "Shadow, Alignment, MarginL, MarginR, "
+            "MarginV, Encoding"
+        ),
+        (
+            f"Style: Bubble,{FONT_NAME},"
+            f"{default_font_size},"
+            f"&H00FFFFFF,&H00FFFFFF,"
+            f"&H00000000,&H00000000,"
+            f"1,0,0,0,100,100,0,0,1,"
+            f"{OUTLINE_SIZE},{SHADOW_SIZE},2,"
+            f"{SIDE_MARGIN},{SIDE_MARGIN},"
+            f"{margin_v},1"
+        ),
+        "",
+        "[Events]",
+        (
+            "Format: Layer, Start, End, Style, Name, "
+            "MarginL, MarginR, MarginV, Effect, Text"
+        ),
+    ]
+
+    for (
+        start,
+        end,
+        text,
+    ) in captions:
+
+        if end <= start:
+            continue
+
+        font_size = _caption_font_size(
+            text,
+            portrait,
+        )
+
+        color = _caption_color(
+            text
+        )
+
+        safe_text = _escape_ass_text(
+            text
+        )
+
+        override = (
+            "{"
+            f"\\c{color}"
+            f"\\fs{font_size}"
+            f"\\bord{OUTLINE_SIZE}"
+            f"\\shad{SHADOW_SIZE}"
+            f"\\fscx105"
+            f"\\fscy105"
+            f"\\an2"
+            f"\\q2"
+            "}"
+        )
+
+        lines.append(
+            f"Dialogue: 0,"
+            f"{_ass_time(start)},"
+            f"{_ass_time(end)},"
+            f"Bubble,,"
+            f"{SIDE_MARGIN},"
+            f"{SIDE_MARGIN},"
+            f"{margin_v},,"
+            f"{override}"
+            f"{safe_text}"
+        )
+
+    Path(ass_path).write_text(
+        "\n".join(lines) + "\n",
         encoding="utf-8",
     )
 
-
-# ---------------------------------------------------------------------------
-# Topic similarity
-# ---------------------------------------------------------------------------
-
-def _normalize_topic(text: str) -> str:
-    text = text.lower()
-
-    text = re.sub(
-        r"[^a-z0-9\s]",
-        " ",
-        text,
+    print(
+        f"[CAPTIONS] ASS created: "
+        f"{len(captions)} captions"
     )
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
 
-    return text.strip()
-
-
-def _topics_are_similar(
-    first: str,
-    second: str,
-) -> bool:
-    """
-    Prevents Winner Hunter from selecting exact duplicates
-    or obvious rewrites of existing topics.
-    """
-
-    first_normalized = _normalize_topic(first)
-    second_normalized = _normalize_topic(second)
-
-    if not first_normalized or not second_normalized:
-        return False
-
-    if first_normalized == second_normalized:
-        return True
-
-    similarity = SequenceMatcher(
-        None,
-        first_normalized,
-        second_normalized,
-    ).ratio()
-
-    if similarity >= 0.82:
-        return True
-
-    first_words = set(first_normalized.split())
-    second_words = set(second_normalized.split())
-
-    if not first_words or not second_words:
-        return False
-
-    overlap = (
-        len(first_words.intersection(second_words))
-        / min(len(first_words), len(second_words))
-    )
-
-    return overlap >= 0.75
-
-
-# ---------------------------------------------------------------------------
-# Gemini Chat generation
-# ---------------------------------------------------------------------------
-
-def _generate_with_token_budget(
-    client,
-    prompt: str,
-    max_output_tokens: int,
-):
-    """
-    Generate text using the google-genai Chat API.
-
-    IMPORTANT:
-    Uses:
-
-        client.chats.create()
-        chat.send_message()
-    """
-
-    try:
-        from google.genai import types
-
-        generation_config = types.GenerateContentConfig(
-            max_output_tokens=max_output_tokens,
-        )
-
-        chat = client.chats.create(
-            model=GEMINI_MODEL,
-            config=generation_config,
-        )
-
-        response = chat.send_message(prompt)
-
-    except Exception as first_error:
-
-        print(
-            "WARNING: Gemini Chat generation with explicit token config "
-            f"failed ({first_error}); retrying without explicit config."
-        )
-
-        chat = client.chats.create(
-            model=GEMINI_MODEL,
-        )
-
-        response = chat.send_message(prompt)
-
-    finish_reason = None
-
-    try:
-        finish_reason = response.candidates[0].finish_reason
-    except Exception:
-        pass
-
-    if (
-        finish_reason
-        and "MAX_TOKENS" in str(finish_reason).upper()
-    ):
-        print(
-            "WARNING: Gemini response was truncated by "
-            f"max_output_tokens={max_output_tokens}. "
-            "The generated script may be shorter than the target."
-        )
-
-    return response
-
-
-# ---------------------------------------------------------------------------
-# Winner Hunter topic generation
-# ---------------------------------------------------------------------------
-
-def _generate_winner_hunter_topic(
-    channel_id: str,
-    config: dict,
-) -> str | None:
-    """
-    Uses the separate winner_hunter.py module to obtain real channel
-    performance patterns and asks Gemini to create a completely new topic.
-
-    Winner Hunter itself performs the Analytics analysis.
-    This function only turns those patterns into a new topic.
-    """
-
-    if not (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-        and build_winner_context
-    ):
-        return None
-
-    try:
-        winner_context = build_winner_context(
-            channel_id
-        )
-
-        if not winner_context:
-            return None
-
-        used_topics = get_used_topics(
-            channel_id
-        )
-
-        topics_file = ROOT / config["topics_seed_file"]
-
-        seed_topics = []
-
-        if topics_file.exists():
-            seed_topics = [
-                line.strip()
-                for line in topics_file.read_text(
-                    encoding="utf-8"
-                ).splitlines()
-                if line.strip()
-            ]
-
-        recent_used = list(used_topics)[-80:]
-
-        existing_text = "\n".join(
-            f"- {topic}"
-            for topic in recent_used
-        )
-
-        if not existing_text:
-            existing_text = "- None"
-
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
-        )
-
-        prompt = f"""
-You are the growth topic strategist for a faceless YouTube channel
-focused on animals and wildlife.
-
-CHANNEL:
-{config['display_name']}
-
-NICHE:
-{config['niche']}
-
-TONE:
-{config['tone']}
-
-REAL WINNER HUNTER PERFORMANCE DATA:
-{winner_context}
-
-The data above comes from this channel's real YouTube Analytics.
-
-Your job is to identify WHY certain content performs well and then
-create completely NEW subjects using those successful patterns.
-
-Do NOT copy existing videos.
-
-Do NOT rewrite an existing title.
-
-Do NOT make a near-duplicate of an existing topic.
-
-Examples:
-
-If extreme animal abilities perform well:
-choose a NEW animal and a NEW ability.
-
-If strange behavior performs well:
-choose a NEW species and a DIFFERENT strange behavior.
-
-If dangerous animals perform well:
-choose a NEW animal and a DIFFERENT danger mechanism.
-
-If survival adaptations perform well:
-choose a NEW species and a DIFFERENT survival adaptation.
-
-ONLY generate topics about:
-
-- real animals
-- wildlife
-- animal behavior
-- animal abilities
-- animal adaptations
-- animal survival
-- animal intelligence
-- predators and prey
-- unusual animal biology
-- surprising animal facts
-
-DO NOT generate:
-
-- space
-- planets
-- technology
-- politics
-- humans as the main subject
-- generic science
-- motivation
-- fictional animals
-- fake discoveries
-
-ALREADY USED TOPICS:
-
-{existing_text}
-
-Generate 12 possible NEW topics.
-
-Every topic must:
-
-- focus on a specific animal or animal group
-- have a strong curiosity angle
-- contain a real biological subject
-- be specific enough for a complete video
-- be meaningfully different from previous topics
-- avoid unsupported clickbait
-
-No numbering.
-No bullets.
-No quotes.
-
-One topic per line.
-"""
-
-        response = _generate_with_token_budget(
-            client,
-            prompt,
-            max_output_tokens=900,
-        )
-
-        candidates = []
-
-        for line in response.text.splitlines():
-
-            candidate = re.sub(
-                r"^[\d\.\-\)\s]+",
-                "",
-                line,
-            ).strip()
-
-            candidate = candidate.strip(
-                "\"'"
-            )
-
-            if candidate:
-                candidates.append(candidate)
-
-        all_existing = (
-            list(used_topics)
-            + seed_topics
-        )
-
-        for candidate in candidates:
-
-            if any(
-                _topics_are_similar(
-                    candidate,
-                    old_topic,
-                )
-                for old_topic in all_existing
-            ):
-                continue
-
-            mark_topic_used(
-                channel_id,
-                candidate,
-            )
-
-            print(
-                "Winner Hunter selected NEW topic: "
-                f"{candidate}"
-            )
-
-            return candidate
-
-        print(
-            "Winner Hunter generated candidates, "
-            "but all candidates were duplicates or too similar."
-        )
-
-        return None
-
-    except Exception as e:
-
-        print(
-            "WARNING: Winner Hunter topic generation failed "
-            f"({e}); continuing with normal topic selection."
-        )
-
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Long-form -> Short recap state
-# ---------------------------------------------------------------------------
-
-def _todays_longform_path(channel_id: str) -> Path:
-    return STATE_DIR / f"{channel_id}_todays_longform.json"
-
-
-def save_todays_longform_topic(
-    channel_id: str,
-    topic: str,
+def _write_ass_subtitles(
+    captions: List[
+        Tuple[float, float, str]
+    ],
+    ass_path: str | Path,
+    width: int,
+    height: int,
+    font_size: int,
+    portrait: bool,
 ) -> None:
 
-    today = datetime.now(
-        timezone.utc
-    ).strftime("%Y-%m-%d")
+    if portrait:
+        margin_v = PORTRAIT_MARGIN_V
+    else:
+        margin_v = LANDSCAPE_MARGIN_V
 
-    STATE_DIR.mkdir(
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, "
+            "PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, "
+            "Underline, StrikeOut, ScaleX, ScaleY, "
+            "Spacing, Angle, BorderStyle, Outline, "
+            "Shadow, Alignment, MarginL, MarginR, "
+            "MarginV, Encoding"
+        ),
+        (
+            f"Style: Bubble,{FONT_NAME},"
+            f"{font_size},"
+            f"&H00FFFFFF,&H00FFFFFF,"
+            f"&H00000000,&H00000000,"
+            f"1,0,0,0,100,100,0,0,1,"
+            f"{OUTLINE_SIZE},{SHADOW_SIZE},2,"
+            f"{SIDE_MARGIN},{SIDE_MARGIN},"
+            f"{margin_v},1"
+        ),
+        "",
+        "[Events]",
+        (
+            "Format: Layer, Start, End, Style, Name, "
+            "MarginL, MarginR, MarginV, Effect, Text"
+        ),
+    ]
+
+    for start, end, text in captions:
+
+        if end <= start:
+            continue
+
+        color = _caption_color(text)
+        safe_text = _escape_ass_text(text)
+
+        override = (
+            "{"
+            f"\\c{color}"
+            f"\\fs{font_size}"
+            f"\\bord{OUTLINE_SIZE}"
+            f"\\shad{SHADOW_SIZE}"
+            f"\\fscx105"
+            f"\\fscy105"
+            f"\\an2"
+            f"\\q2"
+            "}"
+        )
+
+        lines.append(
+            f"Dialogue: 0,"
+            f"{_ass_time(start)},"
+            f"{_ass_time(end)},"
+            f"Bubble,,"
+            f"{SIDE_MARGIN},"
+            f"{SIDE_MARGIN},"
+            f"{margin_v},,"
+            f"{override}"
+            f"{safe_text}"
+        )
+
+    Path(ass_path).write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+    print(
+        f"[CAPTIONS] Kids ASS created: "
+        f"{len(captions)} captions"
+    )
+
+
+def _normalize_clip(
+    input_path: str,
+    output_path: str,
+    portrait: bool,
+    duration: float | None = None,
+) -> None:
+
+    if portrait:
+
+        scale_filter = (
+            "scale=1080:1920:"
+            "force_original_aspect_ratio=increase,"
+            "crop=1080:1920"
+        )
+
+    else:
+
+        scale_filter = (
+            "scale=1920:1080:"
+            "force_original_aspect_ratio=increase,"
+            "crop=1920:1080"
+        )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        input_path,
+    ]
+
+    if duration is not None:
+
+        cmd.extend([
+            "-t",
+            f"{duration:.3f}",
+        ])
+
+    cmd.extend([
+        "-vf",
+        scale_filter,
+        "-r",
+        "30",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "22",
+        "-pix_fmt",
+        "yuv420p",
+        output_path,
+    ])
+
+    _run(cmd)
+
+
+def _concat_clips(
+    clip_paths: List[str],
+    output_path: str,
+) -> None:
+
+    concat_file = Path(
+        output_path
+    ).with_suffix(
+        ".concat.txt"
+    )
+
+    with open(
+        concat_file,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        for path in clip_paths:
+
+            escaped = (
+                str(
+                    Path(path).resolve()
+                )
+                .replace(
+                    "'",
+                    "'\\''",
+                )
+            )
+
+            f.write(
+                f"file '{escaped}'\n"
+            )
+
+    _run([
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-c",
+        "copy",
+        output_path,
+    ])
+
+    try:
+        concat_file.unlink()
+    except OSError:
+        pass
+
+
+def assemble_video(
+    clip_paths: List[str],
+    audio_path: str,
+    timing_path: str,
+    output_path: str,
+    portrait: bool = True,
+) -> str:
+
+    if not clip_paths:
+        raise ValueError(
+            "No video clips were provided."
+        )
+
+    if not os.path.exists(
+        audio_path
+    ):
+        raise FileNotFoundError(
+            f"Audio file not found: "
+            f"{audio_path}"
+        )
+
+    output = Path(
+        output_path
+    )
+
+    output.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    _todays_longform_path(
-        channel_id
-    ).write_text(
-        json.dumps(
-            {
-                "date": today,
-                "topic": topic,
-                "used_for_short": False,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    work_dir = (
+        output.parent
+        / "normalized_clips"
     )
 
-
-def get_recap_topic_for_short(
-    channel_id: str,
-) -> str | None:
-
-    path = _todays_longform_path(
-        channel_id
+    work_dir.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    if not path.exists():
-        return None
-
-    try:
-        data = json.loads(
-            path.read_text(
-                encoding="utf-8"
-            )
+    audio_duration = (
+        _get_audio_duration(
+            audio_path
         )
-    except (
-        json.JSONDecodeError,
-        OSError,
-    ):
-        return None
-
-    today = datetime.now(
-        timezone.utc
-    ).strftime("%Y-%m-%d")
-
-    if data.get("date") != today:
-        return None
-
-    if data.get("used_for_short"):
-        return None
-
-    topic = data.get("topic")
-
-    if not topic:
-        return None
-
-    data["used_for_short"] = True
-
-    path.write_text(
-        json.dumps(
-            data,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
     )
 
-    return topic
+    print(
+        f"[VIDEO] Audio duration: "
+        f"{audio_duration:.2f}s"
+    )
 
+    clip_count = len(
+        clip_paths
+    )
 
-# ---------------------------------------------------------------------------
-# Normal topic generation
-# ---------------------------------------------------------------------------
-
-def _generate_more_topics(
-    config: dict,
-    existing: list,
-    count: int = 20,
-) -> list:
-
-    if not (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-        return []
-
-    try:
-
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
+    if portrait and clip_count > 1:
+        segment_duration = (
+            audio_duration
+            / clip_count
         )
 
-        existing_sample = "\n".join(
-            f"- {topic}"
-            for topic in existing[-40:]
-        )
+    else:
+        segment_duration = None
 
-        prompt = f"""
-You generate topic ideas for a faceless YouTube channel focused on
-animals and wildlife facts.
+    print(
+        f"[VIDEO] Source clips: "
+        f"{clip_count}"
+    )
 
-Channel:
-{config['display_name']}
-
-Niche:
-{config['niche']}
-
-Tone:
-{config['tone']}
-
-Here are topics already covered.
-Do NOT repeat these or close variations:
-
-{existing_sample}
-
-Generate {count} brand new topic ideas for this channel focusing on
-animals, wildlife, animal behavior, biology, and ecology.
-
-Each topic must:
-- Be a single line.
-- Be specific enough to script a video from.
-- Be genuinely different from the existing topics.
-- Be interesting to viewers.
-
-No numbering.
-No markdown.
-No quotes.
-
-Just one topic per line.
-"""
-
-        response = _generate_with_token_budget(
-            client,
-            prompt,
-            max_output_tokens=800,
-        )
-
-        lines = [
-            re.sub(
-                r"^[\d\.\-\)\s]+",
-                "",
-                line,
-            ).strip()
-            for line in response.text.splitlines()
-        ]
-
-        return [
-            line
-            for line in lines
-            if line
-            and line not in existing
-        ]
-
-    except Exception as e:
-
+    if segment_duration:
         print(
-            "WARNING: topic auto-generation failed "
-            f"({e}); will loop existing topics instead."
+            f"[VIDEO] Target visual duration: "
+            f"{segment_duration:.2f}s"
         )
 
-        return []
+    normalized_paths: List[
+        str
+    ] = []
 
-
-def pick_next_topic(
-    channel_id: str,
-    config: dict,
-) -> str:
-
-    topics_file = ROOT / config["topics_seed_file"]
-
-    all_topics = [
-        line.strip()
-        for line in topics_file.read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if line.strip()
-    ]
-
-    used = get_used_topics(
-        channel_id
+    print(
+        f"[VIDEO] Normalizing "
+        f"{clip_count} clips..."
     )
 
-    unused = [
-        topic
-        for topic in all_topics
-        if topic not in used
-    ]
-
-    if not unused:
-
-        new_topics = _generate_more_topics(
-            config,
-            all_topics,
-        )
-
-        if new_topics:
-
-            with topics_file.open(
-                "a",
-                encoding="utf-8",
-            ) as f:
-                f.write(
-                    "\n"
-                    + "\n".join(new_topics)
-                    + "\n"
-                )
-
-            print(
-                f"Added {len(new_topics)} new topics "
-                f"to {topics_file.name}"
-            )
-
-            unused = new_topics
-
-        else:
-            unused = all_topics
-
-    if not unused:
-        raise RuntimeError(
-            f"No topics available for channel '{channel_id}'."
-        )
-
-    topic = random.choice(
-        unused
-    )
-
-    mark_topic_used(
-        channel_id,
-        topic,
-    )
-
-    return topic
-
-
-# ---------------------------------------------------------------------------
-# Language / voice
-# ---------------------------------------------------------------------------
-
-def pick_language(
-    config: dict,
-) -> str:
-
-    languages = (
-        config.get("languages")
-        or ["en"]
-    )
-
-    return random.choice(
-        languages
-    )
-
-
-def _voice_for_language(
-    config: dict,
-    language: str,
-) -> str:
-
-    voices = (
-        config.get("voices")
-        or {}
-    )
-
-    voice = (
-        voices.get(language)
-        or config.get("voice")
-    )
-
-    if not voice:
-        raise ValueError(
-            f"No TTS voice configured for language "
-            f"'{language}' in this channel's yaml."
-        )
-
-    return voice
-
-
-# ---------------------------------------------------------------------------
-# Script cleaning
-# ---------------------------------------------------------------------------
-
-def _clean_script_text(
-    text: str,
-) -> str:
-
-    text = re.sub(
-        r"\*+",
-        "",
-        text,
-    )
-
-    text = re.sub(
-        r"\[.*?\]",
-        "",
-        text,
-    )
-
-    text = re.sub(
-        r"\(.*?\)",
-        "",
-        text,
-    )
-
-    text = re.sub(
-        r"\n{3,}",
-        "\n\n",
-        text,
-    )
-
-    return text.strip()
-
-
-# ---------------------------------------------------------------------------
-# Title/script parser
-# ---------------------------------------------------------------------------
-
-def _parse_titled_response(
-    text: str,
-    fallback_topic: str,
-) -> dict:
-
-    title_match = re.search(
-        r"TITLE:\s*(.+)",
-        text,
-    )
-
-    script_match = re.search(
-        r"SCRIPT:\s*(.*)",
-        text,
-        re.DOTALL,
-    )
-
-    title = (
-        title_match.group(1).strip()
-        if title_match
-        else fallback_topic
-    )
-
-    script_raw = (
-        script_match.group(1).strip()
-        if script_match
-        else text
-    )
-
-    return {
-        "title": title,
-        "script": _clean_script_text(
-            script_raw
-        ),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Animals & Wildlife Facts Gemini generation
-# ---------------------------------------------------------------------------
-
-def generate_with_gemini(
-    topic: str,
-    config: dict,
-    length_seconds: int,
-    language: str,
-) -> dict:
-
-    client = genai_client.Client(
-        api_key=os.environ["GEMINI_API_KEY"]
-    )
-
-    if length_seconds <= 45:
-        words_target = 115
-    elif length_seconds <= 55:
-        words_target = 135
-    else:
-        words_target = round(
-            length_seconds / 60 * 140
-        )
-
-    language_name = LANGUAGE_NAMES.get(
-        language,
-        language,
-    )
-
-    prompt = f"""
-You are the lead wildlife and biology writer for a premium faceless
-YouTube channel called "{config['display_name']}".
-
-CHANNEL NICHE:
-{config['niche']}
-
-CHANNEL TONE:
-{config['tone']}
-
-TOPIC:
-{topic}
-
-Write a highly engaging wildlife, animal behavior, and biology voiceover.
-
-The viewer should feel:
-
-"I had no idea animals could do that."
-
-IMPORTANT:
-
-This is NOT a generic motivational video.
-This is NOT a list of random facts.
-This is NOT an introduction to basic biology.
-
-The entire script must be specifically about the supplied topic.
-
-FACTUAL STANDARD:
-
-- Use established biological and ecological knowledge whenever possible.
-- Do not invent statistics, discoveries, quotes, experiments, or findings.
-- Do not present speculation as fact.
-- If the topic involves a hypothesis or unusual animal behavior, clearly signal
-  that researchers have observed it or that it is studied by biologists.
-- Prefer concrete biological explanations over vague descriptions.
-- If a precise number is uncertain or unnecessary, don't invent one.
-- Avoid sensational claims that contradict established science.
-- Do not use physically impossible explanations just to make the story
-  sound dramatic.
-
-RETENTION STRUCTURE:
-
-1. HOOK
-
-Start with the most surprising consequence, question, or image about the animal.
-
-Do NOT simply repeat the topic.
-
-2. SETUP
-
-Give just enough context for the viewer to understand the animal and its environment.
-
-3. ESCALATION
-
-Explain the biological process or behavior step by step.
-
-Each sentence should make the situation more interesting.
-
-4. PAYOFF
-
-Reveal the strangest, most surprising, or least-known consequence of this animal trait.
-
-5. FINAL LINE
-
-End on a memorable biological thought connected directly to the topic.
-
-Do NOT say:
-subscribe
-like
-follow
-in conclusion
-
-WRITING RULES:
-
-- Conversational spoken language.
-- Short sentences mixed with occasional longer sentences.
-- No academic-paper language.
-- No unnecessary definitions.
-- No filler.
-- No motivational life lessons.
-- No generic phrases such as:
-  "Here's something most people don't know"
-  "It sounds simple"
-  "This reveals a lot about nature"
-  "Once you understand"
-  "you'll start noticing"
-  "changes how you see the world"
-  "in the wild"
-  "nature is full of mysteries"
-- Do not begin by repeating the topic.
-- Do not use rhetorical filler every few sentences.
-- Every sentence must either create curiosity, explain something,
-  or deliver a payoff.
-- Do not use emojis.
-- Do not use stage directions.
-- Do not use visual notes.
-- Do not use markdown.
-- Do not mention that you are an AI.
-- The narration must sound natural when read by text-to-speech.
-
-VISUAL THINKING:
-
-Write sentences that naturally correspond to visual moments.
-
-For example, if explaining an animal hunting or defense mechanism, the narration might naturally
-move through:
-
-habitat -> stealth -> ambush -> pursuit -> escape.
-
-Do not literally write those visual labels into the script.
-
-LANGUAGE:
-
-Write entirely in {language_name}.
-
-If the requested language is Hindi, use natural modern Hindi in Devanagari,
-not Romanized Hindi.
-
-LENGTH:
-
-Approximately {words_target} words.
-
-Do not pad the script merely to reach the word count.
-
-A slightly shorter excellent script is better than a longer repetitive one.
-
-OUTPUT FORMAT:
-
-Respond in EXACTLY this format and nothing else:
-
-TITLE: <punchy YouTube title under 90 characters>
-
-SCRIPT:
-<spoken narration only>
-"""
-
-    max_tokens = _max_output_tokens_for(
-        words_target
-    )
-
-    response = _generate_with_token_budget(
-        client,
-        prompt,
-        max_tokens,
-    )
-
-    result = _parse_titled_response(
-        response.text,
-        fallback_topic=topic,
-    )
-
-    result["title"] = (
-        result["title"]
-        .strip()
-        .strip('"')
-        .strip("'")
-    )
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Emergency template fallback
-# ---------------------------------------------------------------------------
-
-def generate_with_template(
-    topic: str,
-    config: dict,
-    language: str,
-) -> dict:
-
-    if language == "hi":
-
-        script = (
-            f"क्या आपने कभी सोचा है कि {topic} के पीछे असल में क्या होता है? "
-            f"यह सवाल जितना आसान लगता है, इसकी असली कहानी उतनी ही दिलचस्प है। "
-            f"वैज्ञानिक और जीव-विज्ञान विशेषज्ञ इस व्यवहार को समझने के लिए "
-            f"प्राकृतिक अनुकूलन का अध्ययन करते हैं। और सबसे दिलचस्प बात यह है "
-            f"कि इसका जवाब हमारी सोच से कहीं ज्यादा जटिल है।"
-        )
-
-        title = f"{topic}"
-
-    else:
-
-        script = (
-            f"{topic}. "
-            f"The surprising part is what happens next. "
-            f"Biologists can explain this using the remarkable adaptations behind "
-            f"{config['niche'].lower()}. "
-            f"And once you understand the real reason, "
-            f"the natural world suddenly looks a little stranger."
-        )
-
-        title = (
-            topic[0].upper() + topic[1:]
-            if topic
-            else topic
-        )
-
-    return {
-        "title": title,
-        "script": script,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def generate_script(
-    channel_id: str,
-    is_short: bool = False,
-    forced_topic: str = None,
-) -> dict:
-
-    config = load_channel_config(
-        channel_id
-    )
-
-    topic = None
-    topic_already_marked_used = False
-
-    # -------------------------------------------------------
-    # 1. Forced topic
-    # -------------------------------------------------------
-
-    if forced_topic:
-
-        topic = forced_topic
-
-    else:
-
-        # ---------------------------------------------------
-        # 2. Winner Hunter
-        # ---------------------------------------------------
-
-        winner_topic = _generate_winner_hunter_topic(
-            channel_id,
-            config,
-        )
-
-        if winner_topic:
-
-            topic = winner_topic
-            topic_already_marked_used = True
-
-        # ---------------------------------------------------
-        # 3. Daily Brain
-        # ---------------------------------------------------
-
-        if not topic:
-
-            try:
-
-                topic = get_daily_brain_topic(
-                    channel_id,
-                    config,
-                    is_short,
-                )
-
-            except Exception as e:
-
-                print(
-                    "WARNING: Daily Brain topic selection failed "
-                    f"({e}); continuing."
-                )
-
-                topic = None
-
-        # ---------------------------------------------------
-        # 4. Trend Scout
-        # ---------------------------------------------------
-
-        if not topic:
-
-            try:
-
-                topic = get_trending_topic(
-                    channel_id,
-                    config,
-                )
-
-            except Exception as e:
-
-                print(
-                    "WARNING: Trend Scout topic selection failed "
-                    f"({e}); continuing."
-                )
-
-                topic = None
-
-        # ---------------------------------------------------
-        # 5. Static topic pool
-        # ---------------------------------------------------
-
-        if not topic:
-
-            topic = pick_next_topic(
-                channel_id,
-                config,
-            )
-
-            topic_already_marked_used = True
-
-        # Daily Brain / Trend Scout topics are marked here.
-        if (
-            topic
-            and not topic_already_marked_used
+    for index, clip in enumerate(
+        clip_paths
+    ):
+
+        if not os.path.exists(
+            clip
         ):
 
-            mark_topic_used(
-                channel_id,
-                topic,
+            print(
+                f"[VIDEO] Skipping missing clip: "
+                f"{clip}"
             )
 
-    if not topic:
+            continue
 
+        normalized = (
+            work_dir
+            / f"clip_{index:03d}.mp4"
+        )
+
+        _normalize_clip(
+            clip,
+            str(normalized),
+            portrait,
+            duration=segment_duration,
+        )
+
+        normalized_paths.append(
+            str(normalized)
+        )
+
+    if not normalized_paths:
         raise RuntimeError(
-            f"Could not select a topic for channel "
-            f"'{channel_id}'."
+            "No valid clips could be normalized."
         )
 
-    language = pick_language(
-        config
+    base_video = (
+        work_dir
+        / "base_video.mp4"
     )
 
-    length = (
-        config["short_length_seconds"]
-        if is_short
-        else config["video_length_seconds"]
+    print(
+        f"[VIDEO] Concatenating "
+        f"{len(normalized_paths)} "
+        f"visual segments..."
     )
 
-    # -------------------------------------------------------
-    # Script generation
-    # -------------------------------------------------------
+    _concat_clips(
+        normalized_paths,
+        str(base_video),
+    )
 
-    if (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-
-        try:
-
-            generated = generate_with_gemini(
-                topic,
-                config,
-                length,
-                language,
-            )
-
-        except Exception as e:
-
-            print(
-                f"WARNING: Gemini call failed ({e}); "
-                "using template fallback."
-            )
-
-            generated = generate_with_template(
-                topic,
-                config,
-                language,
-            )
-
-    else:
-
-        generated = generate_with_template(
-            topic,
-            config,
-            language,
+    captions = (
+        _build_caption_chunks(
+            timing_path,
+            words_per_caption=4,
         )
-
-    return {
-        "channel_id": channel_id,
-        "topic": topic,
-        "title": generated["title"],
-        "script": generated["script"],
-        "language": language,
-        "voice": _voice_for_language(
-            config,
-            language,
-        ),
-        "is_short": is_short,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Kids content
-# ---------------------------------------------------------------------------
-
-KIDS_CONTENT_TYPES = [
-    "rhyme",
-    "story",
-    "learning",
-]
-
-
-def pick_content_type(
-    config: dict,
-) -> str:
-
-    return random.choice(
-        config.get("content_types")
-        or KIDS_CONTENT_TYPES
     )
 
-
-def _kids_seed_path(
-    config: dict,
-    content_type: str,
-) -> Path:
-
-    return (
-        ROOT
-        / config["topics_seed_files"][content_type]
+    ass_path = (
+        work_dir
+        / "captions.ass"
     )
 
-
-def _kids_dedupe_key(
-    channel_id: str,
-    content_type: str,
-) -> str:
-
-    return (
-        f"{channel_id}__{content_type}"
+    _write_ass(
+        str(ass_path),
+        captions,
+        portrait,
     )
 
+    ass_filter_path = str(
+        ass_path.resolve()
+    )
 
-# ---------------------------------------------------------------------------
-# Kids topic generation
-# ---------------------------------------------------------------------------
-
-def _generate_more_kids_topics(
-    config: dict,
-    content_type: str,
-    existing: list,
-    count: int = 20,
-) -> list:
-
-    if not (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-        return []
-
-    try:
-
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
+    ass_filter_path = (
+        ass_filter_path
+        .replace(
+            "\\",
+            "/",
         )
-
-        existing_sample = "\n".join(
-            f"- {topic}"
-            for topic in existing[-40:]
-        )
-
-        kind_description = {
-            "rhyme": (
-                "short original Hindi rhyme/poem themes "
-                "for young children ages 2-6"
-            ),
-            "story": (
-                "short moral story premises for young "
-                "children, gentle and positive"
-            ),
-            "learning": (
-                "simple learning topics for young children "
-                "such as letters, numbers, colors, shapes, "
-                "and categories"
-            ),
-        }[content_type]
-
-        prompt = f"""
-You generate video theme ideas for a children's YouTube channel.
-
-Channel:
-{config['display_name']}
-
-This batch is for:
-{kind_description}
-
-Already-used themes:
-
-{existing_sample}
-
-Do NOT repeat these or close variations.
-
-Generate {count} brand new theme ideas.
-
-Each theme must:
-- Be one short line.
-- Be specific enough to build one video from.
-- Be clearly different from the existing themes.
-
-No numbering.
-No markdown.
-No quotes.
-
-Just one theme per line.
-"""
-
-        response = _generate_with_token_budget(
-            client,
-            prompt,
-            max_output_tokens=800,
-        )
-
-        lines = [
-            re.sub(
-                r"^[\d\.\-\)\s]+",
-                "",
-                line,
-            ).strip()
-            for line in response.text.splitlines()
-        ]
-
-        return [
-            line
-            for line in lines
-            if line
-            and line not in existing
-        ]
-
-    except Exception as e:
-
-        print(
-            "WARNING: kids topic auto-generation failed "
-            f"({e}); will loop existing topics instead."
-        )
-
-        return []
-
-
-def pick_next_kids_topic(
-    channel_id: str,
-    config: dict,
-    content_type: str,
-) -> str:
-
-    topics_file = _kids_seed_path(
-        config,
-        content_type,
     )
 
-    dedupe_key = _kids_dedupe_key(
-        channel_id,
-        content_type,
+    ass_filter_path = (
+        ass_filter_path
+        .replace(
+            ":",
+            r"\:",
+        )
     )
 
-    all_topics = [
-        line.strip()
-        for line in topics_file.read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if line.strip()
+    final_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(base_video),
+        "-i",
+        audio_path,
+        "-vf",
+        f"ass='{ass_filter_path}'",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output),
     ]
 
-    used = get_used_topics(
-        dedupe_key
+    print(
+        "[VIDEO] Rendering final video..."
     )
 
-    unused = [
-        topic
-        for topic in all_topics
-        if topic not in used
-    ]
+    _run(
+        final_cmd
+    )
 
-    if not unused:
-
-        new_topics = _generate_more_kids_topics(
-            config,
-            content_type,
-            all_topics,
-        )
-
-        if new_topics:
-
-            with topics_file.open(
-                "a",
-                encoding="utf-8",
-            ) as f:
-                f.write(
-                    "\n"
-                    + "\n".join(new_topics)
-                    + "\n"
-                )
-
-            print(
-                f"Added {len(new_topics)} new "
-                f"{content_type} themes to "
-                f"{topics_file.name}"
-            )
-
-            unused = new_topics
-
-        else:
-
-            unused = all_topics
-
-    if not unused:
-
+    if not output.exists():
         raise RuntimeError(
-            f"No topics available for kids "
-            f"content type '{content_type}'."
+            "FFmpeg finished but output "
+            "file was not created: "
+            f"{output}"
         )
 
-    topic = random.choice(
-        unused
+    print(
+        f"Video assembled successfully: "
+        f"{output}"
     )
 
-    mark_topic_used(
-        dedupe_key,
-        topic,
-    )
+    return str(output)
 
-    return topic
-
-
-# ---------------------------------------------------------------------------
-# Kids Gemini generation
-# ---------------------------------------------------------------------------
-
-def generate_kids_script_with_gemini(
-    topic: str,
-    config: dict,
-    content_type: str,
-    mascot_name: str,
-    length_seconds: int,
-    language: str,
-) -> dict:
-
-    client = genai_client.Client(
-        api_key=os.environ["GEMINI_API_KEY"]
-    )
-
-    words_target = int(
-        length_seconds * 2.2
-    )
-
-    language_name = LANGUAGE_NAMES.get(
-        language,
-        language,
-    )
-
-    if content_type == "rhyme":
-
-        content_instructions = f"""
-Write an ORIGINAL Hindi rhyme/poem for young children ages 2-6,
-themed around:
-
-{topic}
-
-CRITICAL:
-
-This must be a completely original composition.
-
-Do NOT reproduce, translate, or closely imitate any existing,
-traditional, or copyrighted nursery rhyme, song, or poem.
-
-Write it purely in Hindi using Devanagari script.
-
-Use simple everyday words a toddler already knows.
-
-Keep a clear, consistent rhythm and rhyme scheme.
-
-Include a short repeated refrain or chorus.
-
-Include at least one simple action kids can copy, such as:
-clap, jump, sway.
-
-The character {mascot_name} should be the one singing or leading it,
-mentioned warmly by name at least once.
-
-Keep the mood joyful and gentle.
-"""
-
-    elif content_type == "story":
-
-        content_instructions = f"""
-Write an ORIGINAL short moral story for young children ages 3-7,
-themed around:
-
-{topic}
-
-The story should feature {mascot_name}.
-
-Teach one simple positive lesson such as:
-sharing, kindness, honesty, or trying again.
-
-Show the lesson through what happens rather than lecturing.
-
-Only state the lesson gently at the very end.
-
-Language style:
-
-Natural Hinglish code-mixing commonly heard in Indian children's
-content.
-
-Mostly simple Hindi with a handful of everyday English words
-mixed naturally.
-
-Keep sentences short and simple.
-
-Nothing scary, violent, or sad.
-
-Any conflict should be gentle and resolved warmly.
-"""
-
-    else:
-
-        content_instructions = f"""
-Write an ORIGINAL short learning segment for young children ages 2-6,
-teaching:
-
-{topic}
-
-{mascot_name} should teach directly to the viewer.
-
-Use a warm and encouraging tone.
-
-Language style:
-
-Natural bilingual teaching commonly used in Indian children's
-educational content.
-
-Introduce concepts in Hindi and reinforce them with simple English
-equivalents.
-
-Use call-and-response phrasing such as:
-
-"bolo mere saath..."
-
-Keep it repetitive and simple.
-"""
-
-    prompt = f"""
-You are writing a script for a children's YouTube video.
-
-Channel:
-{config['display_name']}
-
-Content type:
-{content_type}
-
-Language:
-{language_name}
-
-{content_instructions}
-
-Respond in EXACTLY this format and nothing else:
-
-TITLE: <a warm, simple title in {language_name}, under 90 characters>
-
-SCRIPT:
-<spoken narration only>
-
-No markdown.
-No stage directions.
-No visual cues.
-No commentary.
-
-Target script length:
-approximately {words_target} words.
-
-End on a warm, gentle closing line.
-Do not end abruptly.
-"""
-
-    max_tokens = _max_output_tokens_for(
-        words_target
-    )
-
-    response = _generate_with_token_budget(
-        client,
-        prompt,
-        max_tokens,
-    )
-
-    return _parse_titled_response(
-        response.text,
-        fallback_topic=topic,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Kids template fallback
-# ---------------------------------------------------------------------------
-
-def generate_kids_template(
-    topic: str,
-    config: dict,
-    content_type: str,
-    mascot_name: str,
-    language: str,
-) -> dict:
-
-    if content_type == "rhyme":
-
-        script = (
-            f"चलो सब मिलकर गाएं, {mascot_name} के साथ। "
-            f"आज की कहानी है {topic} के बारे में। "
-            f"ताली बजाओ, संग गाओ, मज़ा करो, हाँ! "
-            f"यही तो है हमारी प्यारी सी धुन, "
-            f"फिर मिलेंगे, बाय बाय!"
-        )
-
-        title = (
-            f"{mascot_name} की मस्ती भरी कविता"
-        )
-
-    elif content_type == "story":
-
-        script = (
-            f"एक बार की बात है, {mascot_name} नाम का "
-            f"एक प्यारा दोस्त था। "
-            f"एक दिन उसे पता चला {topic} के बारे में "
-            f"एक important lesson। "
-            f"उसने सीखा कि हमेशा kind और honest रहना चाहिए। "
-            f"अंत में सब दोस्त बहुत खुश हुए। "
-            f"The end!"
-        )
-
-        title = (
-            f"{mascot_name} की एक प्यारी कहानी"
-        )
-
-    else:
-
-        script = (
-            f"नमस्ते दोस्तों! मैं हूँ {mascot_name}। "
-            f"आज हम सीखेंगे {topic}। "
-            f"बोलो मेरे साथ! "
-            f"बहुत बढ़िया! "
-            f"अब आप भी जान गए। "
-            f"Great job, दोस्तों! "
-            f"फिर मिलेंगे अगली सीख के साथ!"
-        )
-
-        title = (
-            f"{mascot_name} के साथ सीखो: {topic}"
-        )
-
-    return {
-        "title": title,
-        "script": script,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Public kids API
-# ---------------------------------------------------------------------------
-
-def generate_kids_script(
-    channel_id: str,
-    is_short: bool = False,
-) -> dict:
-
-    config = load_channel_config(
-        channel_id
-    )
-
-    content_type = pick_content_type(
-        config
-    )
-
-    topic = pick_next_kids_topic(
-        channel_id,
-        config,
-        content_type,
-    )
-
-    mascot = config["mascot_map"][
-        content_type
-    ]
-
-    mascot_name = config["mascot_names"][
-        mascot
-    ]
-
-    if (
-        content_type == "rhyme"
-        and config.get(
-            "rhymes_hindi_only",
-            True,
-        )
-    ):
-
-        language = "hi"
-
-    else:
-
-        language = pick_language(
-            config
-        )
-
-    length = (
-        config["short_length_seconds"]
-        if is_short
-        else config["video_length_seconds"]
-    )
-
-    if (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-
-        try:
-
-            generated = generate_kids_script_with_gemini(
-                topic,
-                config,
-                content_type,
-                mascot_name,
-                length,
-                language,
-            )
-
-        except Exception as e:
-
-            print(
-                f"WARNING: Gemini call failed ({e}); "
-                "using template fallback."
-            )
-
-            generated = generate_kids_template(
-                topic,
-                config,
-                content_type,
-                mascot_name,
-                language,
-            )
-
-    else:
-
-        generated = generate_kids_template(
-            topic,
-            config,
-            content_type,
-            mascot_name,
-            language,
-        )
-
-    return {
-        "channel_id": channel_id,
-        "topic": topic,
-        "title": generated["title"],
-        "script": generated["script"],
-        "language": language,
-        "voice": _voice_for_language(
-            config,
-            language,
-        ),
-        "is_short": is_short,
-        "content_type": content_type,
-        "mascot": mascot,
-        "mascot_name": mascot_name,
-    }
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
 
@@ -1848,37 +1316,40 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "channel_id"
+        "output_path",
+        help="Output video path",
     )
 
     parser.add_argument(
-        "--short",
+        "--audio",
+        required=True,
+        help="Audio file",
+    )
+
+    parser.add_argument(
+        "--timing",
+        required=True,
+        help="Timing JSON/text file",
+    )
+
+    parser.add_argument(
+        "--portrait",
         action="store_true",
     )
 
     parser.add_argument(
-        "--out",
-        default=None,
-        help="Path to write JSON output",
+        "--clips",
+        nargs="+",
+        required=True,
+        help="Video clips",
     )
 
     args = parser.parse_args()
 
-    result = generate_script(
-        args.channel_id,
-        is_short=args.short,
+    assemble_video(
+        args.clips,
+        args.audio,
+        args.timing,
+        args.output_path,
+        portrait=args.portrait,
     )
-
-    output = json.dumps(
-        result,
-        indent=2,
-        ensure_ascii=False,
-    )
-
-    if args.out:
-        Path(args.out).write_text(
-            output,
-            encoding="utf-8",
-        )
-
-    print(output)
