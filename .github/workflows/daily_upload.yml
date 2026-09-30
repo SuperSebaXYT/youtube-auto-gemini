@@ -2,12 +2,8 @@ name: Daily Upload Pipeline
 
 on:
   schedule:
-    # Fires every hour. src/scheduler.py checks each channel's config and
-    # only runs uploads that are actually due at the current UTC hour —
-    # so the real output stays at exactly 1 long-form + 5 shorts per
-    # channel per day, spread across the day, no matter how often this
-    # cron ticks.
-    - cron: "37 * * * *"
+    - cron: "0 * * * *"
+
   workflow_dispatch:
     inputs:
       channel:
@@ -26,6 +22,7 @@ jobs:
   run_pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@v4
 
@@ -37,68 +34,50 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-freefont-ttf
-          # fonts-freefont-ttf provides FreeSans, which has verified correct
-          # Devanagari shaping via libass/HarfBuzz (used for Hindi captions
-          # and thumbnails). Without this installed, Hindi text can render
-          # with missing vowel signs and no word spacing.
-          #
-          # Jungle Ke Dost mascot art (generate_mascot_assets.py) is
-          # generated once via the Gemini image API and cached under
-          # assets/mascots/ -- that folder must be committed to git (run
-          # a local --dry-run once, then `git add assets/ && git commit`)
-          # so CI reuses the cached PNGs instead of re-generating them
-          # (and burning image-gen quota) on every single run.
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore pipeline state (avoids repeating topics)
+      - name: Restore pipeline state
         uses: actions/cache@v4
         with:
           path: state
           key: pipeline-state-${{ github.run_id }}
-          restore-keys: pipeline-state-
+          restore-keys: |
+            pipeline-state-
 
       - name: Restore YouTube token (Cosmic Curious)
-        # To bring a new channel online later (e.g. Jungle Ke Dost):
-        # 1. Add a YOUTUBE_TOKEN_<CHANNEL> repo secret (Settings > Secrets
-        #    and variables > Actions), matching the process used here.
-        # 2. Add a step like this one for it, decoding into
-        #    tokens/<channel_id>_token.pickle.
-        # 3. Add its channel_id to ENABLED_CHANNELS below.
-        # Skipping any of these 3 steps means its scheduled uploads will
-        # fail with a missing-token error, not silently do nothing.
         env:
           TOKEN_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_TOKEN_COSMIC_CURIOUS }}
         run: |
           mkdir -p tokens
           echo "$TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/cosmic_curious_token.pickle
 
-      # Manual single-channel run (for testing via "Run workflow" button)
+      - name: Restore YouTube Analytics token (Cosmic Curious)
+        env:
+          TOKEN_ANALYTICS_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS }}
+        run: |
+          mkdir -p tokens
+          echo "$TOKEN_ANALYTICS_COSMIC_CURIOUS" | base64 -d > tokens/analytics_token.pickle
+
       - name: Manual run
         if: github.event_name == 'workflow_dispatch' && inputs.channel != ''
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
         run: |
           python -m src.main "${{ inputs.channel }}" \
-            ${{ inputs.short == true && '--short' || '' }} \
-            ${{ inputs.dry_run == true && '--dry-run' || '' }}
+            ${{ inputs.short == 'true' && '--short' || '' }} \
+            ${{ inputs.dry_run == 'true' && '--dry-run' || '' }}
 
-      # Normal scheduled run — the scheduler decides what's due.
-      # ENABLED_CHANNELS restricts this to Cosmic Curious only.
-      # Mind Bites is deliberately excluded (its YouTube token needs
-      # regenerating -- see README/troubleshooting notes -- and uploads
-      # to it are paused until that's resolved). Jungle Ke Dost, Then and
-      # Now, and Money Simple aren't wired up yet either. Add a channel_id
-      # here once its token is restored above and confirmed working (or
-      # delete the ENABLED_CHANNELS line entirely to run all channels).
       - name: Scheduled run
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == '')
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           ENABLED_CHANNELS: "cosmic_curious"
+          YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
         run: |
           python -m src.scheduler
 
