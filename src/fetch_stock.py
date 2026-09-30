@@ -1,11 +1,11 @@
-
 """
 fetch_stock.py
 
 Smart Pexels stock-video retrieval for the AutoTube pipeline.
 
-V3:
-- Searches multiple queries.
+V4:
+- Searches multiple topic-specific queries.
+- Understands special animal terms such as "sea cucumber".
 - Collects a larger candidate pool.
 - Prefers relevant/orientation-matching videos.
 - Avoids duplicate Pexels IDs.
@@ -62,27 +62,152 @@ def _topic_words(topic: str) -> list:
     ]
 
 
+def _is_sea_cucumber_topic(topic: str) -> bool:
+    """
+    Detect the animal 'sea cucumber'.
+
+    This is important because a plain Pexels search for
+    'sea cucumber' can return footage of ordinary cucumbers.
+    """
+
+    normalized = re.sub(
+        r"[^a-zA-Z]+",
+        " ",
+        topic.lower(),
+    ).strip()
+
+    return bool(
+        re.search(
+            r"\bsea\s+cucumber(s)?\b",
+            normalized,
+        )
+    )
+
+
+def _is_specific_animal_topic(topic: str) -> bool:
+    """
+    Detect animal topics that should stay focused on wildlife
+    rather than falling back to unrelated generic footage.
+    """
+
+    words = set(
+        _topic_words(topic)
+    )
+
+    if _is_sea_cucumber_topic(topic):
+        return True
+
+    animal_words = {
+        "animal",
+        "animals",
+        "wildlife",
+        "mammal",
+        "mammals",
+        "bird",
+        "birds",
+        "reptile",
+        "reptiles",
+        "snake",
+        "snakes",
+        "lion",
+        "lions",
+        "tiger",
+        "tigers",
+        "bear",
+        "bears",
+        "wolf",
+        "wolves",
+        "fox",
+        "monkey",
+        "monkeys",
+        "elephant",
+        "elephants",
+        "giraffe",
+        "giraffes",
+        "zebra",
+        "zebras",
+        "shark",
+        "sharks",
+        "whale",
+        "whales",
+        "dolphin",
+        "dolphins",
+        "penguin",
+        "penguins",
+        "frog",
+        "frogs",
+        "fish",
+        "octopus",
+        "spider",
+        "spiders",
+        "insect",
+        "insects",
+        "wild",
+        "nature",
+        "ocean",
+        "jungle",
+        "savanna",
+        "safari",
+    }
+
+    return bool(
+        words.intersection(animal_words)
+    )
+
+
 def _build_search_queries(topic: str) -> list:
     """
     Build several searches ordered from specific to broad.
 
-    Animal topics get animal-specific queries instead of
-    space-related fallback queries.
+    Special animal topics receive semantic queries designed
+    to prevent ambiguous searches from returning unrelated
+    objects.
     """
 
     words = _topic_words(topic)
 
     queries = []
 
-    if words:
-        queries.append(
-            " ".join(words[:4])
-        )
+    # ---------------------------------------------------------
+    # SPECIAL CASE: SEA CUCUMBER
+    # ---------------------------------------------------------
 
-    if len(words) >= 2:
-        queries.append(
-            " ".join(words[:3])
-        )
+    if _is_sea_cucumber_topic(topic):
+
+        queries.extend([
+            "sea cucumber animal",
+            "sea cucumber underwater",
+            "sea cucumber ocean",
+            "sea cucumber marine animal",
+            "holothurian",
+            "holothurian underwater",
+            "holothurian ocean",
+            "sea cucumber wildlife",
+        ])
+
+        # Do NOT start with the ambiguous plain query:
+        # "sea cucumber"
+        #
+        # The word "cucumber" can cause stock sites to return
+        # footage of ordinary vegetables.
+
+    else:
+
+        # -----------------------------------------------------
+        # NORMAL TOPIC QUERIES
+        # -----------------------------------------------------
+
+        if words:
+
+            queries.append(
+                " ".join(words[:4])
+            )
+
+        if len(words) >= 2:
+
+            queries.append(
+                " ".join(words[:3])
+            )
 
     # ---------------------------------------------------------
     # ANIMAL / WILDLIFE
@@ -141,7 +266,13 @@ def _build_search_queries(topic: str) -> list:
         "safari",
     }
 
-    if any(word in animal_words for word in words):
+    if (
+        any(
+            word in animal_words
+            for word in words
+        )
+        or _is_sea_cucumber_topic(topic)
+    ):
 
         queries.extend([
             "wildlife animals",
@@ -159,48 +290,56 @@ def _build_search_queries(topic: str) -> list:
     # ---------------------------------------------------------
 
     if "black" in words and "hole" in words:
+
         queries.extend([
             "black hole space",
             "black hole astronomy",
         ])
 
     if "star" in words:
+
         queries.extend([
             "star space",
             "stars astronomy",
         ])
 
     if "planet" in words:
+
         queries.extend([
             "planet space",
             "planet astronomy",
         ])
 
     if "neutron" in words:
+
         queries.extend([
             "neutron star",
             "neutron star space",
         ])
 
     if "galaxy" in words:
+
         queries.extend([
             "galaxy space",
             "galaxy astronomy",
         ])
 
     if "gravity" in words:
+
         queries.extend([
             "gravity space",
             "gravity physics",
         ])
 
     if "moon" in words:
+
         queries.extend([
             "moon space",
             "moon astronomy",
         ])
 
     if "sun" in words:
+
         queries.extend([
             "sun space",
             "sun astronomy",
@@ -381,13 +520,14 @@ def fetch_clips_for_topic(
 
     videos_by_id = {}
 
+    specific_animal = (
+        _is_specific_animal_topic(topic)
+    )
+
     # ---------------------------------------------------------
     # SEARCH MULTIPLE QUERIES
     # ---------------------------------------------------------
 
-    # We intentionally collect many more candidates than we
-    # finally need. This is important when using 15 clips for
-    # a Short or 30 clips for long-form.
     target_candidates = max(
         count * 3,
         30,
@@ -423,6 +563,7 @@ def fetch_clips_for_topic(
                 )
 
                 if video_id:
+
                     videos_by_id[
                         video_id
                     ] = video
@@ -439,14 +580,44 @@ def fetch_clips_for_topic(
 
     if len(videos_by_id) < count:
 
-        fallback_queries = [
-            "wildlife",
-            "animals",
-            "nature",
-            "animals close up",
-            "wild animals",
-            "nature documentary",
-        ]
+        if _is_sea_cucumber_topic(topic):
+
+            # Never use generic cucumber searches.
+            #
+            # If Pexels has too few sea-cucumber clips,
+            # prefer underwater/ocean footage instead of
+            # showing an ordinary vegetable.
+
+            fallback_queries = [
+                "underwater marine life",
+                "ocean animals",
+                "underwater wildlife",
+                "marine animals",
+                "ocean floor",
+                "coral reef animals",
+            ]
+
+        elif specific_animal:
+
+            fallback_queries = [
+                "wildlife",
+                "animals",
+                "wild animals",
+                "nature animals",
+                "animal close up",
+                "nature documentary",
+            ]
+
+        else:
+
+            fallback_queries = [
+                "wildlife",
+                "animals",
+                "nature",
+                "animals close up",
+                "wild animals",
+                "nature documentary",
+            ]
 
         for query in fallback_queries:
 
@@ -467,6 +638,7 @@ def fetch_clips_for_topic(
                     )
 
                     if video_id:
+
                         videos_by_id[
                             video_id
                         ] = video
@@ -478,7 +650,8 @@ def fetch_clips_for_topic(
 
                 print(
                     f"WARNING: fallback Pexels "
-                    f"search failed for '{query}' ({e})"
+                    f"search failed for "
+                    f"'{query}' ({e})"
                 )
 
     if not videos_by_id:
