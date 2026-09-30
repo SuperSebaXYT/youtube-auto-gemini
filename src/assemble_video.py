@@ -7,31 +7,46 @@ import subprocess
 from pathlib import Path
 from typing import List, Tuple, Any
 
+
 LANDSCAPE = (1920, 1080)
 PORTRAIT = (1080, 1920)
 
-FONT_NAME = "DejaVu Sans"
+# Cute / bubble font
+FONT_NAME = "Chewy"
 
-PORTRAIT_FONT_SIZE = 96
-LANDSCAPE_FONT_SIZE = 76
+# Larger captions
+PORTRAIT_FONT_SIZE = 112
+LANDSCAPE_FONT_SIZE = 88
 
-MIN_PORTRAIT_FONT_SIZE = 58
-MIN_LANDSCAPE_FONT_SIZE = 48
+MIN_PORTRAIT_FONT_SIZE = 62
+MIN_LANDSCAPE_FONT_SIZE = 52
 
-OUTLINE_SIZE = 9
-CAPTION_MAX_WIDTH_RATIO = 0.84
+# Thick bubble-like outline
+OUTLINE_SIZE = 10
+SHADOW_SIZE = 2
 
+# Text + outline must stay inside this side margin.
+SIDE_MARGIN = 10
+
+# Keep the existing vertical position.
 PORTRAIT_MARGIN_V = 430
 LANDSCAPE_MARGIN_V = 270
 
-CAPTION_COLORS = [
-    "&H00FFFFFF",
-    "&H00FFB6FF",
-    "&H00B8FFFF",
-    "&H00B8FFB8",
-    "&H00C8B8FF",
-    "&H0080E6FF",
-]
+
+# ASS colours are &HAABBGGRR
+CAPTION_COLORS = {
+    "green": "&H0058D63F",
+    "blue": "&H00FFB347",
+    "gold": "&H0000C8FF",
+    "orange": "&H000080FF",
+    "purple": "&H00D080E8",
+    "pink": "&H00B070FF",
+    "red": "&H004040FF",
+    "brown": "&H004080A0",
+    "cyan": "&H00E0D000",
+    "yellow": "&H0000DFFF",
+    "white": "&H00FFFFFF",
+}
 
 
 def _run(cmd: List[str]) -> None:
@@ -93,12 +108,10 @@ def _extract_timing_items(
 
         (start_seconds, end_seconds, text)
 
-    Supports both:
-
-    1. start/end
-    2. start_time/end_time
-    3. Edge-TTS format used by tts.py:
-       offset_seconds/duration_seconds
+    Supports:
+        start/end
+        start_time/end_time
+        offset_seconds/duration_seconds
     """
 
     items: List[Tuple[float, float, str]] = []
@@ -113,13 +126,7 @@ def _extract_timing_items(
             "alignment",
         ):
             if key in data:
-                return _extract_timing_items(
-                    data[key]
-                )
-
-        # ---------------------------------------------------------
-        # Standard start/end format
-        # ---------------------------------------------------------
+                return _extract_timing_items(data[key])
 
         if all(
             k in data
@@ -154,13 +161,6 @@ def _extract_timing_items(
                 TypeError,
             ):
                 pass
-
-        # ---------------------------------------------------------
-        # Edge-TTS format:
-        #
-        # offset_seconds
-        # duration_seconds
-        # ---------------------------------------------------------
 
         elif all(
             k in data
@@ -215,10 +215,6 @@ def _extract_timing_items(
 
             if isinstance(item, dict):
 
-                # -------------------------------------------------
-                # Standard start/end
-                # -------------------------------------------------
-
                 start = (
                     item.get("start")
                     if item.get("start") is not None
@@ -238,10 +234,6 @@ def _extract_timing_items(
                     or ""
                 )
 
-                # -------------------------------------------------
-                # Edge-TTS format
-                # -------------------------------------------------
-
                 if (
                     start is None
                     and end is None
@@ -254,15 +246,11 @@ def _extract_timing_items(
                 ):
                     try:
                         start = float(
-                            item[
-                                "offset_seconds"
-                            ]
+                            item["offset_seconds"]
                         )
 
                         duration = float(
-                            item[
-                                "duration_seconds"
-                            ]
+                            item["duration_seconds"]
                         )
 
                         end = start + duration
@@ -367,9 +355,7 @@ def _read_timing_file(
             ) as f:
                 data = json.load(f)
 
-            items = _extract_timing_items(
-                data
-            )
+            items = _extract_timing_items(data)
 
             cleaned = [
                 (s, e, t)
@@ -435,7 +421,6 @@ def _read_timing_file(
                 try:
                     start = float(parts[0])
                     end = float(parts[1])
-
                 except ValueError:
                     continue
 
@@ -472,7 +457,7 @@ def _read_timing_file(
 
 def _build_caption_chunks(
     timing_path: str,
-    words_per_caption: int = 2,
+    words_per_caption: int = 4,
     max_words: int | None = None,
 ) -> List[Tuple[float, float, str]]:
 
@@ -480,8 +465,11 @@ def _build_caption_chunks(
         words_per_caption = max_words
 
     words_per_caption = max(
-        1,
-        int(words_per_caption),
+        2,
+        min(
+            4,
+            int(words_per_caption),
+        ),
     )
 
     words = _read_timing_file(
@@ -498,14 +486,32 @@ def _build_caption_chunks(
         Tuple[float, float, str]
     ] = []
 
-    for i in range(
-        0,
-        len(words),
-        words_per_caption,
-    ):
+    i = 0
+
+    while i < len(words):
+
+        remaining = len(words) - i
+
+        if remaining <= 2:
+            group_size = remaining
+
+        elif remaining == 3:
+            group_size = 3
+
+        else:
+            group_size = 4
+
+            # If the fourth word is separated by a noticeable
+            # pause, don't hold the previous words on screen.
+            if i + 3 < len(words):
+                previous_end = words[i + 2][1]
+                next_start = words[i + 3][0]
+
+                if next_start - previous_end > 0.28:
+                    group_size = 3
 
         group = words[
-            i:i + words_per_caption
+            i:i + group_size
         ]
 
         start = group[0][0]
@@ -528,11 +534,12 @@ def _build_caption_chunks(
                 )
             )
 
+        i += group_size
+
     print(
         f"[CAPTIONS] Created "
         f"{len(chunks)} captions "
-        f"with max "
-        f"{words_per_caption} words"
+        f"using 2–4 words per caption"
     )
 
     return chunks
@@ -611,6 +618,12 @@ def _estimate_text_width(
     text: str,
     font_size: int,
 ) -> float:
+    """
+    Conservative width estimate.
+
+    Chewy is rounded and relatively wide, so the estimate
+    intentionally leaves room for the thick outline.
+    """
 
     words = text.split()
 
@@ -624,26 +637,26 @@ def _estimate_text_width(
         for char in word:
 
             if char in "ilI.,'!|":
-                factor = 0.28
+                factor = 0.30
 
             elif char in "mwMW@#":
-                factor = 0.90
+                factor = 0.88
 
             elif char.isupper():
-                factor = 0.68
+                factor = 0.70
 
             elif char.isdigit():
-                factor = 0.62
+                factor = 0.64
 
             else:
-                factor = 0.56
+                factor = 0.59
 
             total += (
                 font_size * factor
             )
 
         total += (
-            font_size * 0.20
+            font_size * 0.24
         )
 
     return total
@@ -664,9 +677,12 @@ def _caption_font_size(
         min_size = MIN_LANDSCAPE_FONT_SIZE
         width = LANDSCAPE[0]
 
+    # Leave 10 px on each side AND enough room for the outline.
     max_width = (
         width
-        * CAPTION_MAX_WIDTH_RATIO
+        - (SIDE_MARGIN * 2)
+        - (OUTLINE_SIZE * 2)
+        - 4
     )
 
     size = max_size
@@ -691,77 +707,79 @@ def _caption_font_size(
     )
 
 
-def _write_ass_subtitles(
-    chunks: List[
-        Tuple[float, float, str]
-    ],
-    ass_path: Path | str,
-    width: int,
-    height: int,
-    font_size: int,
-    portrait: bool = False,
-) -> None:
+def _caption_color(
+    text: str,
+) -> str:
+    """
+    Select a colour based on the animal/topic words
+    visible in the caption.
 
-    margin_v = (
-        PORTRAIT_MARGIN_V
-        if portrait
-        else LANDSCAPE_MARGIN_V
-    )
+    This is deterministic rather than random.
+    """
 
-    lines = [
-        "[Script Info]",
-        "ScriptType: v4.00+",
-        f"PlayResX: {width}",
-        f"PlayResY: {height}",
-        "ScaledBorderAndShadow: yes",
-        "",
-        "[V4+ Styles]",
-        (
-            "Format: Name, Fontname, Fontsize, "
-            "PrimaryColour, SecondaryColour, "
-            "OutlineColour, BackColour, Bold, Italic, "
-            "Underline, StrikeOut, ScaleX, ScaleY, "
-            "Spacing, Angle, BorderStyle, Outline, "
-            "Shadow, Alignment, MarginL, MarginR, "
-            "MarginV, Encoding"
-        ),
-        (
-            f"Style: Default,{FONT_NAME},{font_size},"
-            f"&H00FFFFFF,&H00FFFFFF,"
-            f"&H00000000,&H00000000,"
-            f"1,0,0,0,100,100,0,0,1,"
-            f"6,0,2,40,40,{margin_v},1"
-        ),
-        "",
-        "[Events]",
-        (
-            "Format: Layer, Start, End, Style, Name, "
-            "MarginL, MarginR, MarginV, Effect, Text"
-        ),
-    ]
+    t = text.lower()
 
-    for start, end, text in chunks:
+    animal_colors = {
+        "snail": "green",
+        "slug": "green",
+        "caterpillar": "green",
+        "frog": "green",
+        "lizard": "green",
+        "iguana": "green",
+        "parrot": "green",
 
-        if end <= start:
-            continue
+        "fish": "blue",
+        "shark": "blue",
+        "whale": "blue",
+        "dolphin": "blue",
+        "seal": "blue",
+        "octopus": "purple",
+        "jellyfish": "purple",
+        "squid": "purple",
 
-        safe_text = _escape_ass_text(
-            text
-        )
+        "bird": "blue",
+        "penguin": "blue",
+        "eagle": "gold",
+        "hawk": "gold",
+        "falcon": "gold",
 
-        lines.append(
-            f"Dialogue: 0,"
-            f"{_ass_time(start)},"
-            f"{_ass_time(end)},"
-            f"Default,,0,0,0,,"
-            f"{{\\bord6\\shad0}}"
-            f"{safe_text}"
-        )
+        "lion": "gold",
+        "tiger": "orange",
+        "cheetah": "gold",
+        "leopard": "gold",
+        "giraffe": "gold",
+        "zebra": "white",
 
-    Path(ass_path).write_text(
-        "\n".join(lines) + "\n",
-        encoding="utf-8",
-    )
+        "fox": "orange",
+        "wolf": "cyan",
+        "bear": "brown",
+        "panda": "white",
+
+        "butterfly": "pink",
+        "moth": "purple",
+        "bee": "yellow",
+        "wasp": "yellow",
+        "spider": "purple",
+
+        "crab": "red",
+        "lobster": "red",
+        "shrimp": "pink",
+
+        "sea": "blue",
+        "ocean": "blue",
+        "marine": "blue",
+        "underwater": "blue",
+    }
+
+    for word, color_name in animal_colors.items():
+
+        if re.search(
+            rf"\b{re.escape(word)}\b",
+            t,
+        ):
+            return CAPTION_COLORS[color_name]
+
+    return CAPTION_COLORS["white"]
 
 
 def _write_ass(
@@ -776,7 +794,11 @@ def _write_ass(
         default_font_size = (
             PORTRAIT_FONT_SIZE
         )
-        margin_v = PORTRAIT_MARGIN_V
+
+        margin_v = (
+            PORTRAIT_MARGIN_V
+        )
+
         width = 1080
         height = 1920
 
@@ -784,7 +806,11 @@ def _write_ass(
         default_font_size = (
             LANDSCAPE_FONT_SIZE
         )
-        margin_v = LANDSCAPE_MARGIN_V
+
+        margin_v = (
+            LANDSCAPE_MARGIN_V
+        )
+
         width = 1920
         height = 1080
 
@@ -810,8 +836,9 @@ def _write_ass(
             f"{default_font_size},"
             f"&H00FFFFFF,&H00FFFFFF,"
             f"&H00000000,&H00000000,"
-            f"1,0,0,0,105,105,0,0,1,"
-            f"{OUTLINE_SIZE},0,2,40,40,"
+            f"1,0,0,0,100,100,0,0,1,"
+            f"{OUTLINE_SIZE},{SHADOW_SIZE},2,"
+            f"{SIDE_MARGIN},{SIDE_MARGIN},"
             f"{margin_v},1"
         ),
         "",
@@ -822,11 +849,11 @@ def _write_ass(
         ),
     ]
 
-    for index, (
+    for (
         start,
         end,
         text,
-    ) in enumerate(captions):
+    ) in captions:
 
         if end <= start:
             continue
@@ -836,33 +863,37 @@ def _write_ass(
             portrait,
         )
 
-        color = CAPTION_COLORS[
-            index % len(
-                CAPTION_COLORS
-            )
-        ]
+        color = _caption_color(
+            text
+        )
 
         safe_text = _escape_ass_text(
             text
         )
 
+        # Keep the whole caption inside the video width.
+        # The outline is included in the width calculation.
         override = (
-            f"{{"
+            "{"
             f"\\c{color}"
             f"\\fs{font_size}"
             f"\\bord{OUTLINE_SIZE}"
-            f"\\shad0"
+            f"\\shad{SHADOW_SIZE}"
             f"\\fscx105"
             f"\\fscy105"
             f"\\an2"
-            f"}}"
+            f"\\q2"
+            "}"
         )
 
         lines.append(
             f"Dialogue: 0,"
             f"{_ass_time(start)},"
             f"{_ass_time(end)},"
-            f"Bubble,,0,0,0,,"
+            f"Bubble,,"
+            f"{SIDE_MARGIN},"
+            f"{SIDE_MARGIN},"
+            f"{margin_v},,"
             f"{override}"
             f"{safe_text}"
         )
@@ -1127,7 +1158,7 @@ def assemble_video(
     captions = (
         _build_caption_chunks(
             timing_path,
-            words_per_caption=2,
+            words_per_caption=4,
         )
     )
 
