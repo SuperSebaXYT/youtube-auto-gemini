@@ -8,6 +8,7 @@ on:
     # channel per day, spread across the day, no matter how often this
     # cron ticks.
     - cron: "37 * * * *"
+
   workflow_dispatch:
     inputs:
       channel:
@@ -26,6 +27,7 @@ jobs:
   run_pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@v4
 
@@ -72,8 +74,8 @@ jobs:
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
         run: |
           python -m src.main "${{ inputs.channel }}" \
-            ${{ inputs.short == true && --short || '' }} \
-            ${{ inputs.dry_run == true && --dry-run || '' }}
+            ${{ inputs.short == true && '--short' || '' }} \
+            ${{ inputs.dry_run == true && '--dry-run' || '' }}
 
       # Normal scheduled run — the scheduler decides what's due.
       - name: Scheduled run
