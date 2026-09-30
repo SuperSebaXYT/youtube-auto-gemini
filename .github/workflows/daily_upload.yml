@@ -2,8 +2,12 @@ name: Daily Upload Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"
-
+    # Fires every hour. src/scheduler.py checks each channel's config and
+    # only runs uploads that are actually due at the current UTC hour —
+    # so the real output stays at exactly 1 long-form + 5 shorts per
+    # channel per day, spread across the day, no matter how often this
+    # cron ticks.
+    - cron: "37 * * * *"
   workflow_dispatch:
     inputs:
       channel:
@@ -22,7 +26,6 @@ jobs:
   run_pipeline:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
       - uses: actions/checkout@v4
 
@@ -38,13 +41,12 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore pipeline state
+      - name: Restore pipeline state (avoids repeating topics)
         uses: actions/cache@v4
         with:
           path: state
           key: pipeline-state-${{ github.run_id }}
-          restore-keys: |
-            pipeline-state-
+          restore-keys: pipeline-state-
 
       - name: Restore YouTube token (Cosmic Curious)
         env:
@@ -53,13 +55,15 @@ jobs:
           mkdir -p tokens
           echo "$TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/cosmic_curious_token.pickle
 
+      # Winner Hunter — YouTube Analytics access
       - name: Restore YouTube Analytics token (Cosmic Curious)
         env:
-          TOKEN_ANALYTICS_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS }}
+          ANALYTICS_TOKEN_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS }}
         run: |
           mkdir -p tokens
-          echo "$TOKEN_ANALYTICS_COSMIC_CURIOUS" | base64 -d > tokens/analytics_token.pickle
+          echo "$ANALYTICS_TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/analytics_token.pickle
 
+      # Manual single-channel run (for testing via "Run workflow" button)
       - name: Manual run
         if: github.event_name == 'workflow_dispatch' && inputs.channel != ''
         env:
@@ -68,9 +72,10 @@ jobs:
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
         run: |
           python -m src.main "${{ inputs.channel }}" \
-            ${{ inputs.short == 'true' && '--short' || '' }} \
-            ${{ inputs.dry_run == 'true' && '--dry-run' || '' }}
+            ${{ inputs.short == true && --short || '' }} \
+            ${{ inputs.dry_run == true && --dry-run || '' }}
 
+      # Normal scheduled run — the scheduler decides what's due.
       - name: Scheduled run
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == '')
         env:
