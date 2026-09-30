@@ -24,21 +24,12 @@ use_varied_pacing: true
 
 trend_subreddit: "animals"
 
-upload_time_utc: "12:00"
-
-longform_interval_days: 2
-
 shorts_upload_times_utc:
   [
-    "00:00",
-    "03:00",
     "06:00",
-    "09:00",
-    "12:00",
-    "15:00",
-    "18:00",
-    "21:00"
+    "14:00"
   ]
+
 tags:
   [
     "animal facts",
