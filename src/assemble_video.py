@@ -7,24 +7,11 @@ import subprocess
 from pathlib import Path
 from typing import List, Tuple, Any
 
-
-# ============================================================
-# COMPATIBILITY CONSTANTS
-# Used by generate_kids_video.py
-# ============================================================
-
 LANDSCAPE = (1920, 1080)
 PORTRAIT = (1080, 1920)
 
-
-# ============================================================
-# COSMIC CURIOUS CAPTION SETTINGS
-# ============================================================
-
 FONT_NAME = "DejaVu Sans"
 
-# Base size. Individual captions are automatically resized
-# to fit their own text.
 PORTRAIT_FONT_SIZE = 96
 LANDSCAPE_FONT_SIZE = 76
 
@@ -32,12 +19,8 @@ MIN_PORTRAIT_FONT_SIZE = 58
 MIN_LANDSCAPE_FONT_SIZE = 48
 
 OUTLINE_SIZE = 9
-
-# Maximum percentage of screen width used by a caption.
-# Leaves enough space on both sides.
 CAPTION_MAX_WIDTH_RATIO = 0.84
 
-# Lower-middle, slightly above YouTube Shorts controls.
 PORTRAIT_MARGIN_V = 430
 LANDSCAPE_MARGIN_V = 270
 
@@ -50,10 +33,6 @@ CAPTION_COLORS = [
     "&H0080E6FF",
 ]
 
-
-# ============================================================
-# BASIC FFMPEG HELPERS
-# ============================================================
 
 def _run(cmd: List[str]) -> None:
     print("Running:", " ".join(str(x) for x in cmd))
@@ -106,13 +85,21 @@ def _get_audio_duration(audio_path: str) -> float:
         ) from exc
 
 
-# ============================================================
-# TIMING PARSING
-# ============================================================
-
 def _extract_timing_items(
     data: Any,
 ) -> List[Tuple[float, float, str]]:
+    """
+    Convert timing data into:
+
+        (start_seconds, end_seconds, text)
+
+    Supports both:
+
+    1. start/end
+    2. start_time/end_time
+    3. Edge-TTS format used by tts.py:
+       offset_seconds/duration_seconds
+    """
 
     items: List[Tuple[float, float, str]] = []
 
@@ -126,10 +113,18 @@ def _extract_timing_items(
             "alignment",
         ):
             if key in data:
-                return _extract_timing_items(data[key])
+                return _extract_timing_items(
+                    data[key]
+                )
 
-        if all(k in data for k in ("start", "end")):
+        # ---------------------------------------------------------
+        # Standard start/end format
+        # ---------------------------------------------------------
 
+        if all(
+            k in data
+            for k in ("start", "end")
+        ):
             text = (
                 data.get("word")
                 or data.get("text")
@@ -138,14 +133,78 @@ def _extract_timing_items(
             )
 
             try:
-                items.append(
-                    (
-                        float(data["start"]),
-                        float(data["end"]),
-                        str(text).strip(),
+                start = float(data["start"])
+                end = float(data["end"])
+
+                if (
+                    start >= 0
+                    and end > start
+                    and str(text).strip()
+                ):
+                    items.append(
+                        (
+                            start,
+                            end,
+                            str(text).strip(),
+                        )
                     )
+
+            except (
+                ValueError,
+                TypeError,
+            ):
+                pass
+
+        # ---------------------------------------------------------
+        # Edge-TTS format:
+        #
+        # offset_seconds
+        # duration_seconds
+        # ---------------------------------------------------------
+
+        elif all(
+            k in data
+            for k in (
+                "offset_seconds",
+                "duration_seconds",
+            )
+        ):
+            text = (
+                data.get("text")
+                or data.get("word")
+                or data.get("content")
+                or ""
+            )
+
+            try:
+                start = float(
+                    data["offset_seconds"]
                 )
-            except (ValueError, TypeError):
+
+                duration = float(
+                    data["duration_seconds"]
+                )
+
+                end = start + duration
+
+                if (
+                    start >= 0
+                    and duration > 0
+                    and end > start
+                    and str(text).strip()
+                ):
+                    items.append(
+                        (
+                            start,
+                            end,
+                            str(text).strip(),
+                        )
+                    )
+
+            except (
+                ValueError,
+                TypeError,
+            ):
                 pass
 
         return items
@@ -155,6 +214,10 @@ def _extract_timing_items(
         for item in data:
 
             if isinstance(item, dict):
+
+                # -------------------------------------------------
+                # Standard start/end
+                # -------------------------------------------------
 
                 start = (
                     item.get("start")
@@ -175,31 +238,105 @@ def _extract_timing_items(
                     or ""
                 )
 
-                if start is None or end is None:
+                # -------------------------------------------------
+                # Edge-TTS format
+                # -------------------------------------------------
+
+                if (
+                    start is None
+                    and end is None
+                    and item.get(
+                        "offset_seconds"
+                    ) is not None
+                    and item.get(
+                        "duration_seconds"
+                    ) is not None
+                ):
+                    try:
+                        start = float(
+                            item[
+                                "offset_seconds"
+                            ]
+                        )
+
+                        duration = float(
+                            item[
+                                "duration_seconds"
+                            ]
+                        )
+
+                        end = start + duration
+
+                    except (
+                        ValueError,
+                        TypeError,
+                    ):
+                        continue
+
+                if (
+                    start is None
+                    or end is None
+                ):
                     continue
 
                 try:
-                    items.append(
-                        (
-                            float(start),
-                            float(end),
-                            str(text).strip(),
+                    start = float(start)
+                    end = float(end)
+
+                    cleaned_text = str(
+                        text
+                    ).strip()
+
+                    if (
+                        start >= 0
+                        and end > start
+                        and cleaned_text
+                    ):
+                        items.append(
+                            (
+                                start,
+                                end,
+                                cleaned_text,
+                            )
                         )
-                    )
-                except (ValueError, TypeError):
+
+                except (
+                    ValueError,
+                    TypeError,
+                ):
                     continue
 
-            elif isinstance(item, (list, tuple)) and len(item) >= 3:
-
+            elif (
+                isinstance(
+                    item,
+                    (list, tuple),
+                )
+                and len(item) >= 3
+            ):
                 try:
-                    items.append(
-                        (
-                            float(item[0]),
-                            float(item[1]),
-                            str(item[2]).strip(),
+                    start = float(item[0])
+                    end = float(item[1])
+                    text = str(
+                        item[2]
+                    ).strip()
+
+                    if (
+                        start >= 0
+                        and end > start
+                        and text
+                    ):
+                        items.append(
+                            (
+                                start,
+                                end,
+                                text,
+                            )
                         )
-                    )
-                except (ValueError, TypeError):
+
+                except (
+                    ValueError,
+                    TypeError,
+                ):
                     continue
 
     return items
@@ -209,22 +346,20 @@ def _read_timing_file(
     timing_path: str,
 ) -> List[Tuple[float, float, str]]:
 
-    if not timing_path or not os.path.exists(timing_path):
+    if not timing_path or not os.path.exists(
+        timing_path
+    ):
         print(
-            f"[CAPTIONS] Timing file not found: {timing_path}"
+            f"[CAPTIONS] Timing file not found: "
+            f"{timing_path}"
         )
         return []
 
     path = Path(timing_path)
 
-    # --------------------------------------------------------
-    # JSON
-    # --------------------------------------------------------
-
     if path.suffix.lower() == ".json":
 
         try:
-
             with open(
                 path,
                 "r",
@@ -232,7 +367,9 @@ def _read_timing_file(
             ) as f:
                 data = json.load(f)
 
-            items = _extract_timing_items(data)
+            items = _extract_timing_items(
+                data
+            )
 
             cleaned = [
                 (s, e, t)
@@ -241,32 +378,26 @@ def _read_timing_file(
             ]
 
             if cleaned:
-
                 print(
-                    f"[CAPTIONS] Read {len(cleaned)} word timings"
+                    f"[CAPTIONS] Read "
+                    f"{len(cleaned)} word timings"
                 )
-
                 return cleaned
 
         except (
             json.JSONDecodeError,
             OSError,
         ) as exc:
-
             print(
-                f"[CAPTIONS] Could not read JSON timing file: {exc}"
+                f"[CAPTIONS] Could not read JSON "
+                f"timing file: {exc}"
             )
-
-    # --------------------------------------------------------
-    # TEXT / TSV / CSV / PIPE
-    # --------------------------------------------------------
 
     words: List[
         Tuple[float, float, str]
     ] = []
 
     try:
-
         with open(
             path,
             "r",
@@ -302,7 +433,6 @@ def _read_timing_file(
                     continue
 
                 try:
-
                     start = float(parts[0])
                     end = float(parts[1])
 
@@ -313,8 +443,10 @@ def _read_timing_file(
                     parts[2:]
                 ).strip()
 
-                if text and end > start:
-
+                if (
+                    text
+                    and end > start
+                ):
                     words.append(
                         (
                             start,
@@ -324,23 +456,19 @@ def _read_timing_file(
                     )
 
     except OSError as exc:
-
         print(
-            f"[CAPTIONS] Could not read timing file: {exc}"
+            f"[CAPTIONS] Could not read timing "
+            f"file: {exc}"
         )
-
         return []
 
     print(
-        f"[CAPTIONS] Read {len(words)} word timings"
+        f"[CAPTIONS] Read "
+        f"{len(words)} word timings"
     )
 
     return words
 
-
-# ============================================================
-# CAPTION CHUNKING
-# ============================================================
 
 def _build_caption_chunks(
     timing_path: str,
@@ -388,8 +516,10 @@ def _build_caption_chunks(
             for item in group
         ).strip()
 
-        if text and end > start:
-
+        if (
+            text
+            and end > start
+        ):
             chunks.append(
                 (
                     start,
@@ -399,16 +529,14 @@ def _build_caption_chunks(
             )
 
     print(
-        f"[CAPTIONS] Created {len(chunks)} captions "
-        f"with max {words_per_caption} words"
+        f"[CAPTIONS] Created "
+        f"{len(chunks)} captions "
+        f"with max "
+        f"{words_per_caption} words"
     )
 
     return chunks
 
-
-# ============================================================
-# ASS HELPERS
-# ============================================================
 
 def _ass_time(seconds: float) -> str:
 
@@ -439,17 +567,14 @@ def _ass_time(seconds: float) -> str:
     )
 
     if centiseconds >= 100:
-
         centiseconds = 0
         secs += 1
 
     if secs >= 60:
-
         secs = 0
         minutes += 1
 
     if minutes >= 60:
-
         minutes = 0
         hours += 1
 
@@ -482,20 +607,10 @@ def _escape_ass_text(
     )
 
 
-# ============================================================
-# AUTOMATIC CAPTION SIZE
-# ============================================================
-
 def _estimate_text_width(
     text: str,
     font_size: int,
 ) -> float:
-    """
-    Rough width estimate for DejaVu Sans Bold.
-
-    The value is intentionally conservative so that
-    captions stay safely inside the Shorts frame.
-    """
 
     words = text.split()
 
@@ -510,12 +625,16 @@ def _estimate_text_width(
 
             if char in "ilI.,'!|":
                 factor = 0.28
+
             elif char in "mwMW@#":
                 factor = 0.90
+
             elif char.isupper():
                 factor = 0.68
+
             elif char.isdigit():
                 factor = 0.62
+
             else:
                 factor = 0.56
 
@@ -534,23 +653,13 @@ def _caption_font_size(
     text: str,
     portrait: bool,
 ) -> int:
-    """
-    Calculates the best font size for this individual caption.
-
-    Short words -> larger text.
-    Long two-word phrases -> slightly smaller text.
-
-    The caption always stays within the safe screen width.
-    """
 
     if portrait:
-
         max_size = PORTRAIT_FONT_SIZE
         min_size = MIN_PORTRAIT_FONT_SIZE
         width = PORTRAIT[0]
 
     else:
-
         max_size = LANDSCAPE_FONT_SIZE
         min_size = MIN_LANDSCAPE_FONT_SIZE
         width = LANDSCAPE[0]
@@ -582,21 +691,16 @@ def _caption_font_size(
     )
 
 
-# ============================================================
-# ASS WRITER
-# ============================================================
-
 def _write_ass_subtitles(
-    chunks: List[Tuple[float, float, str]],
+    chunks: List[
+        Tuple[float, float, str]
+    ],
     ass_path: Path | str,
     width: int,
     height: int,
     font_size: int,
     portrait: bool = False,
 ) -> None:
-    """
-    Compatibility helper for generate_kids_video.py.
-    """
 
     margin_v = (
         PORTRAIT_MARGIN_V
@@ -654,9 +758,7 @@ def _write_ass_subtitles(
             f"{safe_text}"
         )
 
-    Path(
-        ass_path
-    ).write_text(
+    Path(ass_path).write_text(
         "\n".join(lines) + "\n",
         encoding="utf-8",
     )
@@ -671,28 +773,18 @@ def _write_ass(
 ) -> None:
 
     if portrait:
-
         default_font_size = (
             PORTRAIT_FONT_SIZE
         )
-
-        margin_v = (
-            PORTRAIT_MARGIN_V
-        )
-
+        margin_v = PORTRAIT_MARGIN_V
         width = 1080
         height = 1920
 
     else:
-
         default_font_size = (
             LANDSCAPE_FONT_SIZE
         )
-
-        margin_v = (
-            LANDSCAPE_MARGIN_V
-        )
-
+        margin_v = LANDSCAPE_MARGIN_V
         width = 1920
         height = 1080
 
@@ -739,10 +831,6 @@ def _write_ass(
         if end <= start:
             continue
 
-        # ----------------------------------------------------
-        # Each caption gets its own calculated font size.
-        # ----------------------------------------------------
-
         font_size = _caption_font_size(
             text,
             portrait,
@@ -779,9 +867,7 @@ def _write_ass(
             f"{safe_text}"
         )
 
-    Path(
-        ass_path
-    ).write_text(
+    Path(ass_path).write_text(
         "\n".join(lines) + "\n",
         encoding="utf-8",
     )
@@ -791,10 +877,6 @@ def _write_ass(
         f"{len(captions)} captions"
     )
 
-
-# ============================================================
-# VIDEO NORMALIZATION
-# ============================================================
 
 def _normalize_clip(
     input_path: str,
@@ -906,10 +988,6 @@ def _concat_clips(
         pass
 
 
-# ============================================================
-# MAIN VIDEO ASSEMBLER
-# ============================================================
-
 def assemble_video(
     clip_paths: List[str],
     audio_path: str,
@@ -950,10 +1028,6 @@ def assemble_video(
         exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # AUDIO DURATION
-    # --------------------------------------------------------
-
     audio_duration = (
         _get_audio_duration(
             audio_path
@@ -965,23 +1039,17 @@ def assemble_video(
         f"{audio_duration:.2f}s"
     )
 
-    # --------------------------------------------------------
-    # VISUAL SEGMENTATION
-    # --------------------------------------------------------
-
     clip_count = len(
         clip_paths
     )
 
     if portrait and clip_count > 1:
-
         segment_duration = (
             audio_duration
             / clip_count
         )
 
     else:
-
         segment_duration = None
 
     print(
@@ -990,15 +1058,10 @@ def assemble_video(
     )
 
     if segment_duration:
-
         print(
             f"[VIDEO] Target visual duration: "
             f"{segment_duration:.2f}s"
         )
-
-    # --------------------------------------------------------
-    # NORMALIZE EACH VISUAL
-    # --------------------------------------------------------
 
     normalized_paths: List[
         str
@@ -1041,14 +1104,9 @@ def assemble_video(
         )
 
     if not normalized_paths:
-
         raise RuntimeError(
             "No valid clips could be normalized."
         )
-
-    # --------------------------------------------------------
-    # CONCATENATE
-    # --------------------------------------------------------
 
     base_video = (
         work_dir
@@ -1065,10 +1123,6 @@ def assemble_video(
         normalized_paths,
         str(base_video),
     )
-
-    # --------------------------------------------------------
-    # CAPTIONS
-    # --------------------------------------------------------
 
     captions = (
         _build_caption_chunks(
@@ -1087,10 +1141,6 @@ def assemble_video(
         captions,
         portrait,
     )
-
-    # --------------------------------------------------------
-    # FINAL RENDER
-    # --------------------------------------------------------
 
     ass_filter_path = str(
         ass_path.resolve()
@@ -1152,7 +1202,6 @@ def assemble_video(
     )
 
     if not output.exists():
-
         raise RuntimeError(
             "FFmpeg finished but output "
             "file was not created: "
@@ -1166,10 +1215,6 @@ def assemble_video(
 
     return str(output)
 
-
-# ============================================================
-# DIRECT EXECUTION
-# ============================================================
 
 if __name__ == "__main__":
 
