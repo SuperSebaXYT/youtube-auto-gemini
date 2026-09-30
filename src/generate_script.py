@@ -1,3265 +1,1412 @@
 """
-
 generate_script.py
 
-Generates scripts for the Autotube channels using Google's current
+Generates YouTube scripts for the existing Autotube pipeline.
+The main channel is Animals & Wildlife. Compatibility helpers for the
+existing kids pipeline are intentionally preserved.
 
-google-genai SDK.
-
-IMPORTANT:
-
-Uses client.chats.create() + chat.send_message()
-
-Does NOT use client.models.generate_content() for text generation.
-
-Integrates the separate winner_hunter.py module.
-
-Winner Hunter learns from real YouTube Analytics performance.
-
-Falls back safely if Winner Hunter / Analytics is unavailable.
-
-Falls back to template scripts if Gemini is unavailable.
-
-
+Winner Hunter integration:
+- Reads real historical YouTube Analytics performance.
+- Finds winning content patterns.
+- Generates NEW topics inspired by those patterns.
+- Never intentionally copies previous topics.
+- Falls back safely to Daily Brain -> Trend Scout -> seed topics.
 """
 
 import os
-
 import json
-
 import random
-
 import re
-
 from datetime import datetime, timezone
-
 from pathlib import Path
-
-from difflib import SequenceMatcher
 
 import yaml
 
 from src.trend_scout import get_trending_topic
-
 from src.daily_brain_topics import get_daily_brain_topic
 
----------------------------------------------------------------------------
-
-Winner Hunter
-
----------------------------------------------------------------------------
-
 try:
-
-from src.winner_hunter import build_winner_context
-
-except Exception:
-
-build_winner_context = None
-
----------------------------------------------------------------------------
-
-Gemini
-
----------------------------------------------------------------------------
-
-try:
-
-from google import genai as genai_client
-
-GEMINI_AVAILABLE = True
-
+    from src.winner_hunter import build_winner_context
+    WINNER_HUNTER_AVAILABLE = True
 except ImportError:
+    WINNER_HUNTER_AVAILABLE = False
 
-GEMINI_AVAILABLE = False
+try:
+    from google import genai as genai_client
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
-
----------------------------------------------------------------------------
-
-Token budgeting
-
----------------------------------------------------------------------------
-
 TOKENS_PER_WORD = 2.2
-
 MIN_OUTPUT_TOKENS = 512
-
 TOKEN_SAFETY_MARGIN = 200
 
-def _max_output_tokens_for(words_target: int) -> int:
-
-return max(
-
-    MIN_OUTPUT_TOKENS,
-
-    int(words_target * TOKENS_PER_WORD) + TOKEN_SAFETY_MARGIN,
-
-)
-
----------------------------------------------------------------------------
-
-Languages
-
----------------------------------------------------------------------------
-
 LANGUAGE_NAMES = {
-
-"en": "English",
-
-"hi": "Hindi (written in Devanagari script, not transliterated/Roman Hindi)",
-
+    "en": "English",
+    "hi": "Hindi (written in Devanagari script, not Roman Hindi)",
 }
 
----------------------------------------------------------------------------
-
-Paths
-
----------------------------------------------------------------------------
-
-ROOT = Path(file).resolve().parent.parent
-
+ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
-
 STATE_DIR.mkdir(exist_ok=True)
 
----------------------------------------------------------------------------
 
-Configuration
+def _max_output_tokens_for(words_target: int) -> int:
+    return max(
+        MIN_OUTPUT_TOKENS,
+        int(words_target * TOKENS_PER_WORD) + TOKEN_SAFETY_MARGIN,
+    )
 
----------------------------------------------------------------------------
 
 def load_channel_config(channel_id: str) -> dict:
+    path = ROOT / "channels" / f"{channel_id}.yaml"
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
-path = ROOT / "channels" / f"{channel_id}.yaml"
-
-
-
-with open(path, "r", encoding="utf-8") as f:
-
-    return yaml.safe_load(f)
-
----------------------------------------------------------------------------
-
-Topic state
-
----------------------------------------------------------------------------
 
 def _used_topics_path(channel_id: str) -> Path:
+    return STATE_DIR / f"{channel_id}_used_topics.json"
 
-return STATE_DIR / f"{channel_id}_used_topics.json"
 
 def get_used_topics(channel_id: str) -> set:
+    path = _used_topics_path(channel_id)
 
-path = _used_topics_path(channel_id)
-
-
-
-if path.exists():
+    if not path.exists():
+        return set()
 
     try:
-
-        return set(json.loads(path.read_text(encoding="utf-8")))
-
+        return set(
+            json.loads(
+                path.read_text(encoding="utf-8")
+            )
+        )
     except (json.JSONDecodeError, OSError):
-
         return set()
 
 
-
-return set()
-
 def mark_topic_used(channel_id: str, topic: str) -> None:
+    used = get_used_topics(channel_id)
+    used.add(topic)
 
-used = get_used_topics(channel_id)
+    _used_topics_path(channel_id).write_text(
+        json.dumps(
+            sorted(used),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
-used.add(topic)
 
+def _todays_longform_path(channel_id: str) -> Path:
+    return STATE_DIR / f"{channel_id}_todays_longform.json"
 
 
-_used_topics_path(channel_id).write_text(
+def save_todays_longform_topic(channel_id: str, topic: str) -> None:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    json.dumps(
+    _todays_longform_path(channel_id).write_text(
+        json.dumps(
+            {
+                "date": today,
+                "topic": topic,
+                "used_for_short": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
-        sorted(used),
 
-        ensure_ascii=False,
+def get_recap_topic_for_short(channel_id: str) -> str | None:
+    path = _todays_longform_path(channel_id)
 
-        indent=2,
+    if not path.exists():
+        return None
 
-    ),
+    try:
+        data = json.loads(
+            path.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError):
+        return None
 
-    encoding="utf-8",
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-)
+    if data.get("date") != today:
+        return None
 
----------------------------------------------------------------------------
+    if data.get("used_for_short"):
+        return None
 
-Topic similarity
+    topic = data.get("topic")
 
----------------------------------------------------------------------------
+    if not topic:
+        return None
 
-def _normalize_topic(text: str) -> str:
+    data["used_for_short"] = True
 
-text = text.lower()
+    path.write_text(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
+    return topic
 
-
-text = re.sub(
-
-    r"[^a-z0-9\s]",
-
-    " ",
-
-    text,
-
-)
-
-
-
-text = re.sub(
-
-    r"\s+",
-
-    " ",
-
-    text,
-
-)
-
-
-
-return text.strip()
-
-def _topics_are_similar(
-
-first: str,
-
-second: str,
-
-) -> bool:
-
-"""
-
-Prevents Winner Hunter from selecting exact duplicates
-
-or obvious rewrites of existing topics.
-
-"""
-
-
-
-first_normalized = _normalize_topic(first)
-
-second_normalized = _normalize_topic(second)
-
-
-
-if not first_normalized or not second_normalized:
-
-    return False
-
-
-
-if first_normalized == second_normalized:
-
-    return True
-
-
-
-similarity = SequenceMatcher(
-
-    None,
-
-    first_normalized,
-
-    second_normalized,
-
-).ratio()
-
-
-
-if similarity >= 0.82:
-
-    return True
-
-
-
-first_words = set(first_normalized.split())
-
-second_words = set(second_normalized.split())
-
-
-
-if not first_words or not second_words:
-
-    return False
-
-
-
-overlap = (
-
-    len(first_words.intersection(second_words))
-
-    / min(len(first_words), len(second_words))
-
-)
-
-
-
-return overlap >= 0.75
-
----------------------------------------------------------------------------
-
-Gemini Chat generation
-
----------------------------------------------------------------------------
 
 def _generate_with_token_budget(
-
-client,
-
-prompt: str,
-
-max_output_tokens: int,
-
+    client,
+    prompt: str,
+    max_output_tokens: int,
 ):
+    try:
+        from google.genai import types
 
+        generation_config = types.GenerateContentConfig(
+            max_output_tokens=max_output_tokens
+        )
+
+        chat = client.chats.create(
+            model=GEMINI_MODEL,
+            config=generation_config,
+        )
+
+        response = chat.send_message(prompt)
+
+    except Exception as first_error:
+        print(
+            f"WARNING: Gemini configured chat call failed "
+            f"({first_error}); retrying without explicit config."
+        )
+
+        chat = client.chats.create(
+            model=GEMINI_MODEL
+        )
+
+        response = chat.send_message(prompt)
+
+    try:
+        finish_reason = response.candidates[0].finish_reason
+
+        if (
+            finish_reason
+            and "MAX_TOKENS" in str(finish_reason).upper()
+        ):
+            print(
+                f"WARNING: Gemini response hit "
+                f"max_output_tokens={max_output_tokens}."
+            )
+
+    except Exception:
+        pass
+
+    return response
+
+
+def _generate_more_topics(
+    config: dict,
+    existing: list,
+    count: int = 20,
+) -> list:
+    if not (
+        GEMINI_AVAILABLE
+        and os.environ.get("GEMINI_API_KEY")
+    ):
+        return []
+
+    try:
+        client = genai_client.Client(
+            api_key=os.environ["GEMINI_API_KEY"]
+        )
+
+        existing_sample = "\n".join(
+            f"- {topic}"
+            for topic in existing[-40:]
+        )
+
+        prompt = f"""
+Generate {count} fresh topics for a faceless YouTube channel.
+
+CHANNEL: {config['display_name']}
+NICHE: Animals & wildlife facts
+TONE: {config['tone']}
+
+Already used:
+{existing_sample}
+
+Every topic must be about real animals or wildlife.
+Use specific, surprising subjects such as animal abilities,
+senses, behavior, survival, adaptations, intelligence,
+predators, prey, rare animals, deep-sea animals,
+or unusual animal relationships.
+
+Do NOT generate space, planets, stars, galaxies, black holes,
+astronomy, NASA, generic physics, or unrelated science.
+
+Do not repeat existing topics or close variations.
+
+One topic per line. No numbering, markdown, or quotes.
 """
 
-Generate text using the google-genai Chat API.
+        response = _generate_with_token_budget(
+            client,
+            prompt,
+            800,
+        )
+
+        existing_lower = {
+            x.strip().lower()
+            for x in existing
+        }
+
+        lines = [
+            re.sub(
+                r"^[\d\.\-\)\s]+",
+                "",
+                x,
+            ).strip()
+            for x in response.text.splitlines()
+        ]
+
+        return [
+            x
+            for x in lines
+            if x
+            and x.lower() not in existing_lower
+        ]
+
+    except Exception as e:
+        print(
+            f"WARNING: topic auto-generation failed "
+            f"({e}); will use existing topics."
+        )
+        return []
 
 
+def _looks_like_duplicate_topic(
+    topic: str,
+    used_topics: set,
+) -> bool:
+    normalized = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        topic.lower(),
+    ).strip()
+
+    if not normalized:
+        return True
+
+    for old_topic in used_topics:
+        old_normalized = re.sub(
+            r"[^a-z0-9]+",
+            " ",
+            old_topic.lower(),
+        ).strip()
+
+        if not old_normalized:
+            continue
+
+        if normalized == old_normalized:
+            return True
+
+        words_a = set(normalized.split())
+        words_b = set(old_normalized.split())
+
+        if not words_a or not words_b:
+            continue
+
+        overlap = len(words_a & words_b) / max(
+            1,
+            min(len(words_a), len(words_b)),
+        )
+
+        if overlap >= 0.85:
+            return True
+
+    return False
+
+
+def _generate_winner_inspired_topic(
+    channel_id: str,
+    config: dict,
+    is_short: bool,
+) -> str | None:
+    """
+    Uses real channel performance to generate a NEW topic.
+
+    Winner Hunter only supplies performance context.
+    Gemini is responsible for turning that context into a fresh subject.
+    """
+
+    if not WINNER_HUNTER_AVAILABLE:
+        return None
+
+    if not (
+        GEMINI_AVAILABLE
+        and os.environ.get("GEMINI_API_KEY")
+    ):
+        return None
+
+    try:
+        winner_context = build_winner_context(
+            channel_id
+        )
+
+        if not winner_context:
+            return None
+
+    except Exception as e:
+        print(
+            f"WARNING: Winner Hunter context failed "
+            f"({e}); continuing without it."
+        )
+        return None
+
+    used_topics = get_used_topics(channel_id)
+
+    used_sample = "\n".join(
+        f"- {topic}"
+        for topic in list(used_topics)[-80:]
+    )
+
+    content_length = (
+        "a YouTube Short"
+        if is_short
+        else "a YouTube video"
+    )
+
+    prompt = f"""
+You are the topic strategist for a faceless YouTube channel about
+animals and wildlife.
+
+Your job is to discover a NEW topic for {content_length}.
+
+REAL CHANNEL PERFORMANCE DATA:
+{winner_context}
+
+PREVIOUSLY USED TOPICS:
+{used_sample}
+
+TASK:
+
+Create ONE completely new animal/wildlife topic inspired by the
+CONTENT PATTERNS that performed well.
 
 IMPORTANT:
+- Do NOT copy any previous title.
+- Do NOT reuse a previous topic with slightly different wording.
+- Do NOT simply rename an existing topic.
+- Do NOT choose one of the exact TOP PERFORMING VIDEOS.
+- Use the underlying winning pattern to find a DIFFERENT animal,
+  behavior, ability, adaptation, survival mechanism, relationship,
+  or surprising fact.
+- The topic must be about real animals or wildlife.
+- Prefer a strong curiosity gap.
+- Prefer a specific subject over a generic "top 10 animals" idea.
+- The topic should have enough factual material for a complete script.
+- Never invent a species, behavior, ability, statistic, or discovery.
+- Do not use space, astronomy, planets, stars, NASA, or unrelated science.
 
-Uses:
+Examples of the transformation we want:
 
+Winning pattern:
+"animals with extreme abilities"
 
+Good:
+"How the Pistol Shrimp Creates a Shockwave With Its Claw"
 
-    client.chats.create()
+Bad:
+"10 More Animals With Extreme Abilities"
 
-    chat.send_message()
+Winning pattern:
+"strange animal behavior"
 
+Good:
+"Why Sea Otters Sometimes Sleep Holding Hands"
+
+Bad:
+"Another Weird Animal Behavior"
+
+Winning pattern:
+"dangerous animals"
+
+Good:
+"The Tiny Animal Whose Venom Can Stop a Predator"
+
+Bad:
+"10 More Deadly Animals"
+
+Return ONLY the topic.
+No numbering.
+No quotes.
+No explanation.
 """
 
-
-
-try:
-
-    from google.genai import types
-
-
-
-    generation_config = types.GenerateContentConfig(
-
-        max_output_tokens=max_output_tokens,
-
-    )
-
-
-
-    chat = client.chats.create(
-
-        model=GEMINI_MODEL,
-
-        config=generation_config,
-
-    )
-
-
-
-    response = chat.send_message(prompt)
-
-
-
-except Exception as first_error:
-
-
-
-    print(
-
-        "WARNING: Gemini Chat generation with explicit token config "
-
-        f"failed ({first_error}); retrying without explicit config."
-
-    )
-
-
-
-    chat = client.chats.create(
-
-        model=GEMINI_MODEL,
-
-    )
-
-
-
-    response = chat.send_message(prompt)
-
-
-
-finish_reason = None
-
-
-
-try:
-
-    finish_reason = response.candidates[0].finish_reason
-
-except Exception:
-
-    pass
-
-
-
-if (
-
-    finish_reason
-
-    and "MAX_TOKENS" in str(finish_reason).upper()
-
-):
-
-    print(
-
-        "WARNING: Gemini response was truncated by "
-
-        f"max_output_tokens={max_output_tokens}. "
-
-        "The generated script may be shorter than the target."
-
-    )
-
-
-
-return response
-
----------------------------------------------------------------------------
-
-Winner Hunter topic generation
-
----------------------------------------------------------------------------
-
-def _generate_winner_hunter_topic(
-
-channel_id: str,
-
-config: dict,
-
-) -> str | None:
-
-"""
-
-Uses the separate winner_hunter.py module to obtain real channel
-
-performance patterns and asks Gemini to create a completely new topic.
-
-
-
-Winner Hunter itself performs the Analytics analysis.
-
-This function only turns those patterns into a new topic.
-
-"""
-
-
-
-if not (
-
-    GEMINI_AVAILABLE
-
-    and os.environ.get("GEMINI_API_KEY")
-
-    and build_winner_context
-
-):
-
-    return None
-
-
-
-try:
-
-    winner_context = build_winner_context(
-
-        channel_id
-
-    )
-
-
-
-    if not winner_context:
-
+    try:
+        client = genai_client.Client(
+            api_key=os.environ["GEMINI_API_KEY"]
+        )
+
+        response = _generate_with_token_budget(
+            client,
+            prompt,
+            300,
+        )
+
+        topic = response.text.strip()
+
+        topic = re.sub(
+            r"^[\d\.\-\)\s]+",
+            "",
+            topic,
+        ).strip()
+
+        topic = topic.strip('"').strip("'").strip()
+
+        if not topic:
+            return None
+
+        if "\n" in topic:
+            topic = topic.splitlines()[0].strip()
+
+        if _looks_like_duplicate_topic(
+            topic,
+            used_topics,
+        ):
+            print(
+                "Winner Hunter generated a topic too "
+                "similar to an existing topic; rejecting it."
+            )
+            return None
+
+        print(
+            f"Winner Hunter selected NEW topic: {topic}"
+        )
+
+        mark_topic_used(
+            channel_id,
+            topic,
+        )
+
+        return topic
+
+    except Exception as e:
+        print(
+            f"WARNING: Winner Hunter topic generation failed "
+            f"({e}); continuing with normal topic selection."
+        )
         return None
 
 
-
-    used_topics = get_used_topics(
-
-        channel_id
-
-    )
-
-
-
+def pick_next_topic(
+    channel_id: str,
+    config: dict,
+) -> str:
     topics_file = ROOT / config["topics_seed_file"]
 
-
-
-    seed_topics = []
-
-
-
-    if topics_file.exists():
-
-        seed_topics = [
-
-            line.strip()
-
-            for line in topics_file.read_text(
-
-                encoding="utf-8"
-
-            ).splitlines()
-
-            if line.strip()
-
-        ]
-
-
-
-    recent_used = list(used_topics)[-80:]
-
-
-
-    existing_text = "\n".join(
-
-        f"- {topic}"
-
-        for topic in recent_used
-
-    )
-
-
-
-    if not existing_text:
-
-        existing_text = "- None"
-
-
-
-    client = genai_client.Client(
-
-        api_key=os.environ["GEMINI_API_KEY"]
-
-    )
-
-
-
-    prompt = f"""
-
-You are the growth topic strategist for a faceless YouTube channel
-
-focused on animals and wildlife.
-
-CHANNEL:
-
-{config['display_name']}
-
-NICHE:
-
-{config['niche']}
-
-TONE:
-
-{config['tone']}
-
-REAL WINNER HUNTER PERFORMANCE DATA:
-
-{winner_context}
-
-The data above comes from this channel's real YouTube Analytics.
-
-Your job is to identify WHY certain content performs well and then
-
-create completely NEW subjects using those successful patterns.
-
-Do NOT copy existing videos.
-
-Do NOT rewrite an existing title.
-
-Do NOT make a near-duplicate of an existing topic.
-
-Examples:
-
-If extreme animal abilities perform well:
-
-choose a NEW animal and a NEW ability.
-
-If strange behavior performs well:
-
-choose a NEW species and a DIFFERENT strange behavior.
-
-If dangerous animals perform well:
-
-choose a NEW animal and a DIFFERENT danger mechanism.
-
-If survival adaptations perform well:
-
-choose a NEW species and a DIFFERENT survival adaptation.
-
-ONLY generate topics about:
-
-real animals
-
-wildlife
-
-animal behavior
-
-animal abilities
-
-animal adaptations
-
-animal survival
-
-animal intelligence
-
-predators and prey
-
-unusual animal biology
-
-surprising animal facts
-
-
-DO NOT generate:
-
-space
-
-planets
-
-technology
-
-politics
-
-humans as the main subject
-
-generic science
-
-motivation
-
-fictional animals
-
-fake discoveries
-
-
-ALREADY USED TOPICS:
-
-{existing_text}
-
-Generate 12 possible NEW topics.
-
-Every topic must:
-
-focus on a specific animal or animal group
-
-have a strong curiosity angle
-
-contain a real biological subject
-
-be specific enough for a complete video
-
-be meaningfully different from previous topics
-
-avoid unsupported clickbait
-
-
-No numbering.
-
-No bullets.
-
-No quotes.
-
-One topic per line.
-
-"""
-
-response = _generate_with_token_budget(
-
-        client,
-
-        prompt,
-
-        max_output_tokens=900,
-
-    )
-
-
-
-    candidates = []
-
-
-
-    for line in response.text.splitlines():
-
-
-
-        candidate = re.sub(
-
-            r"^[\d\.\-\)\s]+",
-
-            "",
-
-            line,
-
-        ).strip()
-
-
-
-        candidate = candidate.strip(
-
-            "\"'"
-
-        )
-
-
-
-        if candidate:
-
-            candidates.append(candidate)
-
-
-
-    all_existing = (
-
-        list(used_topics)
-
-        + seed_topics
-
-    )
-
-
-
-    for candidate in candidates:
-
-
-
-        if any(
-
-            _topics_are_similar(
-
-                candidate,
-
-                old_topic,
-
-            )
-
-            for old_topic in all_existing
-
-        ):
-
-            continue
-
-
-
-        mark_topic_used(
-
-            channel_id,
-
-            candidate,
-
-        )
-
-
-
-        print(
-
-            "Winner Hunter selected NEW topic: "
-
-            f"{candidate}"
-
-        )
-
-
-
-        return candidate
-
-
-
-    print(
-
-        "Winner Hunter generated candidates, "
-
-        "but all candidates were duplicates or too similar."
-
-    )
-
-
-
-    return None
-
-
-
-except Exception as e:
-
-
-
-    print(
-
-        "WARNING: Winner Hunter topic generation failed "
-
-        f"({e}); continuing with normal topic selection."
-
-    )
-
-
-
-    return None
-
----------------------------------------------------------------------------
-
-Long-form -> Short recap state
-
----------------------------------------------------------------------------
-
-def _todays_longform_path(channel_id: str) -> Path:
-
-return STATE_DIR / f"{channel_id}_todays_longform.json"
-
-def save_todays_longform_topic(
-
-channel_id: str,
-
-topic: str,
-
-) -> None:
-
-today = datetime.now(
-
-    timezone.utc
-
-).strftime("%Y-%m-%d")
-
-
-
-STATE_DIR.mkdir(
-
-    parents=True,
-
-    exist_ok=True,
-
-)
-
-
-
-_todays_longform_path(
-
-    channel_id
-
-).write_text(
-
-    json.dumps(
-
-        {
-
-            "date": today,
-
-            "topic": topic,
-
-            "used_for_short": False,
-
-        },
-
-        ensure_ascii=False,
-
-        indent=2,
-
-    ),
-
-    encoding="utf-8",
-
-)
-
-def get_recap_topic_for_short(
-
-channel_id: str,
-
-) -> str | None:
-
-path = _todays_longform_path(
-
-    channel_id
-
-)
-
-
-
-if not path.exists():
-
-    return None
-
-
-
-try:
-
-    data = json.loads(
-
-        path.read_text(
-
+    all_topics = [
+        x.strip()
+        for x in topics_file.read_text(
             encoding="utf-8"
-
-        )
-
-    )
-
-except (
-
-    json.JSONDecodeError,
-
-    OSError,
-
-):
-
-    return None
-
-
-
-today = datetime.now(
-
-    timezone.utc
-
-).strftime("%Y-%m-%d")
-
-
-
-if data.get("date") != today:
-
-    return None
-
-
-
-if data.get("used_for_short"):
-
-    return None
-
-
-
-topic = data.get("topic")
-
-
-
-if not topic:
-
-    return None
-
-
-
-data["used_for_short"] = True
-
-
-
-path.write_text(
-
-    json.dumps(
-
-        data,
-
-        ensure_ascii=False,
-
-        indent=2,
-
-    ),
-
-    encoding="utf-8",
-
-)
-
-
-
-return topic
-
----------------------------------------------------------------------------
-
-Normal topic generation
-
----------------------------------------------------------------------------
-
-def _generate_more_topics(
-
-config: dict,
-
-existing: list,
-
-count: int = 20,
-
-) -> list:
-
-if not (
-
-    GEMINI_AVAILABLE
-
-    and os.environ.get("GEMINI_API_KEY")
-
-):
-
-    return []
-
-
-
-try:
-
-
-
-    client = genai_client.Client(
-
-        api_key=os.environ["GEMINI_API_KEY"]
-
-    )
-
-
-
-    existing_sample = "\n".join(
-
-        f"- {topic}"
-
-        for topic in existing[-40:]
-
-    )
-
-
-
-    prompt = f"""
-
-You generate topic ideas for a faceless YouTube channel focused on
-
-animals and wildlife facts.
-
-Channel:
-
-{config['display_name']}
-
-Niche:
-
-{config['niche']}
-
-Tone:
-
-{config['tone']}
-
-Here are topics already covered.
-
-Do NOT repeat these or close variations:
-
-{existing_sample}
-
-Generate {count} brand new topic ideas for this channel focusing on
-
-animals, wildlife, animal behavior, biology, and ecology.
-
-Each topic must:
-
-Be a single line.
-
-Be specific enough to script a video from.
-
-Be genuinely different from the existing topics.
-
-Be interesting to viewers.
-
-
-No numbering.
-
-No markdown.
-
-No quotes.
-
-Just one topic per line.
-
-"""
-
-response = _generate_with_token_budget(
-
-        client,
-
-        prompt,
-
-        max_output_tokens=800,
-
-    )
-
-
-
-    lines = [
-
-        re.sub(
-
-            r"^[\d\.\-\)\s]+",
-
-            "",
-
-            line,
-
-        ).strip()
-
-        for line in response.text.splitlines()
-
+        ).splitlines()
+        if x.strip()
     ]
 
+    used = get_used_topics(channel_id)
 
-
-    return [
-
-        line
-
-        for line in lines
-
-        if line
-
-        and line not in existing
-
+    unused = [
+        x
+        for x in all_topics
+        if x not in used
     ]
 
-
-
-except Exception as e:
-
-
-
-    print(
-
-        "WARNING: topic auto-generation failed "
-
-        f"({e}); will loop existing topics instead."
-
-    )
-
-
-
-    return []
-
-def pick_next_topic(
-
-channel_id: str,
-
-config: dict,
-
-) -> str:
-
-topics_file = ROOT / config["topics_seed_file"]
-
-
-
-all_topics = [
-
-    line.strip()
-
-    for line in topics_file.read_text(
-
-        encoding="utf-8"
-
-    ).splitlines()
-
-    if line.strip()
-
-]
-
-
-
-used = get_used_topics(
-
-    channel_id
-
-)
-
-
-
-unused = [
-
-    topic
-
-    for topic in all_topics
-
-    if topic not in used
-
-]
-
-
-
-if not unused:
-
-
-
-    new_topics = _generate_more_topics(
-
-        config,
-
-        all_topics,
-
-    )
-
-
-
-    if new_topics:
-
-
-
-        with topics_file.open(
-
-            "a",
-
-            encoding="utf-8",
-
-        ) as f:
-
-            f.write(
-
-                "\n"
-
-                + "\n".join(new_topics)
-
-                + "\n"
-
-            )
-
-
-
-        print(
-
-            f"Added {len(new_topics)} new topics "
-
-            f"to {topics_file.name}"
-
+    if not unused:
+        new_topics = _generate_more_topics(
+            config,
+            all_topics,
         )
 
+        if new_topics:
+            with topics_file.open(
+                "a",
+                encoding="utf-8",
+            ) as f:
+                f.write(
+                    "\n"
+                    + "\n".join(new_topics)
+                    + "\n"
+                )
 
+            unused = new_topics
 
-        unused = new_topics
+        else:
+            unused = all_topics
 
+    if not unused:
+        raise RuntimeError(
+            f"No topics available for channel '{channel_id}'."
+        )
 
+    topic = random.choice(unused)
 
-    else:
-
-        unused = all_topics
-
-
-
-if not unused:
-
-    raise RuntimeError(
-
-        f"No topics available for channel '{channel_id}'."
-
+    mark_topic_used(
+        channel_id,
+        topic,
     )
 
+    return topic
 
 
-topic = random.choice(
+def pick_language(config: dict) -> str:
+    return random.choice(
+        config.get("languages") or ["en"]
+    )
 
-    unused
-
-)
-
-
-
-mark_topic_used(
-
-    channel_id,
-
-    topic,
-
-)
-
-
-
-return topic
-
----------------------------------------------------------------------------
-
-Language / voice
-
----------------------------------------------------------------------------
-
-def pick_language(
-
-config: dict,
-
-) -> str:
-
-languages = (
-
-    config.get("languages")
-
-    or ["en"]
-
-)
-
-
-
-return random.choice(
-
-    languages
-
-)
 
 def _voice_for_language(
-
-config: dict,
-
-language: str,
-
+    config: dict,
+    language: str,
 ) -> str:
+    voices = config.get("voices") or {}
 
-voices = (
-
-    config.get("voices")
-
-    or {}
-
-)
-
-
-
-voice = (
-
-    voices.get(language)
-
-    or config.get("voice")
-
-)
-
-
-
-if not voice:
-
-    raise ValueError(
-
-        f"No TTS voice configured for language "
-
-        f"'{language}' in this channel's yaml."
-
+    voice = (
+        voices.get(language)
+        or config.get("voice")
     )
 
+    if not voice:
+        raise ValueError(
+            f"No TTS voice configured for language '{language}'."
+        )
+
+    return voice
 
 
-return voice
+def _clean_script_text(text: str) -> str:
+    text = re.sub(
+        r"\*+",
+        "",
+        text,
+    )
 
----------------------------------------------------------------------------
+    text = re.sub(
+        r"\[.*?\]",
+        "",
+        text,
+    )
 
-Script cleaning
+    text = re.sub(
+        r"\(.*?\)",
+        "",
+        text,
+    )
 
----------------------------------------------------------------------------
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
 
-def _clean_script_text(
+    return text.strip()
 
-text: str,
-
-) -> str:
-
-text = re.sub(
-
-    r"\*+",
-
-    "",
-
-    text,
-
-)
-
-
-
-text = re.sub(
-
-    r".*?",
-
-    "",
-
-    text,
-
-)
-
-
-
-text = re.sub(
-
-    r".*?",
-
-    "",
-
-    text,
-
-)
-
-
-
-text = re.sub(
-
-    r"\n{3,}",
-
-    "\n\n",
-
-    text,
-
-)
-
-
-
-return text.strip()
-
----------------------------------------------------------------------------
-
-Title/script parser
-
----------------------------------------------------------------------------
 
 def _parse_titled_response(
-
-text: str,
-
-fallback_topic: str,
-
+    text: str,
+    fallback_topic: str,
 ) -> dict:
-
-title_match = re.search(
-
-    r"TITLE:\s*(.+)",
-
-    text,
-
-)
-
-
-
-script_match = re.search(
-
-    r"SCRIPT:\s*(.*)",
-
-    text,
-
-    re.DOTALL,
-
-)
-
-
-
-title = (
-
-    title_match.group(1).strip()
-
-    if title_match
-
-    else fallback_topic
-
-)
-
-
-
-script_raw = (
-
-    script_match.group(1).strip()
-
-    if script_match
-
-    else text
-
-)
-
-
-
-return {
-
-    "title": title,
-
-    "script": _clean_script_text(
-
-        script_raw
-
-    ),
-
-}
-
----------------------------------------------------------------------------
-
-Animals & Wildlife Facts Gemini generation
-
----------------------------------------------------------------------------
-
-def generate_with_gemini(
-
-topic: str,
-
-config: dict,
-
-length_seconds: int,
-
-language: str,
-
-) -> dict:
-
-client = genai_client.Client(
-
-    api_key=os.environ["GEMINI_API_KEY"]
-
-)
-
-
-
-if length_seconds <= 45:
-
-    words_target = 115
-
-elif length_seconds <= 55:
-
-    words_target = 135
-
-else:
-
-    words_target = round(
-
-        length_seconds / 60 * 140
-
+    title_match = re.search(
+        r"TITLE:\s*(.+)",
+        text,
     )
 
-
-
-language_name = LANGUAGE_NAMES.get(
-
-    language,
-
-    language,
-
-)
-
-
-
-prompt = f"""
-
-You are the lead wildlife and biology writer for a premium faceless
-
-YouTube channel called "{config['display_name']}".
-
-CHANNEL NICHE:
-
-{config['niche']}
-
-CHANNEL TONE:
-
-{config['tone']}
-
-TOPIC:
-
-{topic}
-
-Write a highly engaging wildlife, animal behavior, and biology voiceover.
-
-The viewer should feel:
-
-"I had no idea animals could do that."
-
-IMPORTANT:
-
-This is NOT a generic motivational video.
-
-This is NOT a list of random facts.
-
-This is NOT an introduction to basic biology.
-
-The entire script must be specifically about the supplied topic.
-
-FACTUAL STANDARD:
-
-Use established biological and ecological knowledge whenever possible.
-
-Do not invent statistics, discoveries, quotes, experiments, or findings.
-
-Do not present speculation as fact.
-
-If the topic involves a hypothesis or unusual animal behavior, clearly signal
-
-that researchers have observed it or that it is studied by biologists.
-
-Prefer concrete biological explanations over vague descriptions.
-
-If a precise number is uncertain or unnecessary, don't invent one.
-
-Avoid sensational claims that contradict established science.
-
-Do not use physically impossible explanations just to make the story
-
-sound dramatic.
-
-
-RETENTION STRUCTURE:
-
-1. HOOK
-
-
-
-Start with the most surprising consequence, question, or image about the animal.
-
-Do NOT simply repeat the topic.
-
-2. SETUP
-
-
-
-Give just enough context for the viewer to understand the animal and its environment.
-
-3. ESCALATION
-
-
-
-Explain the biological process or behavior step by step.
-
-Each sentence should make the situation more interesting.
-
-4. PAYOFF
-
-
-
-Reveal the strangest, most surprising, or least-known consequence of this animal trait.
-
-5. FINAL LINE
-
-
-
-End on a memorable biological thought connected directly to the topic.
-
-Do NOT say:
-
-subscribe
-
-like
-
-follow
-
-in conclusion
-
-WRITING RULES:
-
-Conversational spoken language.
-
-Short sentences mixed with occasional longer sentences.
-
-No academic-paper language.
-
-No unnecessary definitions.
-
-No filler.
-
-No motivational life lessons.
-
-No generic phrases such as:
-
-"Here's something most people don't know"
-
-"It sounds simple"
-
-"This reveals a lot about nature"
-
-"Once you understand"
-
-"you'll start noticing"
-
-"changes how you see the world"
-
-"in the wild"
-
-"nature is full of mysteries"
-
-Do not begin by repeating the topic.
-
-Do not use rhetorical filler every few sentences.
-
-Every sentence must either create curiosity, explain something,
-
-or deliver a payoff.
-
-Do not use emojis.
-
-Do not use stage directions.
-
-Do not use visual notes.
-
-Do not use markdown.
-
-Do not mention that you are an AI.
-
-The narration must sound natural when read by text-to-speech.
-
-
-VISUAL THINKING:
-
-Write sentences that naturally correspond to visual moments.
-
-For example, if explaining an animal hunting or defense mechanism, the narration might naturally
-
-move through:
-
-habitat -> stealth -> ambush -> pursuit -> escape.
-
-Do not literally write those visual labels into the script.
-
-LANGUAGE:
-
-Write entirely in {language_name}.
-
-If the requested language is Hindi, use natural modern Hindi in Devanagari,
-
-not Romanized Hindi.
-
-LENGTH:
-
-Approximately {words_target} words.
-
-Do not pad the script merely to reach the word count.
-
-A slightly shorter excellent script is better than a longer repetitive one.
-
-OUTPUT FORMAT:
-
-Respond in EXACTLY this format and nothing else:
+    script_match = re.search(
+        r"SCRIPT:\s*(.*)",
+        text,
+        re.DOTALL,
+    )
+
+    return {
+        "title": (
+            title_match.group(1).strip()
+            if title_match
+            else fallback_topic
+        ),
+        "script": _clean_script_text(
+            script_match.group(1).strip()
+            if script_match
+            else text
+        ),
+    }
+
+
+def generate_with_gemini(
+    topic: str,
+    config: dict,
+    length_seconds: int,
+    language: str,
+) -> dict:
+    client = genai_client.Client(
+        api_key=os.environ["GEMINI_API_KEY"]
+    )
+
+    if length_seconds <= 45:
+        words_target = 115
+    elif length_seconds <= 55:
+        words_target = 135
+    else:
+        words_target = round(
+            length_seconds / 60 * 140
+        )
+
+    language_name = LANGUAGE_NAMES.get(
+        language,
+        language,
+    )
+
+    prompt = f"""
+You are the lead writer for a faceless YouTube channel called
+"{config['display_name']}".
+
+NICHE: Animals and wildlife facts.
+TONE: Curious, surprising, energetic, punchy, conversational —
+like telling a friend an amazing animal fact.
+
+TOPIC: {topic}
+
+Write a highly engaging voiceover about this exact
+animal/wildlife topic.
+
+CONTENT RULES:
+- The entire script must be about animals or wildlife.
+- Use real, well-established facts.
+- Never invent statistics, discoveries, quotes, experiments,
+  behaviors, or abilities.
+- Never exaggerate an animal's abilities or present speculation
+  as fact.
+- Do NOT write about space, planets, stars, galaxies, black holes,
+  astronomy, NASA, the universe, or unrelated physics.
+- Keep the focus on the specific animal, species, behavior,
+  adaptation, ability, survival strategy, or relationship in
+  the topic.
+
+STRUCTURE:
+1. Open with the strangest or most surprising consequence,
+   question, or image connected to the animal.
+2. Give only enough setup to understand the animal and situation.
+3. Reveal interesting facts step by step, increasing curiosity.
+4. Save a genuinely surprising fact for the payoff.
+5. End with a memorable line directly connected to the animal.
+
+STYLE:
+- Natural spoken language suitable for text-to-speech.
+- Short sentences mixed with occasional longer ones.
+- No academic-paper language, filler, generic listicles,
+  motivational lessons, emojis, stage directions, visual labels,
+  or markdown.
+- Do not begin by simply repeating the topic.
+- Do not mention AI.
+- Do not say subscribe, like, or follow.
+
+LANGUAGE: Write entirely in {language_name}.
+
+If Hindi is requested, use Devanagari, not Romanized Hindi.
+
+LENGTH: approximately {words_target} words.
+Do not pad with repetition.
+
+OUTPUT EXACTLY:
 
 TITLE: <punchy YouTube title under 90 characters>
 
 SCRIPT:
+<spoken narration only>
+"""
 
-<spoken narration only>"""
+    response = _generate_with_token_budget(
+        client,
+        prompt,
+        _max_output_tokens_for(words_target),
+    )
 
-max_tokens = _max_output_tokens_for(
+    result = _parse_titled_response(
+        response.text,
+        topic,
+    )
 
-    words_target
+    result["title"] = (
+        result["title"]
+        .strip()
+        .strip('"')
+        .strip("'")
+    )
 
-)
+    return result
 
-
-
-response = _generate_with_token_budget(
-
-    client,
-
-    prompt,
-
-    max_tokens,
-
-)
-
-
-
-result = _parse_titled_response(
-
-    response.text,
-
-    fallback_topic=topic,
-
-)
-
-
-
-result["title"] = (
-
-    result["title"]
-
-    .strip()
-
-    .strip('"')
-
-    .strip("'")
-
-)
-
-
-
-return result
-
----------------------------------------------------------------------------
-
-Emergency template fallback
-
----------------------------------------------------------------------------
 
 def generate_with_template(
-
-topic: str,
-
-config: dict,
-
-language: str,
-
+    topic: str,
+    config: dict,
+    length_seconds: int,
+    language: str,
 ) -> dict:
+    return {
+        "title": topic.strip(),
+        "script": (
+            f"{topic}. The surprising part is what happens next. "
+            "This animal has a remarkable way of surviving, behaving, "
+            "or adapting to its environment. And the strangest part is "
+            "that this is a real behavior found in the animal world."
+        ),
+    }
 
-if language == "hi":
-
-
-
-    script = (
-
-        f"क्या आपने कभी सोचा है कि {topic} के पीछे असल में क्या होता है? "
-
-        f"यह सवाल जितना आसान लगता है, इसकी असली कहानी उतनी ही दिलचस्प है। "
-
-        f"वैज्ञानिक और जीव-विज्ञान विशेषज्ञ इस व्यवहार को समझने के लिए "
-
-        f"प्राकृतिक अनुकूलन का अध्ययन करते हैं। और सबसे दिलचस्प बात यह है "
-
-        f"कि इसका जवाब हमारी सोच से कहीं ज्यादा जटिल है।"
-
-    )
-
-
-
-    title = f"{topic}"
-
-
-
-else:
-
-
-
-    script = (
-
-        f"{topic}. "
-
-        f"The surprising part is what happens next. "
-
-        f"Biologists can explain this using the remarkable adaptations behind "
-
-        f"{config['niche'].lower()}. "
-
-        f"And once you understand the real reason, "
-
-        f"the natural world suddenly looks a little stranger."
-
-    )
-
-
-
-    title = (
-
-        topic[0].upper() + topic[1:]
-
-        if topic
-
-        else topic
-
-    )
-
-
-
-return {
-
-    "title": title,
-
-    "script": script,
-
-}
-
----------------------------------------------------------------------------
-
-Public API
-
----------------------------------------------------------------------------
 
 def generate_script(
-
-channel_id: str,
-
-is_short: bool = False,
-
-forced_topic: str = None,
-
+    channel_id: str,
+    is_short: bool = False,
+    forced_topic: str | None = None,
 ) -> dict:
+    config = load_channel_config(
+        channel_id
+    )
 
-config = load_channel_config(
+    length = (
+        config["short_length_seconds"]
+        if is_short
+        else config["video_length_seconds"]
+    )
 
-    channel_id
-
-)
-
-
-
-topic = None
-
-topic_already_marked_used = False
-
-
-
-# -------------------------------------------------------
-
-# 1. Forced topic
-
-# -------------------------------------------------------
-
-
-
-if forced_topic:
-
-
+    language = pick_language(config)
 
     topic = forced_topic
 
-
-
-else:
-
-
-
-    # ---------------------------------------------------
-
-    # 2. Winner Hunter
-
-    # ---------------------------------------------------
-
-
-
-    winner_topic = _generate_winner_hunter_topic(
-
-        channel_id,
-
-        config,
-
-    )
-
-
-
-    if winner_topic:
-
-
-
-        topic = winner_topic
-
-        topic_already_marked_used = True
-
-
-
-    # ---------------------------------------------------
-
-    # 3. Daily Brain
-
-    # ---------------------------------------------------
-
-
-
+    # ---------------------------------------------------------------
+    # 1. Forced topic always wins.
+    # ---------------------------------------------------------------
     if not topic:
-
-
-
+        # -----------------------------------------------------------
+        # 2. Winner Hunter uses REAL Analytics data to find a NEW
+        #    topic based on patterns that performed well.
+        # -----------------------------------------------------------
         try:
-
-
-
-            topic = get_daily_brain_topic(
-
+            topic = _generate_winner_inspired_topic(
                 channel_id,
-
                 config,
-
                 is_short,
-
             )
-
-
-
         except Exception as e:
-
-
-
             print(
-
-                "WARNING: Daily Brain topic selection failed "
-
-                f"({e}); continuing."
-
+                f"WARNING: Winner Hunter selection failed "
+                f"({e}); continuing with normal selection."
             )
 
-
-
-            topic = None
-
-
-
-    # ---------------------------------------------------
-
-    # 4. Trend Scout
-
-    # ---------------------------------------------------
-
-
-
+    # ---------------------------------------------------------------
+    # 3. Existing Daily Brain system remains as fallback.
+    # ---------------------------------------------------------------
     if not topic:
-
-
-
         try:
-
-
-
-            topic = get_trending_topic(
-
+            topic = get_daily_brain_topic(
                 channel_id,
-
                 config,
-
+                is_short,
             )
-
-
 
         except Exception as e:
-
-
-
             print(
-
-                "WARNING: Trend Scout topic selection failed "
-
-                f"({e}); continuing."
-
+                f"WARNING: Daily Brain topic selection failed "
+                f"({e}); using fallback selection."
             )
 
-
-
-            topic = None
-
-
-
-    # ---------------------------------------------------
-
-    # 5. Static topic pool
-
-    # ---------------------------------------------------
-
-
-
+    # ---------------------------------------------------------------
+    # 4. Trend Scout remains as fallback.
+    # ---------------------------------------------------------------
     if not topic:
+        try:
+            topic = get_trending_topic(
+                channel_id,
+                config,
+            )
 
+        except Exception as e:
+            print(
+                f"WARNING: Trend Scout topic selection failed "
+                f"({e}); using static topics."
+            )
 
-
+    # ---------------------------------------------------------------
+    # 5. Static seed topics remain the final fallback.
+    # ---------------------------------------------------------------
+    if not topic:
         topic = pick_next_topic(
-
             channel_id,
-
             config,
-
         )
 
+    # Forced topics were not automatically marked above.
+    if forced_topic:
+        mark_topic_used(
+            channel_id,
+            topic,
+        )
 
-
-        topic_already_marked_used = True
-
-
-
-    # Daily Brain / Trend Scout topics are marked here.
+    generated = None
 
     if (
-
-        topic
-
-        and not topic_already_marked_used
-
+        GEMINI_AVAILABLE
+        and os.environ.get("GEMINI_API_KEY")
     ):
-
-
-
-        mark_topic_used(
-
-            channel_id,
-
-            topic,
-
-        )
-
-
-
-if not topic:
-
-
-
-    raise RuntimeError(
-
-        f"Could not select a topic for channel "
-
-        f"'{channel_id}'."
-
-    )
-
-
-
-language = pick_language(
-
-    config
-
-)
-
-
-
-length = (
-
-    config["short_length_seconds"]
-
-    if is_short
-
-    else config["video_length_seconds"]
-
-)
-
-
-
-# -------------------------------------------------------
-
-# Script generation
-
-# -------------------------------------------------------
-
-
-
-if (
-
-    GEMINI_AVAILABLE
-
-    and os.environ.get("GEMINI_API_KEY")
-
-):
-
-
-
-    try:
-
-
-
-        generated = generate_with_gemini(
-
-            topic,
-
-            config,
-
-            length,
-
-            language,
-
-        )
-
-
-
-    except Exception as e:
-
-
-
-        print(
-
-            f"WARNING: Gemini call failed ({e}); "
-
-            "using template fallback."
-
-        )
-
-
-
-        generated = generate_with_template(
-
-            topic,
-
-            config,
-
-            language,
-
-        )
-
-
-
-else:
-
-
-
-    generated = generate_with_template(
-
-        topic,
-
-        config,
-
-        language,
-
-    )
-
-
-
-return {
-
-    "channel_id": channel_id,
-
-    "topic": topic,
-
-    "title": generated["title"],
-
-    "script": generated["script"],
-
-    "language": language,
-
-    "voice": _voice_for_language(
-
-        config,
-
-        language,
-
-    ),
-
-    "is_short": is_short,
-
-}
-
----------------------------------------------------------------------------
-
-Kids content
-
----------------------------------------------------------------------------
-
-KIDS_CONTENT_TYPES = [
-
-"rhyme",
-
-"story",
-
-"learning",
-
-]
-
-def pick_content_type(
-
-config: dict,
-
-) -> str:
-
-return random.choice(
-
-    config.get("content_types")
-
-    or KIDS_CONTENT_TYPES
-
-)
-
-def _kids_seed_path(
-
-config: dict,
-
-content_type: str,
-
-) -> Path:
-
-return (
-
-    ROOT
-
-    / config["topics_seed_files"][content_type]
-
-)
-
-def _kids_dedupe_key(
-
-channel_id: str,
-
-content_type: str,
-
-) -> str:
-
-return (
-
-    f"{channel_id}__{content_type}"
-
-)
-
----------------------------------------------------------------------------
-
-Kids topic generation
-
----------------------------------------------------------------------------
-
-def _generate_more_kids_topics(
-
-config: dict,
-
-content_type: str,
-
-existing: list,
-
-count: int = 20,
-
-) -> list:
-
-if not (
-
-    GEMINI_AVAILABLE
-
-    and os.environ.get("GEMINI_API_KEY")
-
-):
-
-    return []
-
-
-
-try:
-
-
-
-    client = genai_client.Client(
-
-        api_key=os.environ["GEMINI_API_KEY"]
-
-    )
-
-
-
-    existing_sample = "\n".join(
-
-        f"- {topic}"
-
-        for topic in existing[-40:]
-
-    )
-
-
-
-    kind_description = {
-
-        "rhyme": (
-
-            "short original Hindi rhyme/poem themes "
-
-            "for young children ages 2-6"
-
-        ),
-
-        "story": (
-
-            "short moral story premises for young "
-
-            "children, gentle and positive"
-
-        ),
-
-        "learning": (
-
-            "simple learning topics for young children "
-
-            "such as letters, numbers, colors, shapes, "
-
-            "and categories"
-
-        ),
-
-    }[content_type]
-
-
-
-    prompt = f"""
-
-You generate video theme ideas for a children's YouTube channel.
-
-Channel:
-
-{config['display_name']}
-
-This batch is for:
-
-{kind_description}
-
-Already-used themes:
-
-{existing_sample}
-
-Do NOT repeat these or close variations.
-
-Generate {count} brand new theme ideas.
-
-Each theme must:
-
-Be one short line.
-
-Be specific enough to build one video from.
-
-Be clearly different from the existing themes.
-
-
-No numbering.
-
-No markdown.
-
-No quotes.
-
-Just one theme per line.
-
-"""
-
-response = _generate_with_token_budget(
-
-        client,
-
-        prompt,
-
-        max_output_tokens=800,
-
-    )
-
-
-
-    lines = [
-
-        re.sub(
-
-            r"^[\d\.\-\)\s]+",
-
-            "",
-
-            line,
-
-        ).strip()
-
-        for line in response.text.splitlines()
-
-    ]
-
-
-
-    return [
-
-        line
-
-        for line in lines
-
-        if line
-
-        and line not in existing
-
-    ]
-
-
-
-except Exception as e:
-
-
-
-    print(
-
-        "WARNING: kids topic auto-generation failed "
-
-        f"({e}); will loop existing topics instead."
-
-    )
-
-
-
-    return []
-
-def pick_next_kids_topic(
-
-channel_id: str,
-
-config: dict,
-
-content_type: str,
-
-) -> str:
-
-topics_file = _kids_seed_path(
-
-    config,
-
-    content_type,
-
-)
-
-
-
-dedupe_key = _kids_dedupe_key(
-
-    channel_id,
-
-    content_type,
-
-)
-
-
-
-all_topics = [
-
-    line.strip()
-
-    for line in topics_file.read_text(
-
-        encoding="utf-8"
-
-    ).splitlines()
-
-    if line.strip()
-
-]
-
-
-
-used = get_used_topics(
-
-    dedupe_key
-
-)
-
-
-
-unused = [
-
-    topic
-
-    for topic in all_topics
-
-    if topic not in used
-
-]
-
-
-
-if not unused:
-
-
-
-    new_topics = _generate_more_kids_topics(
-
-        config,
-
-        content_type,
-
-        all_topics,
-
-    )
-
-
-
-    if new_topics:
-
-
-
-        with topics_file.open(
-
-            "a",
-
-            encoding="utf-8",
-
-        ) as f:
-
-            f.write(
-
-                "\n"
-
-                + "\n".join(new_topics)
-
-                + "\n"
-
+        try:
+            generated = generate_with_gemini(
+                topic,
+                config,
+                length,
+                language,
             )
 
+        except Exception as e:
+            print(
+                f"WARNING: Gemini script generation failed "
+                f"({e}); using template fallback."
+            )
 
-
-        print(
-
-            f"Added {len(new_topics)} new "
-
-            f"{content_type} themes to "
-
-            f"{topics_file.name}"
-
+    if not generated:
+        generated = generate_with_template(
+            topic,
+            config,
+            length,
+            language,
         )
 
+    return {
+        "channel_id": channel_id,
+        "topic": topic,
+        "title": generated["title"],
+        "script": generated["script"],
+        "language": language,
+        "voice": _voice_for_language(
+            config,
+            language,
+        ),
+        "is_short": is_short,
+    }
 
 
-        unused = new_topics
+# ---------------------------------------------------------------------------
+# Kids compatibility helpers
+# ---------------------------------------------------------------------------
+
+def _kids_seed_path(
+    config: dict,
+    content_type: str,
+) -> Path:
+    files = config.get(
+        "kids_topics_files"
+    ) or {}
+
+    path_value = (
+        files.get(content_type)
+        or config.get(
+            f"{content_type}_topics_seed_file"
+        )
+        or config.get(
+            "kids_topics_seed_file"
+        )
+    )
+
+    if not path_value:
+        raise KeyError(
+            f"No kids topic seed file configured "
+            f"for '{content_type}'."
+        )
+
+    return ROOT / path_value
 
 
-
-    else:
-
-
-
-        unused = all_topics
-
-
-
-if not unused:
-
-
-
-    raise RuntimeError(
-
-        f"No topics available for kids "
-
-        f"content type '{content_type}'."
-
+def _kids_dedupe_key(
+    channel_id: str,
+    content_type: str,
+) -> str:
+    return (
+        f"{channel_id}_kids_{content_type}"
     )
 
 
+def pick_content_type(
+    config: dict,
+) -> str:
+    choices = (
+        config.get("kids_content_types")
+        or config.get("content_types")
+        or [
+            "lesson",
+            "story",
+            "rhyme",
+        ]
+    )
 
-topic = random.choice(
+    if isinstance(choices, dict):
+        choices = list(choices.keys())
 
-    unused
-
-)
-
-
-
-mark_topic_used(
-
-    dedupe_key,
-
-    topic,
-
-)
+    return (
+        random.choice(list(choices))
+        if choices
+        else "lesson"
+    )
 
 
+def _generate_more_kids_topics(
+    config: dict,
+    content_type: str,
+    existing: list,
+    count: int = 20,
+) -> list:
+    if not (
+        GEMINI_AVAILABLE
+        and os.environ.get("GEMINI_API_KEY")
+    ):
+        return []
 
-return topic
+    try:
+        client = genai_client.Client(
+            api_key=os.environ["GEMINI_API_KEY"]
+        )
 
----------------------------------------------------------------------------
+        existing_sample = "\n".join(
+            f"- {x}"
+            for x in existing[-40:]
+        )
 
-Kids Gemini generation
+        prompt = f"""
+Generate {count} original children's YouTube topic ideas.
 
----------------------------------------------------------------------------
+Channel: {config.get('display_name', 'Kids channel')}
+Content type: {content_type}
+
+Already used:
+{existing_sample}
+
+Each topic must fit the requested content type
+and be suitable for young children.
+
+Do not copy existing topics.
+Do not use copyrighted song/story titles.
+
+One topic per line.
+No numbering, markdown, or quotes.
+"""
+
+        response = _generate_with_token_budget(
+            client,
+            prompt,
+            700,
+        )
+
+        existing_lower = {
+            x.lower()
+            for x in existing
+        }
+
+        lines = [
+            re.sub(
+                r"^[\d\.\-\)\s]+",
+                "",
+                x,
+            ).strip()
+            for x in response.text.splitlines()
+        ]
+
+        return [
+            x
+            for x in lines
+            if x
+            and x.lower() not in existing_lower
+        ]
+
+    except Exception as e:
+        print(
+            f"WARNING: kids topic auto-generation failed "
+            f"({e}); looping existing topics."
+        )
+
+        return []
+
+
+def pick_next_kids_topic(
+    channel_id: str,
+    config: dict,
+    content_type: str,
+) -> str:
+    topics_file = _kids_seed_path(
+        config,
+        content_type,
+    )
+
+    dedupe_key = _kids_dedupe_key(
+        channel_id,
+        content_type,
+    )
+
+    all_topics = [
+        x.strip()
+        for x in topics_file.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if x.strip()
+    ]
+
+    used = get_used_topics(
+        dedupe_key
+    )
+
+    unused = [
+        x
+        for x in all_topics
+        if x not in used
+    ]
+
+    if not unused:
+        new_topics = _generate_more_kids_topics(
+            config,
+            content_type,
+            all_topics,
+        )
+
+        if new_topics:
+            with topics_file.open(
+                "a",
+                encoding="utf-8",
+            ) as f:
+                f.write(
+                    "\n"
+                    + "\n".join(new_topics)
+                    + "\n"
+                )
+
+            unused = new_topics
+
+        else:
+            unused = all_topics
+
+    if not unused:
+        raise RuntimeError(
+            f"No topics available for kids content type "
+            f"'{content_type}'."
+        )
+
+    topic = random.choice(
+        unused
+    )
+
+    mark_topic_used(
+        dedupe_key,
+        topic,
+    )
+
+    return topic
+
 
 def generate_kids_script_with_gemini(
-
-topic: str,
-
-config: dict,
-
-content_type: str,
-
-mascot_name: str,
-
-length_seconds: int,
-
-language: str,
-
+    topic: str,
+    config: dict,
+    content_type: str,
+    mascot_name: str,
+    length_seconds: int,
+    language: str,
 ) -> dict:
+    client = genai_client.Client(
+        api_key=os.environ["GEMINI_API_KEY"]
+    )
 
-client = genai_client.Client(
+    words_target = int(
+        length_seconds * 2.2
+    )
 
-    api_key=os.environ["GEMINI_API_KEY"]
+    language_name = LANGUAGE_NAMES.get(
+        language,
+        language,
+    )
 
-)
-
-
-
-words_target = int(
-
-    length_seconds * 2.2
-
-)
-
-
-
-language_name = LANGUAGE_NAMES.get(
-
-    language,
-
-    language,
-
-)
-
-
-
-if content_type == "rhyme":
-
-
-
-    content_instructions = f"""
-
-Write an ORIGINAL Hindi rhyme/poem for young children ages 2-6,
-
-themed around:
-
+    if content_type == "rhyme":
+        content_instructions = f"""
+Write an ORIGINAL Hindi rhyme/poem for children ages 2-6 about:
 {topic}
 
-CRITICAL:
+It must be completely original and not reproduce or closely imitate
+an existing nursery rhyme, song, or poem.
 
-This must be a completely original composition.
+Use Devanagari, simple words, clear rhythm, a short refrain,
+and one easy action kids can copy.
 
-Do NOT reproduce, translate, or closely imitate any existing,
-
-traditional, or copyrighted nursery rhyme, song, or poem.
-
-Write it purely in Hindi using Devanagari script.
-
-Use simple everyday words a toddler already knows.
-
-Keep a clear, consistent rhythm and rhyme scheme.
-
-Include a short repeated refrain or chorus.
-
-Include at least one simple action kids can copy, such as:
-
-clap, jump, sway.
-
-The character {mascot_name} should be the one singing or leading it,
-
-mentioned warmly by name at least once.
-
-Keep the mood joyful and gentle.
-
+{mascot_name} should lead it.
+Keep it joyful and gentle.
 """
 
-elif content_type == "story":
-
-
-
-    content_instructions = f"""
-
-Write an ORIGINAL short moral story for young children ages 3-7,
-
-themed around:
-
+    elif content_type == "story":
+        content_instructions = f"""
+Write an ORIGINAL short moral story for children ages 3-7 about:
 {topic}
 
-The story should feature {mascot_name}.
+Feature {mascot_name}.
 
-Teach one simple positive lesson such as:
+Teach one simple positive lesson through the story.
 
-sharing, kindness, honesty, or trying again.
-
-Show the lesson through what happens rather than lecturing.
-
-Only state the lesson gently at the very end.
-
-Language style:
-
-Natural Hinglish code-mixing commonly heard in Indian children's
-
-content.
-
-Mostly simple Hindi with a handful of everyday English words
-
-mixed naturally.
-
-Keep sentences short and simple.
-
+Use short, simple sentences and gentle conflict.
 Nothing scary, violent, or sad.
 
-Any conflict should be gentle and resolved warmly.
-
+Natural Hinglish code-mixing is allowed.
 """
 
-else:
-
-
-
-    content_instructions = f"""
-
-Write an ORIGINAL short learning segment for young children ages 2-6,
-
+    else:
+        content_instructions = f"""
+Write an ORIGINAL short learning segment for children ages 2-6
 teaching:
 
 {topic}
 
-{mascot_name} should teach directly to the viewer.
+{mascot_name} teaches directly to the viewer using warm
+call-and-response phrasing.
 
-Use a warm and encouraging tone.
-
-Language style:
-
-Natural bilingual teaching commonly used in Indian children's
-
-educational content.
-
-Introduce concepts in Hindi and reinforce them with simple English
-
-equivalents.
-
-Use call-and-response phrasing such as:
-
-"bolo mere saath..."
-
-Keep it repetitive and simple.
-
+Use simple bilingual teaching with Hindi and everyday English.
 """
 
-prompt = f"""
+    prompt = f"""
+You are writing a children's YouTube video script.
 
-You are writing a script for a children's YouTube video.
-
-Channel:
-
-{config['display_name']}
-
-Content type:
-
-{content_type}
-
-Language:
-
-{language_name}
+Channel: {config['display_name']}
+Content type: {content_type}
+Language: {language_name}
 
 {content_instructions}
 
-Respond in EXACTLY this format and nothing else:
+Respond exactly:
 
-TITLE: <a warm, simple title in {language_name}, under 90 characters>
+TITLE: <warm title under 90 characters>
 
 SCRIPT:
+<spoken narration only>
 
-<spoken narration only>No markdown.
+No markdown, stage directions, visual cues, or commentary.
 
-No stage directions.
-
-No visual cues.
-
-No commentary.
-
-Target script length:
-
-approximately {words_target} words.
-
-End on a warm, gentle closing line.
-
-Do not end abruptly.
-
+Target approximately {words_target} words.
+End warmly.
 """
 
-max_tokens = _max_output_tokens_for(
+    response = _generate_with_token_budget(
+        client,
+        prompt,
+        _max_output_tokens_for(words_target),
+    )
 
-    words_target
+    return _parse_titled_response(
+        response.text,
+        topic,
+    )
 
-)
-
-
-
-response = _generate_with_token_budget(
-
-    client,
-
-    prompt,
-
-    max_tokens,
-
-)
-
-
-
-return _parse_titled_response(
-
-    response.text,
-
-    fallback_topic=topic,
-
-)
-
----------------------------------------------------------------------------
-
-Kids template fallback
-
----------------------------------------------------------------------------
 
 def generate_kids_template(
-
-topic: str,
-
-config: dict,
-
-content_type: str,
-
-mascot_name: str,
-
-language: str,
-
+    topic: str,
+    config: dict,
+    content_type: str,
+    mascot_name: str,
+    language: str,
 ) -> dict:
+    if content_type == "rhyme":
+        return {
+            "title": f"{mascot_name} की मस्ती भरी कविता",
+            "script": (
+                f"चलो सब मिलकर गाएं, {mascot_name} के साथ। "
+                f"आज की कहानी है {topic} के बारे में। "
+                "ताली बजाओ, संग गाओ, मज़ा करो, हाँ! "
+                "फिर मिलेंगे, बाय बाय!"
+            ),
+        }
 
-if content_type == "rhyme":
+    if content_type == "story":
+        return {
+            "title": f"{mascot_name} की एक प्यारी कहानी",
+            "script": (
+                f"एक बार की बात है, {mascot_name} नाम का "
+                f"एक प्यारा दोस्त था। "
+                f"एक दिन उसे पता चला {topic} के बारे में "
+                "एक important lesson. "
+                "उसने सीखा कि हमेशा kind और honest रहना चाहिए. "
+                "अंत में सब दोस्त बहुत खुश हुए। The end!"
+            ),
+        }
 
+    return {
+        "title": (
+            f"{mascot_name} के साथ सीखो: {topic}"
+        ),
+        "script": (
+            f"नमस्ते दोस्तों! मैं हूँ {mascot_name}। "
+            f"आज हम सीखेंगे {topic}। "
+            "बोलो मेरे साथ! बहुत बढ़िया! "
+            "अब आप भी जान गए। "
+            "Great job, दोस्तों! "
+            "फिर मिलेंगे अगली सीख के साथ!"
+        ),
+    }
 
-
-    script = (
-
-        f"चलो सब मिलकर गाएं, {mascot_name} के साथ। "
-
-        f"आज की कहानी है {topic} के बारे में। "
-
-        f"ताली बजाओ, संग गाओ, मज़ा करो, हाँ! "
-
-        f"यही तो है हमारी प्यारी सी धुन, "
-
-        f"फिर मिलेंगे, बाय बाय!"
-
-    )
-
-
-
-    title = (
-
-        f"{mascot_name} की मस्ती भरी कविता"
-
-    )
-
-
-
-elif content_type == "story":
-
-
-
-    script = (
-
-        f"एक बार की बात है, {mascot_name} नाम का "
-
-        f"एक प्यारा दोस्त था। "
-
-        f"एक दिन उसे पता चला {topic} के बारे में "
-
-        f"एक important lesson। "
-
-        f"उसने सीखा कि हमेशा kind और honest रहना चाहिए। "
-
-        f"अंत में सब दोस्त बहुत खुश हुए। "
-
-        f"The end!"
-
-    )
-
-
-
-    title = (
-
-        f"{mascot_name} की एक प्यारी कहानी"
-
-    )
-
-
-
-else:
-
-
-
-    script = (
-
-        f"नमस्ते दोस्तों! मैं हूँ {mascot_name}। "
-
-        f"आज हम सीखेंगे {topic}। "
-
-        f"बोलो मेरे साथ! "
-
-        f"बहुत बढ़िया! "
-
-        f"अब आप भी जान गए। "
-
-        f"Great job, दोस्तों! "
-
-        f"फिर मिलेंगे अगली सीख के साथ!"
-
-    )
-
-
-
-    title = (
-
-        f"{mascot_name} के साथ सीखो: {topic}"
-
-    )
-
-
-
-return {
-
-    "title": title,
-
-    "script": script,
-
-}
-
----------------------------------------------------------------------------
-
-Public kids API
-
----------------------------------------------------------------------------
 
 def generate_kids_script(
-
-channel_id: str,
-
-is_short: bool = False,
-
+    channel_id: str,
+    is_short: bool = False,
 ) -> dict:
-
-config = load_channel_config(
-
-    channel_id
-
-)
-
-
-
-content_type = pick_content_type(
-
-    config
-
-)
-
-
-
-topic = pick_next_kids_topic(
-
-    channel_id,
-
-    config,
-
-    content_type,
-
-)
-
-
-
-mascot = config["mascot_map"][
-
-    content_type
-
-]
-
-
-
-mascot_name = config["mascot_names"][
-
-    mascot
-
-]
-
-
-
-if (
-
-    content_type == "rhyme"
-
-    and config.get(
-
-        "rhymes_hindi_only",
-
-        True,
-
+    config = load_channel_config(
+        channel_id
     )
 
-):
-
-
-
-    language = "hi"
-
-
-
-else:
-
-
-
-    language = pick_language(
-
+    content_type = pick_content_type(
         config
-
     )
 
+    topic = pick_next_kids_topic(
+        channel_id,
+        config,
+        content_type,
+    )
 
+    mascot_map = (
+        config.get("mascot_map")
+        or {}
+    )
 
-length = (
+    mascot_names = (
+        config.get("mascot_names")
+        or {}
+    )
 
-    config["short_length_seconds"]
+    mascot = mascot_map.get(
+        content_type,
+        next(
+            iter(mascot_names),
+            "mascot",
+        ),
+    )
 
-    if is_short
+    mascot_name = mascot_names.get(
+        mascot,
+        str(mascot),
+    )
 
-    else config["video_length_seconds"]
+    language = (
+        "hi"
+        if (
+            content_type == "rhyme"
+            and config.get(
+                "rhymes_hindi_only",
+                True,
+            )
+        )
+        else pick_language(config)
+    )
 
-)
-
-
-
-if (
-
-    GEMINI_AVAILABLE
-
-    and os.environ.get("GEMINI_API_KEY")
-
-):
-
-
+    length = (
+        config["short_length_seconds"]
+        if is_short
+        else config["video_length_seconds"]
+    )
 
     try:
+        if (
+            GEMINI_AVAILABLE
+            and os.environ.get("GEMINI_API_KEY")
+        ):
+            generated = (
+                generate_kids_script_with_gemini(
+                    topic,
+                    config,
+                    content_type,
+                    mascot_name,
+                    length,
+                    language,
+                )
+            )
 
-
-
-        generated = generate_kids_script_with_gemini(
-
-            topic,
-
-            config,
-
-            content_type,
-
-            mascot_name,
-
-            length,
-
-            language,
-
-        )
-
-
+        else:
+            generated = generate_kids_template(
+                topic,
+                config,
+                content_type,
+                mascot_name,
+                language,
+            )
 
     except Exception as e:
-
-
-
         print(
-
-            f"WARNING: Gemini call failed ({e}); "
-
-            "using template fallback."
-
+            f"WARNING: kids Gemini generation failed "
+            f"({e}); using template fallback."
         )
-
-
 
         generated = generate_kids_template(
-
             topic,
-
             config,
-
             content_type,
-
             mascot_name,
-
             language,
-
         )
 
+    return {
+        "channel_id": channel_id,
+        "topic": topic,
+        "title": generated["title"],
+        "script": generated["script"],
+        "language": language,
+        "voice": _voice_for_language(
+            config,
+            language,
+        ),
+        "is_short": is_short,
+        "content_type": content_type,
+        "mascot": mascot,
+        "mascot_name": mascot_name,
+    }
 
 
-else:
+if __name__ == "__main__":
+    import argparse
 
+    parser = argparse.ArgumentParser()
 
-
-    generated = generate_kids_template(
-
-        topic,
-
-        config,
-
-        content_type,
-
-        mascot_name,
-
-        language,
-
+    parser.add_argument(
+        "channel_id"
     )
 
-
-
-return {
-
-    "channel_id": channel_id,
-
-    "topic": topic,
-
-    "title": generated["title"],
-
-    "script": generated["script"],
-
-    "language": language,
-
-    "voice": _voice_for_language(
-
-        config,
-
-        language,
-
-    ),
-
-    "is_short": is_short,
-
-    "content_type": content_type,
-
-    "mascot": mascot,
-
-    "mascot_name": mascot_name,
-
-}
-
----------------------------------------------------------------------------
-
-CLI
-
----------------------------------------------------------------------------
-
-if name == "main":
-
-import argparse
-
-
-
-parser = argparse.ArgumentParser()
-
-
-
-parser.add_argument(
-
-    "channel_id"
-
-)
-
-
-
-parser.add_argument(
-
-    "--short",
-
-    action="store_true",
-
-)
-
-
-
-parser.add_argument(
-
-    "--out",
-
-    default=None,
-
-    help="Path to write JSON output",
-
-)
-
-
-
-args = parser.parse_args()
-
-
-
-result = generate_script(
-
-    args.channel_id,
-
-    is_short=args.short,
-
-)
-
-
-
-output = json.dumps(
-
-    result,
-
-    indent=2,
-
-    ensure_ascii=False,
-
-)
-
-
-
-if args.out:
-
-    Path(args.out).write_text(
-
-        output,
-
-        encoding="utf-8",
-
+    parser.add_argument(
+        "--short",
+        action="store_true",
     )
 
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Path to write JSON output",
+    )
 
+    args = parser.parse_args()
 
-print(output)
+    result = generate_script(
+        args.channel_id,
+        is_short=args.short,
+    )
+
+    output = json.dumps(
+        result,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+    if args.out:
+        Path(args.out).write_text(
+            output,
+            encoding="utf-8",
+        )
+
+    print(output)
