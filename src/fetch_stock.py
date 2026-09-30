@@ -4,16 +4,15 @@ fetch_stock.py
 
 Smart Pexels stock-video retrieval for the AutoTube pipeline.
 
-V2 improvements:
-
-- Generates multiple search queries from the topic.
-- Tries several increasingly broad queries.
-- Avoids weak generic keyword extraction.
-- Prefers videos matching the requested orientation.
-- Avoids downloading the same Pexels video twice.
-- Keeps file sizes reasonable.
-- Falls back to abstract space visuals when necessary.
-- Never makes the rest of the pipeline responsible for Pexels failures.
+V3:
+- Searches multiple queries.
+- Collects a larger candidate pool.
+- Prefers relevant/orientation-matching videos.
+- Avoids duplicate Pexels IDs.
+- Avoids downloading the same URL twice.
+- Supports larger clip counts for frequent visual changes.
+- Keeps downloaded files at a reasonable resolution.
+- Falls back gracefully when the main search returns too few results.
 """
 
 import os
@@ -43,14 +42,12 @@ STOPWORDS = {
     "possible", "possibly", "or", "but",
     "there", "here", "reason", "its",
     "it's", "happen", "happens",
-    "happening", "would", "could",
+    "happening",
 }
 
 
 def _topic_words(topic: str) -> list:
-    """
-    Extract meaningful words from the topic.
-    """
+    """Extract meaningful words from the topic."""
 
     words = re.findall(
         r"[a-zA-Z]+",
@@ -67,18 +64,10 @@ def _topic_words(topic: str) -> list:
 
 def _build_search_queries(topic: str) -> list:
     """
-    Build several queries ordered from specific to broad.
+    Build several searches ordered from specific to broad.
 
-    Example:
-
-        "What happens when a star gets too close to a black hole"
-
-    becomes something like:
-
-        star black hole
-        black hole star space
-        black hole astronomy
-        space astronomy
+    Animal topics get animal-specific queries instead of
+    space-related fallback queries.
     """
 
     words = _topic_words(topic)
@@ -92,8 +81,82 @@ def _build_search_queries(topic: str) -> list:
 
     if len(words) >= 2:
         queries.append(
-            " ".join(words[:3]) + " space"
+            " ".join(words[:3])
         )
+
+    # ---------------------------------------------------------
+    # ANIMAL / WILDLIFE
+    # ---------------------------------------------------------
+
+    animal_words = {
+        "animal",
+        "animals",
+        "wildlife",
+        "mammal",
+        "mammals",
+        "bird",
+        "birds",
+        "reptile",
+        "reptiles",
+        "snake",
+        "snakes",
+        "lion",
+        "lions",
+        "tiger",
+        "tigers",
+        "bear",
+        "bears",
+        "wolf",
+        "wolves",
+        "fox",
+        "monkey",
+        "monkeys",
+        "elephant",
+        "elephants",
+        "giraffe",
+        "giraffes",
+        "zebra",
+        "zebras",
+        "shark",
+        "sharks",
+        "whale",
+        "whales",
+        "dolphin",
+        "dolphins",
+        "penguin",
+        "penguins",
+        "frog",
+        "frogs",
+        "fish",
+        "octopus",
+        "spider",
+        "spiders",
+        "insect",
+        "insects",
+        "wild",
+        "nature",
+        "ocean",
+        "jungle",
+        "savanna",
+        "safari",
+    }
+
+    if any(word in animal_words for word in words):
+
+        queries.extend([
+            "wildlife animals",
+            "wild animals",
+            "animal behavior",
+            "animals nature",
+            "wildlife nature",
+            "animals close up",
+            "animals documentary",
+            "wildlife documentary",
+        ])
+
+    # ---------------------------------------------------------
+    # OLD SPACE / SCIENCE SUPPORT
+    # ---------------------------------------------------------
 
     if "black" in words and "hole" in words:
         queries.extend([
@@ -143,31 +206,37 @@ def _build_search_queries(topic: str) -> list:
             "sun astronomy",
         ])
 
-    # General fallback queries.
+    # ---------------------------------------------------------
+    # GENERAL FALLBACK
+    # ---------------------------------------------------------
+
     queries.extend([
-        "space astronomy",
-        "deep space",
-        "cosmos",
-        "stars universe",
+        "nature wildlife",
+        "animals nature",
+        "documentary nature",
+        "cinematic nature",
+        "nature close up",
     ])
 
     # Remove duplicates while preserving order.
-    return list(dict.fromkeys(queries))
+    return list(
+        dict.fromkeys(queries)
+    )
 
 
 def _search_pexels(
     query: str,
     headers: dict,
     orientation: str,
-    per_page: int = 8,
+    per_page: int = 15,
+    page: int = 1,
 ) -> list:
-    """
-    Search Pexels and return videos.
-    """
+    """Search Pexels and return videos."""
 
     params = {
         "query": query,
         "per_page": per_page,
+        "page": page,
         "orientation": orientation,
         "size": "medium",
     }
@@ -191,7 +260,8 @@ def _choose_video_file(video: dict):
     """
     Select a sensible resolution.
 
-    Prefer roughly 720p-1080p to keep the automated pipeline fast.
+    Prefer roughly 720p-1080p to keep the automated
+    pipeline reasonably fast.
     """
 
     files = video.get(
@@ -209,7 +279,7 @@ def _choose_video_file(video: dict):
     ]
 
     if suitable:
-        # Prefer the smallest suitable file.
+
         return sorted(
             suitable,
             key=lambda item: (
@@ -224,15 +294,12 @@ def _choose_video_file(video: dict):
     )[0]
 
 
-def _score_video(video: dict, orientation: str) -> float:
+def _score_video(
+    video: dict,
+    orientation: str,
+) -> float:
     """
     Lightweight visual suitability score.
-
-    Pexels does not expose semantic relevance scoring, so this combines:
-
-    - orientation
-    - resolution
-    - duration
     """
 
     width = video.get("width") or 0
@@ -247,18 +314,24 @@ def _score_video(video: dict, orientation: str) -> float:
     ratio = width / height
 
     if orientation == "portrait":
+
         if ratio < 1:
             score += 5
+
         elif ratio < 1.2:
             score += 3
+
     else:
+
         if ratio > 1.4:
             score += 5
+
         elif ratio > 1.1:
             score += 3
 
     if 5 <= duration <= 30:
         score += 2
+
     elif duration > 30:
         score += 1
 
@@ -277,9 +350,8 @@ def fetch_clips_for_topic(
     """
     Download stock clips relevant to the topic.
 
-    Multiple Pexels searches are attempted.
-
-    Returns a list of downloaded file paths.
+    A larger candidate pool is collected before selecting
+    the requested number of unique clips.
     """
 
     api_key = os.environ.get(
@@ -297,6 +369,7 @@ def fetch_clips_for_topic(
     }
 
     out_dir = Path(out_dir)
+
     out_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -312,75 +385,111 @@ def fetch_clips_for_topic(
     # SEARCH MULTIPLE QUERIES
     # ---------------------------------------------------------
 
+    # We intentionally collect many more candidates than we
+    # finally need. This is important when using 15 clips for
+    # a Short or 30 clips for long-form.
+    target_candidates = max(
+        count * 3,
+        30,
+    )
+
     for query in queries:
 
-        try:
-            videos = _search_pexels(
-                query,
-                headers,
-                orientation,
-                per_page=8,
-            )
+        for page in (1, 2):
 
-        except Exception as e:
-            print(
-                f"WARNING: Pexels search failed for "
-                f"'{query}' ({e})"
-            )
-            continue
+            try:
 
-        for video in videos:
+                videos = _search_pexels(
+                    query,
+                    headers,
+                    orientation,
+                    per_page=15,
+                    page=page,
+                )
 
-            video_id = video.get("id")
+            except Exception as e:
 
-            if video_id:
-                videos_by_id[video_id] = video
+                print(
+                    f"WARNING: Pexels search failed "
+                    f"for '{query}' page {page} ({e})"
+                )
 
-        # Stop searching once we have enough candidates.
-        if len(videos_by_id) >= count * 3:
+                continue
+
+            for video in videos:
+
+                video_id = video.get(
+                    "id"
+                )
+
+                if video_id:
+                    videos_by_id[
+                        video_id
+                    ] = video
+
+            if len(videos_by_id) >= target_candidates:
+                break
+
+        if len(videos_by_id) >= target_candidates:
             break
 
     # ---------------------------------------------------------
     # FALLBACK SEARCH
     # ---------------------------------------------------------
 
-    if not videos_by_id:
+    if len(videos_by_id) < count:
 
         fallback_queries = [
-            "abstract space",
-            "stars universe",
-            "deep space",
+            "wildlife",
+            "animals",
+            "nature",
+            "animals close up",
+            "wild animals",
+            "nature documentary",
         ]
 
         for query in fallback_queries:
 
             try:
+
                 videos = _search_pexels(
                     query,
                     headers,
                     orientation,
-                    per_page=10,
+                    per_page=15,
+                    page=1,
                 )
 
                 for video in videos:
-                    video_id = video.get("id")
+
+                    video_id = video.get(
+                        "id"
+                    )
 
                     if video_id:
-                        videos_by_id[video_id] = video
+                        videos_by_id[
+                            video_id
+                        ] = video
 
-                if videos_by_id:
+                if len(videos_by_id) >= target_candidates:
                     break
 
-            except Exception:
-                continue
+            except Exception as e:
+
+                print(
+                    f"WARNING: fallback Pexels "
+                    f"search failed for '{query}' ({e})"
+                )
 
     if not videos_by_id:
+
         raise RuntimeError(
-            f"Pexels returned no usable videos for topic: {topic}"
+            f"Pexels returned no usable videos "
+            f"for topic: {topic}"
         )
 
     # ---------------------------------------------------------
-    # RANK VIDEOS
+    # RANK
     # ---------------------------------------------------------
 
     ranked = sorted(
@@ -392,15 +501,18 @@ def fetch_clips_for_topic(
         reverse=True,
     )
 
-    selected = ranked[:count]
-
-    downloaded = []
-
     # ---------------------------------------------------------
     # DOWNLOAD
     # ---------------------------------------------------------
 
-    for i, video in enumerate(selected):
+    downloaded = []
+
+    used_urls = set()
+
+    for video in ranked:
+
+        if len(downloaded) >= count:
+            break
 
         target = _choose_video_file(
             video
@@ -409,13 +521,23 @@ def fetch_clips_for_topic(
         if not target:
             continue
 
-        url = target.get("link")
+        url = target.get(
+            "link"
+        )
 
         if not url:
             continue
 
+        if url in used_urls:
+            continue
+
+        used_urls.add(url)
+
+        clip_index = len(downloaded)
+
         clip_path = (
-            out_dir / f"clip_{i}.mp4"
+            out_dir
+            / f"clip_{clip_index:02d}.mp4"
         )
 
         try:
@@ -440,7 +562,11 @@ def fetch_clips_for_topic(
                         if chunk:
                             f.write(chunk)
 
-            if clip_path.exists() and clip_path.stat().st_size > 10000:
+            if (
+                clip_path.exists()
+                and clip_path.stat().st_size > 10000
+            ):
+
                 downloaded.append(
                     str(clip_path)
                 )
@@ -448,20 +574,23 @@ def fetch_clips_for_topic(
         except Exception as e:
 
             print(
-                f"WARNING: failed downloading "
+                "WARNING: failed downloading "
                 f"Pexels clip ({e})"
             )
 
             if clip_path.exists():
+
                 try:
                     clip_path.unlink()
+
                 except OSError:
                     pass
 
     if not downloaded:
+
         raise RuntimeError(
-            f"Could not download usable Pexels footage "
-            f"for topic: {topic}"
+            "Could not download usable Pexels "
+            f"footage for topic: {topic}"
         )
 
     print(
@@ -470,11 +599,19 @@ def fetch_clips_for_topic(
 
     print(
         "Pexels queries tried: "
-        + " | ".join(queries[:6])
+        + " | ".join(
+            queries[:10]
+        )
     )
 
     print(
-        f"Pexels: selected {len(downloaded)} clips"
+        f"Pexels: collected "
+        f"{len(videos_by_id)} candidates"
+    )
+
+    print(
+        f"Pexels: selected "
+        f"{len(downloaded)} clips"
     )
 
     return downloaded
