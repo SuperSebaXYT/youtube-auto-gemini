@@ -38,7 +38,17 @@ jobs:
       - name: Install ffmpeg and fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-freefont-ttf
+          sudo apt-get install -y ffmpeg fonts-freefont-ttf wget
+
+          mkdir -p ~/.local/share/fonts
+
+          wget -O ~/.local/share/fonts/Chewy-Regular.ttf \
+            https://github.com/google/fonts/raw/main/apache/chewy/Chewy-Regular.ttf
+
+          fc-cache -f
+
+          echo "Checking Chewy font:"
+          fc-match Chewy
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
