@@ -4,35 +4,18 @@ tts.py
 
 Converts script text to speech using edge-tts.
 
-Also produces word-level timing data used by:
+Produces word-level timing data for:
     - synced captions
     - mascot mouth-flap timing
     - animation timing
 
-TIMING STRATEGY
----------------
-1. Prefer native WordBoundary events from edge-tts.
-2. Validate the native timing data.
-3. If the voice does not provide usable WordBoundary events, estimate
-   timings from the REAL generated audio duration.
-4. Estimated timings are sentence-aware and weighted by word length.
+Timing strategy:
+1. Prefer native WordBoundary events.
+2. Validate native timing data.
+3. Estimate timings from actual audio duration if native
+   timing data is unavailable or unreliable.
 
-IMPORTANT:
-The timing JSON remains a PLAIN LIST for compatibility with the existing
-assemble_video.py, generate_kids_video.py and check_timing.py.
-
-Example:
-
-[
-    {
-        "text": "Step",
-        "offset_seconds": 0.0,
-        "duration_seconds": 0.21
-    }
-]
-
-Some Edge neural voices do not return WordBoundary events. This is not
-treated as a fatal error.
+The timing JSON remains a PLAIN LIST for compatibility.
 """
 
 import asyncio
@@ -42,18 +25,18 @@ import subprocess
 from pathlib import Path
 
 import edge_tts
+from aiohttp.client_exceptions import WSServerHandshakeError
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Minimum number of native boundaries required before trusting the data.
 MIN_VALID_BOUNDARIES = 3
-
-# Native timing coverage must reach at least this percentage of the
-# narration's words before we trust it.
 MIN_BOUNDARY_COVERAGE = 0.70
+
+TTS_MAX_ATTEMPTS = 3
+TTS_RETRY_DELAY_SECONDS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -61,30 +44,11 @@ MIN_BOUNDARY_COVERAGE = 0.70
 # ---------------------------------------------------------------------------
 
 def _split_words(text: str) -> list:
-    """
-    Split narration into spoken words.
-
-    Whitespace is intentionally used because it preserves the narration's
-    natural word order.
-    """
-    return [
-        word
-        for word in text.split()
-        if word.strip()
-    ]
+    return [word for word in text.split() if word.strip()]
 
 
 def _clean_word_for_weight(word: str) -> str:
-    """
-    Remove punctuation before calculating timing weight.
-    """
-    cleaned = re.sub(
-        r"[^\w'-]",
-        "",
-        word,
-        flags=re.UNICODE,
-    )
-
+    cleaned = re.sub(r"[^\w'-]", "", word, flags=re.UNICODE)
     return cleaned or word
 
 
@@ -93,7 +57,7 @@ def _count_words(text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Edge-TTS synthesis
+# Edge-TTS synthesis with retries
 # ---------------------------------------------------------------------------
 
 async def _synthesize(
@@ -106,84 +70,122 @@ async def _synthesize(
     """
     Generate audio and collect native WordBoundary events.
 
-    Returns a plain list of timing dictionaries.
+    Retries temporary failures up to TTS_MAX_ATTEMPTS times.
+    Each attempt writes to a temporary file. The final audio file is
+    replaced only after the stream completes successfully.
     """
 
-    communicate = edge_tts.Communicate(
-        text,
-        voice,
-        rate=rate,
-        pitch=pitch,
-    )
+    last_error = None
 
-    word_boundaries = []
+    for attempt in range(1, TTS_MAX_ATTEMPTS + 1):
+        word_boundaries = []
 
-    with open(audio_out, "wb") as audio_file:
+        temp_out = audio_out.with_name(
+            f"{audio_out.stem}.attempt{attempt}.mp3"
+        )
 
-        async for chunk in communicate.stream():
+        try:
+            communicate = edge_tts.Communicate(
+                text,
+                voice,
+                rate=rate,
+                pitch=pitch,
+            )
 
-            chunk_type = chunk.get("type")
+            with open(temp_out, "wb") as audio_file:
+                async for chunk in communicate.stream():
+                    chunk_type = chunk.get("type")
 
-            # ---------------------------------------------------------------
-            # Audio data
-            # ---------------------------------------------------------------
+                    if chunk_type == "audio":
+                        data = chunk.get("data")
+                        if data:
+                            audio_file.write(data)
 
-            if chunk_type == "audio":
+                    elif chunk_type == "WordBoundary":
+                        try:
+                            word = str(
+                                chunk.get("text", "")
+                            ).strip()
 
-                data = chunk.get("data")
+                            if not word:
+                                continue
 
-                if data:
-                    audio_file.write(data)
+                            offset_seconds = (
+                                float(chunk["offset"]) / 10_000_000
+                            )
 
-            # ---------------------------------------------------------------
-            # Native WordBoundary metadata
-            # ---------------------------------------------------------------
+                            duration_seconds = (
+                                float(chunk["duration"]) / 10_000_000
+                            )
 
-            elif chunk_type == "WordBoundary":
+                            if offset_seconds < 0:
+                                continue
 
-                try:
+                            if duration_seconds <= 0:
+                                continue
 
-                    word = str(
-                        chunk.get("text", "")
-                    ).strip()
+                            word_boundaries.append({
+                                "text": word,
+                                "offset_seconds": offset_seconds,
+                                "duration_seconds": duration_seconds,
+                            })
 
-                    if not word:
-                        continue
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                        ):
+                            continue
 
-                    offset_seconds = (
-                        float(chunk["offset"])
-                        / 10_000_000
-                    )
+            if (
+                not temp_out.exists()
+                or temp_out.stat().st_size == 0
+            ):
+                raise RuntimeError(
+                    "Edge TTS returned no audio data."
+                )
 
-                    duration_seconds = (
-                        float(chunk["duration"])
-                        / 10_000_000
-                    )
+            # Replace the final file only after successful completion.
+            temp_out.replace(audio_out)
 
-                    if offset_seconds < 0:
-                        continue
+            print(
+                f"TTS: synthesis succeeded on attempt "
+                f"{attempt}/{TTS_MAX_ATTEMPTS}."
+            )
 
-                    if duration_seconds <= 0:
-                        continue
+            return word_boundaries
 
-                    word_boundaries.append(
-                        {
-                            "text": word,
-                            "offset_seconds": offset_seconds,
-                            "duration_seconds": duration_seconds,
-                        }
-                    )
+        except Exception as exc:
+            last_error = exc
 
-                except (
-                    KeyError,
-                    TypeError,
-                    ValueError,
-                ):
-                    # Bad metadata should never destroy otherwise valid
-                    # generated audio.
-                    continue
+            if temp_out.exists():
+                temp_out.unlink()
 
-    return word_boundaries
+            print(
+                f"WARNING: TTS attempt "
+                f"{attempt}/{TTS_MAX_ATTEMPTS} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            if attempt < TTS_MAX_ATTEMPTS:
+                delay = TTS_RETRY_DELAY_SECONDS * attempt
+                print(f"TTS: retrying in {delay} seconds...")
+                await asyncio.sleep(delay)
+
+    if isinstance(last_error, WSServerHandshakeError):
+        raise RuntimeError(
+            "Edge TTS rejected the connection after "
+            f"{TTS_MAX_ATTEMPTS} attempts. "
+            "The server returned an HTTP WebSocket handshake error, "
+            "such as 403. Check the installed edge-tts version and "
+            "service availability. If the error persists, use a "
+            "separate TTS provider."
+        ) from last_error
+
+    raise RuntimeError(
+        f"Edge TTS failed after {TTS_MAX_ATTEMPTS} attempts: "
+        f"{last_error}"
+    ) from last_error
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +193,7 @@ async def _synthesize(
 # ---------------------------------------------------------------------------
 
 def _get_audio_duration(audio_path: Path) -> float:
-    """
-    Get the actual generated audio duration using ffprobe.
-    """
+    """Get the actual generated audio duration using ffprobe."""
 
     result = subprocess.run(
         [
@@ -237,13 +237,7 @@ def _native_timings_are_valid(
     timings: list,
     audio_duration: float,
 ) -> bool:
-    """
-    Check whether native WordBoundary metadata is sufficiently complete
-    and internally sane.
-
-    We intentionally do not require perfect one-to-one matching because
-    Edge-TTS metadata behavior differs between voices.
-    """
+    """Check whether native WordBoundary metadata is sufficiently complete."""
 
     if not timings:
         return False
@@ -265,16 +259,9 @@ def _native_timings_are_valid(
     valid_entries = 0
 
     for item in timings:
-
         try:
-            start = float(
-                item["offset_seconds"]
-            )
-
-            duration = float(
-                item["duration_seconds"]
-            )
-
+            start = float(item["offset_seconds"])
+            duration = float(item["duration_seconds"])
         except (
             KeyError,
             TypeError,
@@ -284,21 +271,15 @@ def _native_timings_are_valid(
 
         end = start + duration
 
-        # Basic validity.
-        if start < 0:
+        if start < 0 or duration <= 0:
             continue
 
-        if duration <= 0:
-            continue
-
-        # Allow a small amount of metadata drift.
         if start > audio_duration + 0.5:
             continue
 
         if end > audio_duration + 1.0:
             continue
 
-        # Word boundaries should move forward through time.
         if start + 0.001 < previous_end:
             continue
 
@@ -313,12 +294,7 @@ def _native_timings_are_valid(
 # ---------------------------------------------------------------------------
 
 def _split_into_timing_segments(text: str) -> list:
-    """
-    Split narration into natural sentence segments.
-
-    This makes estimated timing substantially better than simply spreading
-    every word across the entire audio duration.
-    """
+    """Split narration into natural sentence segments."""
 
     segments = re.findall(
         r"[^.!?]+(?:[.!?]+|$)",
@@ -343,14 +319,7 @@ def _split_into_timing_segments(text: str) -> list:
 # ---------------------------------------------------------------------------
 
 def _sentence_weights(sentence: str) -> list:
-    """
-    Calculate approximate speech-time weights for words.
-
-    Longer words receive slightly more time.
-
-    The exponent deliberately keeps the difference moderate. Speech speed
-    is NOT directly proportional to character count.
-    """
+    """Estimate relative word durations using word length and punctuation."""
 
     words = _split_words(sentence)
 
@@ -360,16 +329,13 @@ def _sentence_weights(sentence: str) -> list:
     weights = []
 
     for word in words:
-
         clean = _clean_word_for_weight(word)
 
-        # Sub-linear character weighting.
         weight = max(
             1.0,
             len(clean) ** 0.70,
         )
 
-        # Small pause adjustments for punctuation.
         if word.endswith((",", ";", ":")):
             weight *= 1.08
 
@@ -390,22 +356,9 @@ def _estimate_word_timings(
     audio_out: Path,
 ) -> list:
     """
-    Estimate word timings from the REAL audio duration.
+    Estimate word timings from actual audio duration.
 
-    Process:
-
-        REAL audio duration
-                ↓
-        sentence allocation
-                ↓
-        word-length weighting
-                ↓
-        punctuation adjustment
-                ↓
-        word-level timings
-
-    This is an approximation, but it is substantially more useful than
-    having no timing data.
+    This is an approximation. It does not replace genuine forced alignment.
     """
 
     words = _split_words(text)
@@ -413,35 +366,22 @@ def _estimate_word_timings(
     if not words:
         return []
 
-    duration = _get_audio_duration(
-        audio_out
-    )
+    duration = _get_audio_duration(audio_out)
 
     if duration <= 0:
         return []
 
-    sentences = _split_into_timing_segments(
-        text
-    )
+    sentences = _split_into_timing_segments(text)
 
     sentence_word_counts = [
         len(_split_words(sentence))
         for sentence in sentences
     ]
 
-    total_words = sum(
-        sentence_word_counts
-    )
+    total_words = sum(sentence_word_counts)
 
     if total_words <= 0:
         return []
-
-    # ---------------------------------------------------------------
-    # Give each sentence a timing weight.
-    #
-    # Sentences ending with strong punctuation get a small additional
-    # allowance to represent natural speech pauses.
-    # ---------------------------------------------------------------
 
     sentence_weights = []
 
@@ -449,43 +389,25 @@ def _estimate_word_timings(
         sentences,
         sentence_word_counts,
     ):
-
         punctuation_bonus = 1.0
 
-        stripped = sentence.rstrip()
-
-        if stripped.endswith(
-            (".", "!", "?")
-        ):
+        if sentence.rstrip().endswith((".", "!", "?")):
             punctuation_bonus = 1.10
 
         sentence_weights.append(
-            max(
-                1.0,
-                count * punctuation_bonus,
-            )
+            max(1.0, count * punctuation_bonus)
         )
 
-    total_sentence_weight = sum(
-        sentence_weights
-    )
+    total_sentence_weight = sum(sentence_weights)
 
     timings = []
-
     global_offset = 0.0
-
-    # ---------------------------------------------------------------
-    # Allocate audio duration sentence-by-sentence.
-    # ---------------------------------------------------------------
 
     for sentence, sentence_weight in zip(
         sentences,
         sentence_weights,
     ):
-
-        sentence_words = _split_words(
-            sentence
-        )
+        sentence_words = _split_words(sentence)
 
         if not sentence_words:
             continue
@@ -496,50 +418,31 @@ def _estimate_word_timings(
             / total_sentence_weight
         )
 
-        weights = _sentence_weights(
-            sentence
-        )
+        weights = _sentence_weights(sentence)
 
-        total_weight = (
-            sum(weights)
-            or len(sentence_words)
-        )
+        total_weight = sum(weights) or len(sentence_words)
 
         local_offset = global_offset
 
-        # -----------------------------------------------------------
-        # Allocate sentence duration between its words.
-        # -----------------------------------------------------------
-
-        for word, weight in zip(
-            sentence_words,
-            weights,
-        ):
-
+        for word, weight in zip(sentence_words, weights):
             word_duration = (
                 sentence_duration
                 * weight
                 / total_weight
             )
 
-            timings.append(
-                {
-                    "text": word,
-                    "offset_seconds": local_offset,
-                    "duration_seconds": word_duration,
-                }
-            )
+            timings.append({
+                "text": word,
+                "offset_seconds": local_offset,
+                "duration_seconds": word_duration,
+            })
 
             local_offset += word_duration
 
         global_offset += sentence_duration
 
-    # ---------------------------------------------------------------
-    # Make the final word end exactly at the audio duration.
-    # ---------------------------------------------------------------
-
+    # Correct floating-point drift so the final word ends at audio duration.
     if timings:
-
         final = timings[-1]
 
         final_end = (
@@ -570,28 +473,17 @@ def synthesize_speech(
     """
     Generate speech and word timing data.
 
-    IMPORTANT:
-    timing_out remains a JSON LIST to preserve compatibility with the
-    existing video assembly code.
+    timing_out remains a JSON LIST for compatibility with the video pipeline.
     """
 
     if not text or not text.strip():
-        raise ValueError(
-            "Cannot synthesize empty text."
-        )
+        raise ValueError("Cannot synthesize empty text.")
 
     if not voice or not voice.strip():
-        raise ValueError(
-            "TTS voice is empty."
-        )
+        raise ValueError("TTS voice is empty.")
 
-    audio_out = Path(
-        audio_out
-    )
-
-    timing_out = Path(
-        timing_out
-    )
+    audio_out = Path(audio_out)
+    timing_out = Path(timing_out)
 
     audio_out.parent.mkdir(
         parents=True,
@@ -603,9 +495,9 @@ def synthesize_speech(
         exist_ok=True,
     )
 
-    # ---------------------------------------------------------------
-    # Generate audio and attempt native WordBoundary metadata.
-    # ---------------------------------------------------------------
+    # Remove stale output so an earlier run cannot be mistaken for success.
+    if audio_out.exists():
+        audio_out.unlink()
 
     word_boundaries = asyncio.run(
         _synthesize(
@@ -617,51 +509,30 @@ def synthesize_speech(
         )
     )
 
-    # ---------------------------------------------------------------
-    # Confirm the generated audio is valid.
-    # ---------------------------------------------------------------
-
-    audio_duration = _get_audio_duration(
-        audio_out
-    )
-
-    # ---------------------------------------------------------------
-    # Prefer native timings when reliable.
-    # ---------------------------------------------------------------
+    audio_duration = _get_audio_duration(audio_out)
 
     if _native_timings_are_valid(
         text=text,
         timings=word_boundaries,
         audio_duration=audio_duration,
     ):
-
         timings = word_boundaries
 
         print(
             f"TTS: voice '{voice}' returned "
-            f"{len(timings)} reliable native "
-            f"WordBoundary events."
+            f"{len(timings)} reliable native WordBoundary events."
         )
 
-        print(
-            "TTS: using native word timings."
-        )
+        print("TTS: using native word timings.")
 
     else:
-
-        # -----------------------------------------------------------
-        # Native metadata unavailable/unreliable.
-        # -----------------------------------------------------------
-
         print(
-            f"WARNING: voice '{voice}' returned "
-            f"no reliable WordBoundary events "
-            f"from edge-tts."
+            f"WARNING: voice '{voice}' returned no reliable "
+            "WordBoundary events from edge-tts."
         )
 
         print(
-            "TTS: generating improved estimated "
-            "word timings from actual audio duration."
+            "TTS: estimating word timings from actual audio duration."
         )
 
         timings = _estimate_word_timings(
@@ -670,37 +541,19 @@ def synthesize_speech(
         )
 
         print(
-            f"TTS: generated {len(timings)} "
-            f"estimated word timings."
+            f"TTS: generated {len(timings)} estimated word timings."
         )
 
         print(
-            f"TTS: actual audio duration = "
-            f"{audio_duration:.2f}s"
+            f"TTS: actual audio duration = {audio_duration:.2f}s"
         )
-
-    # ---------------------------------------------------------------
-    # Final safety check.
-    # ---------------------------------------------------------------
 
     if not timings:
         raise RuntimeError(
-            "TTS produced audio but no usable "
-            "word timings could be generated."
+            "TTS produced audio but no usable word timings could be generated."
         )
 
-    # IMPORTANT:
-    # Write ONLY the timing list.
-    #
-    # Do NOT wrap it in:
-    # {
-    #     "words": [...]
-    # }
-    #
-    # Existing video assembly code expects:
-    # json.loads(...) -> list
-    # ---------------------------------------------------------------
-
+    # Preserve the plain-list JSON format expected by existing pipeline code.
     timing_out.write_text(
         json.dumps(
             timings,
@@ -710,17 +563,9 @@ def synthesize_speech(
         encoding="utf-8",
     )
 
-    print(
-        f"TTS: wrote audio: {audio_out}"
-    )
-
-    print(
-        f"TTS: wrote timing: {timing_out}"
-    )
-
-    print(
-        f"TTS: timing entries: {len(timings)}"
-    )
+    print(f"TTS: wrote audio: {audio_out}")
+    print(f"TTS: wrote timing: {timing_out}")
+    print(f"TTS: timing entries: {len(timings)}")
 
 
 # ---------------------------------------------------------------------------
@@ -728,30 +573,20 @@ def synthesize_speech(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-
     import argparse
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Generate Edge-TTS narration "
-            "and word timings."
-        )
+        description="Generate Edge-TTS narration and word timings."
     )
 
     parser.add_argument(
         "text_file",
-        help=(
-            "Path to a .txt file containing "
-            "the script"
-        ),
+        help="Path to a .txt file containing the script",
     )
 
     parser.add_argument(
         "voice",
-        help=(
-            "Edge-TTS voice, e.g. "
-            "en-US-AndrewNeural"
-        ),
+        help="Edge-TTS voice, e.g. en-US-AndrewNeural",
     )
 
     parser.add_argument(
@@ -767,28 +602,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--rate",
         default="+0%",
-        help=(
-            'Speech rate, e.g. "-4%%" '
-            'or "+5%%"'
-        ),
+        help='Speech rate, e.g. "-4%" or "+5%"',
     )
 
     parser.add_argument(
         "--pitch",
         default="+0Hz",
-        help=(
-            'Voice pitch, e.g. "-2Hz" '
-            'or "+2Hz"'
-        ),
+        help='Voice pitch, e.g. "-2Hz" or "+2Hz"',
     )
 
     args = parser.parse_args()
 
     script_text = Path(
         args.text_file
-    ).read_text(
-        encoding="utf-8"
-    )
+    ).read_text(encoding="utf-8")
 
     synthesize_speech(
         text=script_text,
@@ -800,7 +627,5 @@ if __name__ == "__main__":
     )
 
     print(
-        f"Wrote {args.audio_out} "
-        f"and {args.timing_out}"
+        f"Wrote {args.audio_out} and {args.timing_out}"
     )
-
