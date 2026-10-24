@@ -2,12 +2,8 @@ name: Daily Upload Pipeline
 
 on:
   schedule:
-    # Fires every hour. src/scheduler.py checks each channel's config and
-    # only runs uploads that are actually due at the current UTC hour —
-    # so the real output stays at exactly 1 long-form + 5 shorts per
-    # channel per day, spread across the day, no matter how often this
-    # cron ticks.
-    - cron: "37 * * * *"
+    # Runs once per day at 14:00 UTC.
+    - cron: "0 14 * * *"
 
   workflow_dispatch:
     inputs:
@@ -67,7 +63,6 @@ jobs:
           mkdir -p tokens
           echo "$TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/cosmic_curious_token.pickle
 
-      # Winner Hunter — YouTube Analytics access
       - name: Restore YouTube Analytics token (Cosmic Curious)
         env:
           ANALYTICS_TOKEN_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS }}
@@ -75,7 +70,6 @@ jobs:
           mkdir -p tokens
           echo "$ANALYTICS_TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/analytics_token.pickle
 
-      # Manual single-channel run (for testing via "Run workflow" button)
       - name: Manual run
         if: github.event_name == 'workflow_dispatch' && inputs.channel != ''
         env:
@@ -87,7 +81,6 @@ jobs:
             ${{ inputs.short == true && '--short' || '' }} \
             ${{ inputs.dry_run == true && '--dry-run' || '' }}
 
-      # Normal scheduled run — the scheduler decides what's due.
       - name: Scheduled run
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == '')
         env:
