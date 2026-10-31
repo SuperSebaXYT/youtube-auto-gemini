@@ -2,8 +2,8 @@ name: Daily Upload Pipeline
 
 on:
   schedule:
-    # Check hourly so every configured UTC upload slot is reached.
-    - cron: "0 * * * *"
+    # Check hourly at minute 17 UTC.
+    - cron: "17 * * * *"
 
   workflow_dispatch:
     inputs:
