@@ -89,17 +89,26 @@ def _extract_json(text: str) -> Any:
         ) from exc
 
 
-def _looks_like_rate_limit(
-    exc: Exception,
-) -> bool:
-    text = str(exc).upper()
+def _looks_like_transient_error(exc: Exception) -> bool:
+    """Recognize temporary Gemini overload, quota and server failures."""
+    message = str(exc).upper()
 
     return any(
-        token in text
+        token in message
         for token in (
             "429",
             "RESOURCE_EXHAUSTED",
             "RATE_LIMIT",
+            "500",
+            "502",
+            "503",
+            "504",
+            "UNAVAILABLE",
+            "INTERNAL",
+            "DEADLINE_EXCEEDED",
+            "SERVICE_UNAVAILABLE",
+            "TEMPORARILY",
+            "HIGH DEMAND",
         )
     )
 
@@ -110,7 +119,7 @@ def generate_text(
     max_output_tokens: int = 2500,
     model: str | None = None,
 ) -> str:
-    """Central Gemini gateway with bounded backoff for 429s."""
+    """Central Gemini gateway with bounded exponential retry for transient errors."""
 
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -125,21 +134,17 @@ def generate_text(
 
         except Exception as exc:
             if (
-                not _looks_like_rate_limit(exc)
+                not _looks_like_transient_error(exc)
                 or attempt >= MAX_RETRIES
             ):
                 raise
 
-            delay = (
-                INITIAL_RETRY_SECONDS
-                * (2 ** attempt)
-            )
+            delay = INITIAL_RETRY_SECONDS * (2 ** attempt)
 
             print(
-                "AI Gateway: Gemini rate limit "
-                f"detected; retrying in {delay}s "
-                f"(attempt {attempt + 1}/"
-                f"{MAX_RETRIES})..."
+                "AI Gateway: temporary Gemini service error "
+                f"({str(exc)[:180]}); retrying in {delay}s "
+                f"(attempt {attempt + 1}/{MAX_RETRIES})..."
             )
 
             time.sleep(delay)
@@ -212,7 +217,7 @@ Rules:
 - Do not use fake clickbait.
 - Prefer specific, interesting animal facts.
 - Keep claims understandable for a general audience.
-- Optimize for long-term YouTube channel quality.
+- Optimize for long-term channel quality.
 - Return useful output, not generic advice.
 """
 
