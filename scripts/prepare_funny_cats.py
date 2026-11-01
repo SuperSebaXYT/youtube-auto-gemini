@@ -112,3 +112,8 @@ patch_file("src/main.py", [
         1,
     ),
 ])
+
+
+# Apply Funny Kitties-only Groq provider and compilation settings.
+import runpy
+runpy.run_path(str(ROOT / 'scripts' / 'prepare_funny_kitties_groq.py'), run_name='__main__')
