@@ -36,6 +36,16 @@ patch_file("src/generate_script.py", [
         1,
     ),
     (
+        "if not topic:\n        try:\n            candidate = get_daily_brain_topic(",
+        "if not topic and config.get('use_daily_brain', True):\n        try:\n            candidate = get_daily_brain_topic(",
+        1,
+    ),
+    (
+        "if not topic:\n        try:\n            candidate = get_trending_topic(",
+        "if not topic and config.get('trend_aware', True):\n        try:\n            candidate = get_trending_topic(",
+        1,
+    ),
+    (
         "NICHE: Animals and wildlife facts.\nTONE: Curious, surprising, energetic, punchy, conversational.",
         "NICHE: {config.get('niche', 'Animals and wildlife facts')}\nTONE: {config.get('tone', 'curious, surprising, energetic, punchy, conversational')}",
         1,
