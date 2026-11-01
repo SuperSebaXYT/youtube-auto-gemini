@@ -19,6 +19,7 @@ trend_aware: false
 use_daily_brain: false
 use_winner_hunter: false
 use_editorial_agents: true
+use_quality_gate: false
 use_hashtag_agent: true
 use_varied_pacing: true
 
