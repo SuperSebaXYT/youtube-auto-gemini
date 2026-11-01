@@ -1,0 +1,102 @@
+name: Funny Cats Pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0,4,8,12,16,20 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: funny-cats-production
+  cancel-in-progress: false
+
+jobs:
+  make-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Cosmic Curious engine
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install FFmpeg and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-freefont-ttf wget
+          mkdir -p ~/.local/share/fonts
+          wget -O ~/.local/share/fonts/Chewy-Regular.ttf \
+            https://github.com/google/fonts/raw/main/apache/chewy/Chewy-Regular.ttf
+          fc-cache -f
+          fc-match Chewy
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore Funny Cats pipeline state
+        uses: actions/cache@v4
+        with:
+          path: state
+          key: funny-cats-state-${{ github.run_id }}
+          restore-keys: funny-cats-state-
+
+      - name: Restore Funny Cats YouTube token
+        env:
+          TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_FUNNY_CATS }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pickle
+          from pathlib import Path
+          from google.oauth2.credentials import Credentials
+
+          raw = os.environ.get("TOKEN_JSON", "").strip()
+          if not raw:
+              raise RuntimeError(
+                  "Missing repository secret YOUTUBE_TOKEN_FUNNY_CATS. "
+                  "Add the ClipRush channel's YouTube OAuth token JSON."
+              )
+
+          info = json.loads(raw)
+          credentials = Credentials.from_authorized_user_info(
+              info,
+              scopes=["https://www.googleapis.com/auth/youtube.upload"],
+          )
+          if not credentials.refresh_token:
+              raise RuntimeError(
+                  "YOUTUBE_TOKEN_FUNNY_CATS has no refresh_token. "
+                  "Use the OAuth token JSON with offline access."
+              )
+
+          token_dir = Path("tokens")
+          token_dir.mkdir(parents=True, exist_ok=True)
+          with (token_dir / "funny_cats_token.pickle").open("wb") as handle:
+              pickle.dump(credentials, handle)
+
+          print("Funny Cats YouTube token restored securely.")
+          PY
+
+      - name: Prepare the Cosmic engine for funny cat content
+        run: python scripts/prepare_funny_cats.py
+
+      - name: Generate, render, quality-check and upload one Short
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: python -m src.main funny_cats --short
+
+      - name: Save Funny Cats pipeline state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: funny-cats-state-${{ github.run_id }}
