@@ -4,6 +4,7 @@ Research layer only. It selects and prepares a winner but does not upload.
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,24 @@ def load_channel_config(channel_id: str) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"Channel config not found: {path}")
     return yaml.safe_load(path.read_text())
+
+
+def _analytics_token_path(channel_id: str) -> Path:
+    """Resolve the shared or channel-specific Analytics token path.
+
+    GitHub Actions supplies YOUTUBE_ANALYTICS_TOKEN_PATH. The channel-
+    specific variable takes precedence when multiple channels are enabled.
+    """
+    channel_key = channel_id.upper().replace("-", "_")
+    configured_path = (
+        os.environ.get(f"YOUTUBE_ANALYTICS_TOKEN_PATH_{channel_key}")
+        or os.environ.get("YOUTUBE_ANALYTICS_TOKEN_PATH")
+    )
+
+    if configured_path:
+        return Path(configured_path)
+
+    return ROOT / "tokens" / f"{channel_id}_analytics_token.pickle"
 
 
 def collect_signals(channel_id: str, config: dict) -> list[str]:
@@ -167,8 +186,10 @@ def run_daily_brain(channel_id: str) -> dict:
 
     print("\nSTEP 4 — CHIEF EDITOR")
 
-    token_path = ROOT / "tokens" / f"{channel_id}_analytics_token.pickle"
+    token_path = _analytics_token_path(channel_id)
     client_secret_path = ROOT / "client_secret.json"
+
+    print(f"Analytics token path: {token_path}")
 
     performance_summary = None
 
