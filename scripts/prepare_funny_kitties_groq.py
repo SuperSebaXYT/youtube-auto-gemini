@@ -24,28 +24,6 @@ replace("src/generate_script.py", 'os.environ["GEMINI_API_KEY"]', 'os.environ["G
 replace("src/generate_script.py", 'GEMINI_MODEL = "gemini-3.5-flash-lite"', 'GEMINI_MODEL = "openai/gpt-oss-120b"')
 
 # Dynamic channel settings replace the hard-coded wildlife/science prompts.
-replace("src/generate_script.py", "NICHE: Animals & wildlife facts", "NICHE: {config.get('niche', 'Funny cat compilations')}")
-replace("src/generate_script.py",
-    "Every topic must concern real animals or wildlife. Explore different\nspecies, senses, behaviors, survival adaptations, intelligence, predators,\nprey, rare animals, deep-sea animals, and unusual animal relationships.\n\nDo not generate space, astronomy, NASA, unrelated science, or fictional\nanimal abilities. Avoid duplicate subjects and close rewordings.",
-    "{config.get('topic_generation_rules', 'Generate only funny cat compilation topics. Avoid other animals and duplicates.')}")
-replace("src/generate_script.py",
-    "NICHE: Animals and wildlife facts.\nTONE: Curious, surprising, energetic, punchy, conversational.",
-    "NICHE: {config.get('niche', 'Funny cat compilations')}\nTONE: {config.get('tone', 'funny, playful, energetic and conversational')}")
-replace("src/generate_script.py",
-    "CONTENT RULES:\n- The entire script must be about animals or wildlife.\n- Use real, well-established facts.\n- Never invent statistics, discoveries, quotes, experiments, behaviors,\n  or abilities.\n- Never exaggerate abilities or present speculation as fact.\n- Do not write about space, planets, stars, galaxies, black holes,\n  astronomy, NASA, the universe, or unrelated physics.\n- Stay focused on the specific animal and topic.\n- Do not invent a \"shocking\" fact just to make the script exciting.",
-    "CONTENT RULES:\n{config.get('script_rules', 'Write funny English narration for a compilation of several different cats. Describe harmless, relatable cat behavior. Never invent a specific event or claim that generic stock footage shows a particular event.')}")
-replace("src/generate_script.py",
-    "- Start with a concrete, surprising fact or consequence about the animal.",
-    "- Open with a funny line that introduces a compilation of 4-5 different cats.")
-replace("src/generate_script.py",
-    "- Every sentence must introduce a new fact, escalation, contrast, or payoff.",
-    "- Each section must introduce a different cat or funny situation, with a fresh joke or punchline.")
-replace("src/generate_script.py",
-    "- Build one clear curiosity loop and resolve it before the ending.",
-    "- Structure the narration as 4-5 connected mini-scenes with smooth spoken transitions.")
-replace("src/generate_script.py",
-    "- The payoff must be specific and supported by a real fact.",
-    "- Every mini-scene must have a clear comedic payoff based on familiar cat behavior.")
 
 # Remove the generic wildlife-documentary fallback.
 p = ROOT / "src/generate_script.py"
