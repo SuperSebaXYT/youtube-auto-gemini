@@ -97,8 +97,8 @@ patch_file("src/main.py", [
         1,
     ),
     (
-        "# QUALITY GATE\\n        # -----------------------------------------------------\\n\\n        if not is_kids_channel:",
-        "# QUALITY GATE\\n        # -----------------------------------------------------\\n\\n        if not is_kids_channel and config.get('use_quality_gate', True):",
+        "# QUALITY GATE\n        # -----------------------------------------------------\n\n        if not is_kids_channel:",
+        "# QUALITY GATE\n        # -----------------------------------------------------\n\n        if not is_kids_channel and config.get('use_quality_gate', True):",
         1,
     ),
 ])
