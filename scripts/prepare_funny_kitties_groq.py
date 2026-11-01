@@ -103,4 +103,114 @@ class GroqClient:
 # Use only cat-only discovery; seeded topics and Groq topic generation are the sources.
 replace("src/main.py", "clip_count = 15 if is_short else 30", "clip_count = 5 if is_short else 30")
 
+
+# More animated delivery and sentence-led cartoon visuals, Funny Kitties only.
+replace(
+    "src/generate_script.py",
+    "Write a high-retention voiceover about this exact topic.",
+    """Write a high-retention voiceover about this exact topic.
+DELIVERY: Sound like an energetic, funny Shorts host. Use punchy spoken
+sentences, lively reactions, playful emphasis, and varied rhythm. Avoid
+flat documentary narration, slow openings, and long clauses. Make jokes
+land clearly, but do not shout or use fake excitement.""",
+    1,
+)
+
+replace(
+    "src/main.py",
+    "rate = f\"{random.randint(-6, -2)}%\"",
+    "rate = f\"{random.randint(8, 14)}%\"",
+    1,
+)
+replace(
+    "src/main.py",
+    """                orientation=(
+                    "portrait"
+                    if is_short
+                    else "landscape"
+                ),
+            )""",
+    """                orientation=(
+                    "portrait"
+                    if is_short
+                    else "landscape"
+                ),
+                script=script_text,
+            )""",
+    1,
+)
+
+replace(
+    "src/fetch_stock.py",
+    "def _build_search_queries(topic: str) -> list:",
+    "def _build_search_queries(topic: str, script: str | None = None) -> list:",
+    1,
+)
+replace(
+    "src/fetch_stock.py",
+    "    queries = []\n\n    # ---------------------------------------------------------\n    # SPECIAL CASE: SEA CUCUMBER",
+    """    queries = []
+    cat_topic = bool(set(words).intersection({"cat", "cats", "kitten", "kittens", "feline", "felines"}))
+
+    # For Funny Kitties, search cartoon animation using each narration
+    # sentence as context, not just the broad topic.
+    if cat_topic:
+        queries.extend([
+            "2D cartoon cat animation",
+            "animated cartoon cats funny",
+            "cartoon kitten animation",
+        ])
+        for sentence in re.split(r"(?<=[.!?])\\s+", script or ""):
+            sentence_words = [
+                word for word in _topic_words(sentence)
+                if word not in {"cat", "cats", "kitten", "kittens", "feline", "felines"}
+            ]
+            if sentence_words:
+                detail = " ".join(sentence_words[:4])
+                queries.append(f"2D cartoon cat {detail}")
+                queries.append(f"animated cartoon cats {detail}")
+
+    # ---------------------------------------------------------
+    # SPECIAL CASE: SEA CUCUMBER""",
+    1,
+)
+replace(
+    "src/fetch_stock.py",
+    "    specific_animal = (\n        _is_specific_animal_topic(topic)\n    )",
+    """    specific_animal = _is_specific_animal_topic(topic)
+    cat_topic = bool(set(_topic_words(topic)).intersection(
+        {"cat", "cats", "kitten", "kittens", "feline", "felines"}
+    ))""",
+    1,
+)
+replace(
+    "src/fetch_stock.py",
+    "        elif specific_animal:\n\n            fallback_queries = [",
+    """        elif cat_topic:
+            fallback_queries = [
+                "2D cartoon cats animation",
+                "funny animated cartoon kittens",
+                "cartoon cat comedy animation",
+            ]
+
+        elif specific_animal:
+
+            fallback_queries = [""",
+    1,
+)
+replace(
+    "src/fetch_stock.py",
+    "def fetch_clips_for_topic(\n    topic: str,\n    out_dir: str,\n    count: int = 5,\n    orientation: str = \"landscape\",\n) -> list:",
+    "def fetch_clips_for_topic(\n    topic: str,\n    out_dir: str,\n    count: int = 5,\n    orientation: str = \"landscape\",\n    script: str | None = None,\n) -> list:",
+    1,
+)
+replace(
+    "src/fetch_stock.py",
+    "    queries = _build_search_queries(\n        topic\n    )",
+    "    queries = _build_search_queries(topic, script=script)",
+    1,
+)
+
+print("Funny Kitties: energetic narration and sentence-led cartoon search enabled.")
+
 print("Funny Kitties Groq preparation completed.")
