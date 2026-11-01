@@ -15,11 +15,11 @@ voices:
 
 topics_seed_file: "channels/funny_cats_topics.txt"
 
-trend_aware: true
+trend_aware: false
 trend_subreddit: "cats"
 use_daily_brain: false
 use_winner_hunter: false
-use_editorial_agents: true
+use_editorial_agents: false
 use_quality_gate: false
 use_hashtag_agent: true
 use_varied_pacing: true
