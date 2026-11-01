@@ -23,6 +23,18 @@ replace("src/generate_script.py", 'os.environ.get("GEMINI_API_KEY")', 'os.enviro
 replace("src/generate_script.py", 'os.environ["GEMINI_API_KEY"]', 'os.environ["GROQ_API_KEY"]', 5)
 replace("src/generate_script.py", 'GEMINI_MODEL = "gemini-3.5-flash-lite"', 'GEMINI_MODEL = "openai/gpt-oss-120b"')
 
+# Rename Gemini-facing identifiers and messages in the Funny Kitties runtime.
+p = ROOT / "src/generate_script.py"
+s = p.read_text(encoding="utf-8")
+s = s.replace("GEMINI_AVAILABLE", "GROQ_AVAILABLE")
+s = s.replace("GEMINI_MODEL", "GROQ_MODEL")
+s = s.replace("generate_with_gemini", "generate_with_groq")
+s = s.replace("Gemini", "Groq").replace("gemini", "groq")
+s = s.replace("from google.genai import types", "from types import SimpleNamespace")
+s = s.replace("types.GenerateContentConfig(", "SimpleNamespace(")
+p.write_text(s, encoding="utf-8")
+print("Renamed Funny Kitties generator provider references to Groq.")
+
 # Dynamic channel settings replace the hard-coded wildlife/science prompts.
 
 # Remove the generic wildlife-documentary fallback.
