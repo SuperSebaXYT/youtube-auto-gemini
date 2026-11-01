@@ -253,13 +253,18 @@ import requests
 
 MODEL = "@cf/black-forest-labs/flux-1-schnell"
 STYLE = (
-    "A polished 2D cartoon illustration for a funny animated story. "
-    "Bold clean dark outlines, flat vivid colors, expressive exaggerated "
-    "cartoon faces, simple hand-drawn shapes, playful storybook/comic look, "
-    " cel-shaded, NOT photorealistic, NOT a photograph, NOT 3D render. "
-    "Vertical 9:16 composition. The same small grey tabby cartoon cat with "
-    "white paws, large expressive eyes and a tiny pink nose in every scene. "
-    "Keep the cat design consistent. No text, no captions, no letters, no logos."
+    "High-quality polished 2D animated storytime cartoon frame, designed like "
+    "a professional hand-drawn digital animation cel. Strong clean dark outlines, "
+    "crisp edges, deliberate line weight, rich but controlled bright colors, "
+    "clear readable silhouettes, expressive face and body language, appealing "
+    "cartoon proportions, clean detailed background, coherent lighting and "
+    "carefully composed foreground and background. Flat 2D illustration, "
+    "subtle cel shading, not 3D. Vertical 9:16 framing. Recurring main character: "
+    "one small grey tabby kitten, white muzzle, white paws, large amber eyes, "
+    "tiny pink nose, three dark forehead stripes and a dark ringed tail. "
+    "Preserve these exact identifying features in every scene. No text, captions, "
+    "letters, speech bubbles, watermark or logo. Absolutely not photorealistic, "
+    "not live action, not stock photography, not CGI."
 )
 
 def _sentences(script):
@@ -286,7 +291,7 @@ def _generate_image(prompt, path, token, account_id, seed):
             "prompt": prompt[:2000],
             "width": 768,
             "height": 1344,
-            "num_steps": 8,
+            "num_steps": 4,
             "seed": seed,
             "negative_prompt": "photorealistic, realistic photography, real cat, live action, 3D, CGI, text, watermark, logo",
         },
@@ -322,9 +327,15 @@ def fetch_funny_kitties_scenes(topic, script, out_dir, count=8, orientation="por
         image_path = out / f"scene_{i:02d}.png"
         clip_path = out / f"clip_{i:02d}.mp4"
         prompt = (
-            f"Illustrate this exact moment from a humorous cat story: {sentence}. "
-            f"Story topic: {topic}. Show the action described in this sentence clearly "
-            f"and literally; do not substitute a generic cat pose. {STYLE}"
+            f"Create one finished frame from a coherent 2D animated comedy short. "
+            f"SCENE ACTION: {sentence}. STORY CONTEXT: {topic}. "
+            f"Show the exact action in the sentence at the most visually interesting "
+            f"instant. The kitten must visibly interact with the relevant prop or "
+            f"environment. Use a clear camera angle, dynamic but readable pose, "
+            f"strong facial emotion, intentional composition, and enough background "
+            f"detail to establish where the action happens. Keep the frame focused "
+            f"on one main gag, not a collage and not multiple panels. "
+            f"{STYLE}"
         )
         _generate_image(prompt, image_path, token, account_id, 7300 + i)
         print(f"Funny Kitties: generated scene {i+1}/{len(scenes)} for: {sentence}")
