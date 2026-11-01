@@ -1,0 +1,63 @@
+channel_id: funny_cats
+display_name: "Funny Cats Daily"
+
+niche: "Funny cat moments, silly feline behavior, and relatable cat comedy"
+tone: "funny, playful, energetic, punchy, conversational, and highly relatable"
+
+video_length_seconds: 300
+short_length_seconds: 45
+
+voice: "en-US-AndrewNeural"
+languages: ["en"]
+
+voices:
+  en: "en-US-AndrewNeural"
+
+topics_seed_file: "channels/funny_cats_topics.txt"
+
+trend_aware: false
+use_daily_brain: false
+use_winner_hunter: false
+use_editorial_agents: true
+use_hashtag_agent: true
+use_varied_pacing: true
+
+shorts_upload_times_utc:
+  [
+    "00:00",
+    "04:00",
+    "08:00",
+    "12:00",
+    "16:00",
+    "20:00"
+  ]
+
+tags:
+  [
+    "funny cats",
+    "funny cat videos",
+    "cat videos",
+    "cat fails",
+    "cat moments",
+    "funny kittens",
+    "cute cats",
+    "cat compilation",
+    "cats being cats"
+  ]
+
+category_id: "15"
+made_for_kids: false
+
+script_rules: |
+  - The entire voiceover must be about funny cats and relatable feline behavior.
+  - Write humorous, entertaining narration, not a wildlife documentary or an educational animal-facts lesson.
+  - Use believable everyday cat behavior and situations. Do not invent real events, quotes, statistics, or claims about a specific real cat.
+  - Build jokes around familiar cat habits: knocking things over, ignoring owners, zoomies, boxes, food, dramatic reactions, and acting like they own the house.
+  - Keep the humor friendly and suitable for a general audience. No cruelty, injury, dangerous stunts, or animal mistreatment.
+  - Make the narration fit generic licensed cat footage. Do not claim that the footage shows a specific event described in the script.
+
+topic_generation_rules: |
+  Generate only fresh, specific ideas for funny cat Shorts.
+  Focus on relatable cat behavior, harmless cat fails, funny kitten moments, dramatic reactions, zoomies, boxes, food obsession, and cats behaving like tiny landlords.
+  Do not generate wildlife facts about other species, dog topics, generic animal facts, or unrelated subjects.
+  Avoid duplicates and close rewordings. Return one topic per line.
