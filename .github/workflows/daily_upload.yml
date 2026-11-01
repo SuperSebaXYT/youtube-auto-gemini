@@ -2,8 +2,8 @@ name: Daily Upload Pipeline
 
 on:
   schedule:
-    # Check hourly at minute 17 UTC.
-    - cron: "17 * * * *"
+    # Check twice per hour to provide retries if a scheduled run is delayed or missed.
+    - cron: "*/30 * * * *"
 
   workflow_dispatch:
     inputs:
