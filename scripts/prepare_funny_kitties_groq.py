@@ -240,3 +240,156 @@ replace(
 print("Funny Kitties: narration-action cartoon footage search enabled.")
 
 print("Funny Kitties Groq preparation completed.")
+
+
+# Funny Kitties only: replace stock footage with scene-by-scene 2D cartoon art.
+(ROOT / "src/funny_kitties_visuals.py").write_text(r"""
+import os
+import re
+import subprocess
+from pathlib import Path
+
+import requests
+
+MODEL = "@cf/black-forest-labs/flux-1-schnell"
+STYLE = (
+    "A polished 2D cartoon illustration for a funny animated story. "
+    "Bold clean dark outlines, flat vivid colors, expressive exaggerated "
+    "cartoon faces, simple hand-drawn shapes, playful storybook/comic look, "
+    " cel-shaded, NOT photorealistic, NOT a photograph, NOT 3D render. "
+    "Vertical 9:16 composition. The same small grey tabby cartoon cat with "
+    "white paws, large expressive eyes and a tiny pink nose in every scene. "
+    "Keep the cat design consistent. No text, no captions, no letters, no logos."
+)
+
+def _sentences(script):
+    parts = [x.strip() for x in re.split(r"(?<=[.!?])\s+", script or "") if x.strip()]
+    if not parts:
+        raise RuntimeError("Funny Kitties: script contains no usable scenes.")
+    # Keep scene count manageable while preserving the story order.
+    if len(parts) > 9:
+        groups = []
+        step = len(parts) / 9
+        for i in range(9):
+            start = round(i * step)
+            end = round((i + 1) * step)
+            groups.append(" ".join(parts[start:end]))
+        return groups
+    return parts
+
+def _generate_image(prompt, path, token, account_id, seed):
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{MODEL}"
+    response = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={
+            "prompt": prompt[:2000],
+            "width": 768,
+            "height": 1344,
+            "num_steps": 4,
+            "seed": seed,
+            "negative_prompt": "photorealistic, realistic photography, real cat, live action, 3D, CGI, text, watermark, logo",
+        },
+        timeout=180,
+    )
+    if not response.ok:
+        raise RuntimeError(f"Cloudflare image API {response.status_code}: {response.text[:700]}")
+    payload = response.json()
+    image_b64 = (payload.get("result") or {}).get("image")
+    if not image_b64:
+        raise RuntimeError(f"Cloudflare returned no image data: {str(payload)[:500]}")
+    import base64
+    path.write_bytes(base64.b64decode(image_b64))
+    if not path.exists() or path.stat().st_size < 1000:
+        raise RuntimeError("Generated cartoon image is empty or invalid.")
+
+def fetch_funny_kitties_scenes(topic, script, out_dir, count=8, orientation="portrait"):
+    token = os.environ.get("PEXELS_API_KEY", "").strip()
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    if not token:
+        raise RuntimeError("PEXELS_API_KEY is missing. Add your Cloudflare Workers AI token to this existing secret.")
+    if not account_id:
+        raise RuntimeError("CLOUDFLARE_ACCOUNT_ID is missing. Add your Cloudflare Account ID as a GitHub secret.")
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    scenes = _sentences(script)
+    if len(scenes) > count:
+        scenes = scenes[:count]
+    print(f"Funny Kitties: generating {len(scenes)} bespoke 2D cartoon scenes with {MODEL}.")
+    clips = []
+    for i, sentence in enumerate(scenes):
+        image_path = out / f"scene_{i:02d}.png"
+        clip_path = out / f"clip_{i:02d}.mp4"
+        prompt = (
+            f"Illustrate this exact moment from a humorous cat story: {sentence}. "
+            f"Story topic: {topic}. Show the action described in this sentence clearly "
+            f"and literally; do not substitute a generic cat pose. {STYLE}"
+        )
+        _generate_image(prompt, image_path, token, account_id, 7300 + i)
+        print(f"Funny Kitties: generated scene {i+1}/{len(scenes)} for: {sentence}")
+        vf = (
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,"
+            "zoompan=z='min(zoom+0.0008,1.06)':d=150:s=1080x1920:fps=30,"
+            "format=yuv420p"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-loop", "1", "-i", str(image_path),
+            "-vf", vf, "-t", "5", "-r", "30",
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p", str(clip_path),
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if result.returncode != 0 or not clip_path.exists() or clip_path.stat().st_size < 10000:
+            raise RuntimeError(f"Could not animate cartoon scene {i+1}: {result.stdout[-1200:]}")
+        clips.append(str(clip_path))
+    if not clips:
+        raise RuntimeError("Funny Kitties: no cartoon scenes were generated.")
+    print(f"Funny Kitties: ready {len(clips)} animated 2D cartoon scene clips.")
+    return clips
+""".lstrip(), encoding="utf-8")
+
+replace(
+    "src/main.py",
+    "from src.fetch_stock import fetch_clips_for_topic",
+    "from src.fetch_stock import fetch_clips_for_topic\nfrom src.funny_kitties_visuals import fetch_funny_kitties_scenes",
+    1,
+)
+
+replace(
+    "src/main.py",
+    """            clip_paths = fetch_clips_for_topic(
+                topic,
+                str(clips_dir),
+                count=clip_count,
+                orientation=(
+                    "portrait"
+                    if is_short
+                    else "landscape"
+                ),
+                script=script_text,
+            )""",
+    """            if channel_id == "funny_cats":
+                clip_paths = fetch_funny_kitties_scenes(
+                    topic,
+                    script_text,
+                    str(clips_dir),
+                    count=9 if is_short else 30,
+                    orientation="portrait" if is_short else "landscape",
+                )
+            else:
+                clip_paths = fetch_clips_for_topic(
+                    topic,
+                    str(clips_dir),
+                    count=clip_count,
+                    orientation=(
+                        "portrait"
+                        if is_short
+                        else "landscape"
+                    ),
+                )""",
+    1,
+)
+
+print("Funny Kitties: Cloudflare FLUX scene-by-scene cartoon pipeline installed.")
