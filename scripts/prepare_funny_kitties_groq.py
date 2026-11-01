@@ -286,7 +286,7 @@ def _generate_image(prompt, path, token, account_id, seed):
             "prompt": prompt[:2000],
             "width": 768,
             "height": 1344,
-            "num_steps": 4,
+            "num_steps": 8,
             "seed": seed,
             "negative_prompt": "photorealistic, realistic photography, real cat, live action, 3D, CGI, text, watermark, logo",
         },
@@ -375,7 +375,7 @@ replace(
                     topic,
                     script_text,
                     str(clips_dir),
-                    count=9 if is_short else 30,
+                    count=7 if is_short else 30,
                     orientation="portrait" if is_short else "landscape",
                 )
             else:
