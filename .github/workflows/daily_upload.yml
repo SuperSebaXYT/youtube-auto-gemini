@@ -2,8 +2,8 @@ name: Daily Upload Pipeline
 
 on:
   schedule:
-    # Run once per hour at minute 33 (UTC).
-    - cron: "33 * * * *"
+    # Run at minutes 14, 19 and 33 of every hour (UTC).
+    - cron: "14,19,33 * * * *"
 
   workflow_dispatch:
     inputs:
