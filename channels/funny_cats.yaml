@@ -15,7 +15,7 @@ voices:
 
 topics_seed_file: "channels/funny_cats_topics.txt"
 
-trend_aware: false
+trend_aware: true
 use_daily_brain: false
 use_winner_hunter: false
 use_editorial_agents: true
@@ -25,12 +25,11 @@ use_varied_pacing: true
 
 shorts_upload_times_utc:
   [
-    "00:00",
-    "04:00",
-    "08:00",
-    "12:00",
-    "16:00",
-    "20:00"
+    "06:00",
+    "10:00",
+    "14:00",
+    "18:00",
+    "22:00"
   ]
 
 tags:
