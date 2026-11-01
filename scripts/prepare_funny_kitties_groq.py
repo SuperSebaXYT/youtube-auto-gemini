@@ -291,11 +291,7 @@ def _generate_image(prompt, path, token, account_id, seed):
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json={
             "prompt": prompt[:2000],
-            "width": 768,
-            "height": 1344,
-            "num_steps": 4,
-            "seed": seed,
-            "negative_prompt": "photorealistic, realistic photography, real cat, live action, 3D, CGI, text, watermark, logo",
+            "steps": 4,
         },
         timeout=180,
     )
@@ -388,7 +384,7 @@ replace(
                     topic,
                     script_text,
                     str(clips_dir),
-                    count=7 if is_short else 30,
+                    count=9 if is_short else 30,
                     orientation="portrait" if is_short else "landscape",
                 )
             else:
