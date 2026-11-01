@@ -16,6 +16,7 @@ voices:
 topics_seed_file: "channels/funny_cats_topics.txt"
 
 trend_aware: true
+trend_subreddit: "cats"
 use_daily_brain: false
 use_winner_hunter: false
 use_editorial_agents: true
