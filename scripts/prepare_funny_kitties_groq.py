@@ -118,7 +118,7 @@ shouty or flat.""",
 replace(
     "src/main.py",
     "rate = f\"{random.randint(-6, -2)}%\"",
-    "rate = f\"{random.randint(10, 16)}%\"",
+    "rate = f\"+{random.randint(10, 16)}%\"",
     1,
 )
 
