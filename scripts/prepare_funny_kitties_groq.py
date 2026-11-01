@@ -149,15 +149,17 @@ replace(
 
 replace(
     "src/fetch_stock.py",
-    "    queries = []\n\n    # ---------------------------------------------------------\n    # SPECIAL CASE: SEA CUCUMBER",
-    """    queries = []
-    cat_topic = bool(set(words).intersection(
-        {"cat", "cats", "kitten", "kittens", "feline", "felines"}
-    ))
-
-    if cat_topic:
-        # Search for the actual action in each narration sentence.
-        # Keep queries short and visual so Pexels can find matching footage.
+    """    if cat_topic:
+        queries.extend([
+            "funny cats",
+            "cats being funny",
+            "cats playing",
+            "funny kittens",
+            "cat reactions",
+            "cats at home",
+        ])""",
+    """    if cat_topic:
+        # Match searches to actions described by the narration.
         action_terms = {
             "jump": "jumping", "jumps": "jumping", "jumped": "jumping",
             "leap": "leaping", "leaps": "leaping",
@@ -185,21 +187,13 @@ replace(
             "bite": "biting", "bites": "biting",
             "yawn": "yawning", "yawns": "yawning",
         }
-        queries.extend([
-            "2D cartoon cat animation",
-            "cartoon kitten funny animation",
-        ])
+        queries.extend(["2D cartoon cat animation", "cartoon kitten funny animation"])
         for sentence in re.split(r"(?<=[.!?])\\s+", script or ""):
             tokens = re.findall(r"[a-zA-Z]+", sentence.lower())
-            actions = list(dict.fromkeys(
-                action_terms[token] for token in tokens if token in action_terms
-            ))
+            actions = list(dict.fromkeys(action_terms[t] for t in tokens if t in action_terms))
             for action in actions[:2]:
-                queries.append(f"cartoon cat {action}")
-                queries.append(f"2D animated cat {action}")
-
-    # ---------------------------------------------------------
-    # SPECIAL CASE: SEA CUCUMBER""",
+                queries.extend([f"cartoon cat {action}", f"2D animated cat {action}"])
+        queries.extend(["funny cats", "cats being funny", "cats playing", "funny kittens"])""",
     1,
 )
 
