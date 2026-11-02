@@ -487,6 +487,7 @@ def build_winner_context(channel_id: str) -> str | None:
         ) / engaged * 1000
 
         scored.append({
+            "video_id": video_id,
             "topic": entry["topic"],
             **stats,
             "categories": _classify_topic(entry["topic"]),
@@ -536,13 +537,10 @@ def build_winner_context(channel_id: str) -> str | None:
         if item not in retention_sample:
             retention_sample.append(item)
     for item in retention_sample:
-        matching = next((entry for entry in eligible if entry.get("topic") == item["topic"]), None)
-        if matching:
-            item["retention_curve"] = _fetch_retention_curve(analytics, matching["video_id"])
+        item["retention_curve"] = _fetch_retention_curve(
+            analytics, item["video_id"]
+        )
     patterns = _build_patterns(scored)
-    weak = sorted(
-        scored, key=lambda item: item["performance_score"]
-    )[:max(3, min(5, len(scored)))]
 
     lines = [
         "WINNER HUNTER — CHANNEL GROWTH STRATEGY",
