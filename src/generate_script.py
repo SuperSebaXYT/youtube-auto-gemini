@@ -431,26 +431,8 @@ Sort from highest score to lowest score. No explanations.
         comparison_set = set(used_topics)
 
         for candidate_line in _parse_topic_lines(response.text):
-            if "AVOID UNDERPERFORMING SUBJECT FAMILY:" in winner_context:
-                candidate_lower = candidate.lower()
-                feline_terms = (
-                    "cat", "cats", "kitten", "kittens", "feline", "bobcat",
-                    "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
-                    "cougar", "puma", "ocelot", "caracal", "serval",
-                )
-                if re.search(r"\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\\b", candidate_lower):
-                    print(
-                        "Winner Hunter weak-family rejection "
-                        f"(felids): {candidate}"
-                    )
-                    continue
-
-            if _looks_like_duplicate_topic(candidate, comparison_set):
-                print(f"Winner Hunter duplicate rejected: {candidate}")
-                continue
-
             score_match = re.match(
-                r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
                 candidate_line,
                 flags=re.IGNORECASE,
             )
@@ -466,6 +448,28 @@ Sort from highest score to lowest score. No explanations.
 
             if not candidate:
                 continue
+
+            if "AVOID UNDERPERFORMING SUBJECT FAMILY:" in winner_context:
+                candidate_lower = candidate.lower()
+                feline_terms = (
+                    "cat", "cats", "kitten", "kittens", "feline", "bobcat",
+                    "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
+                    "cougar", "puma", "ocelot", "caracal", "serval",
+                )
+                if re.search(
+                    r"\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\b",
+                    candidate_lower,
+                ):
+                    print(
+                        "Winner Hunter weak-family rejection "
+                        f"(felids): {candidate}"
+                    )
+                    continue
+
+            if _looks_like_duplicate_topic(candidate, comparison_set):
+                print(f"Winner Hunter duplicate rejected: {candidate}")
+                continue
+
             candidates.append((candidate_score, candidate))
             comparison_set.add(candidate)
 
