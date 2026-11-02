@@ -123,34 +123,41 @@ def _fetch_audience_geography(youtube_analytics) -> dict:
             if total_engaged else 0.0
         )
 
-    # Country trend over the last 30 days, split into weekly blocks.
+    # Country is a filter, not a dimension, in the time-based country
+    # report. Query the US and UK separately to get valid daily time series.
     trend = {}
-    try:
-        trend_response = youtube_analytics.reports().query(
-            ids="channel==MINE",
-            startDate=start.strftime("%Y-%m-%d"),
-            endDate=end.strftime("%Y-%m-%d"),
-            metrics="views",
-            dimensions="day,country,creatorContentType",
-            maxResults=2000,
-        ).execute()
-        trend_headers = [
-            h["name"] for h in trend_response.get("columnHeaders", [])
-        ]
-        for row in trend_response.get("rows", []):
-            item = dict(zip(trend_headers, row))
-            if str(item.get("creatorContentType", "")).upper() != "SHORTS":
-                continue
-            country = str(item.get("country", "")).upper()
-            day = str(item.get("day", ""))
-            try:
-                views = float(item.get("views", 0) or 0)
-            except (TypeError, ValueError):
-                views = 0.0
-            if country and day:
-                trend.setdefault(country, {})[day] = views
-    except Exception as exc:
-        print(f"WARNING: Winner Hunter country trend unavailable ({exc}).")
+    for country in ("US", "GB"):
+        try:
+            trend_response = youtube_analytics.reports().query(
+                ids="channel==MINE",
+                startDate=start.strftime("%Y-%m-%d"),
+                endDate=end.strftime("%Y-%m-%d"),
+                metrics="views",
+                dimensions="day,creatorContentType",
+                filters=f"country=={country}",
+                maxResults=200,
+            ).execute()
+            trend_headers = [
+                h["name"] for h in trend_response.get("columnHeaders", [])
+            ]
+            country_days = {}
+            for row in trend_response.get("rows", []):
+                item = dict(zip(trend_headers, row))
+                if str(item.get("creatorContentType", "")).upper() != "SHORTS":
+                    continue
+                day = str(item.get("day", ""))
+                try:
+                    views = float(item.get("views", 0) or 0)
+                except (TypeError, ValueError):
+                    views = 0.0
+                if day:
+                    country_days[day] = views
+            trend[country] = country_days
+        except Exception as exc:
+            print(
+                f"WARNING: Winner Hunter {country} daily trend unavailable "
+                f"({exc})."
+            )
 
     return {
         "countries": countries,
