@@ -61,6 +61,122 @@ def _query_report(youtube_analytics, video_ids: list[str], metrics: str):
     ).execute()
 
 
+
+
+def _fetch_audience_geography(youtube_analytics) -> dict:
+    """Fetch Shorts audience geography and recent country movement."""
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=30)
+    base = {
+        "startDate": start.strftime("%Y-%m-%d"),
+        "endDate": end.strftime("%Y-%m-%d"),
+        "ids": "channel==MINE",
+        "metrics": (
+            "views,engagedViews,averageViewDuration,"
+            "averageViewPercentage,estimatedMinutesWatched"
+        ),
+        "maxResults": 200,
+    }
+
+    try:
+        response = youtube_analytics.reports().query(
+            **base,
+            dimensions="country,creatorContentType",
+        ).execute()
+    except Exception as exc:
+        print(f"WARNING: Winner Hunter country report unavailable ({exc}).")
+        return {}
+
+    headers = [h["name"] for h in response.get("columnHeaders", [])]
+    countries = {}
+    for row in response.get("rows", []):
+        item = dict(zip(headers, row))
+        # Keep Shorts only. Other formats must not distort the target audience.
+        if str(item.get("creatorContentType", "")).upper() != "SHORTS":
+            continue
+        country = str(item.get("country", "")).upper()
+        if not country:
+            continue
+
+        def number(key):
+            try:
+                return float(item.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        countries[country] = {
+            "views": number("views"),
+            "engaged_views": number("engagedViews"),
+            "avg_view_duration": number("averageViewDuration"),
+            "retention": number("averageViewPercentage"),
+            "watch_minutes": number("estimatedMinutesWatched"),
+        }
+
+    total_views = sum(x["views"] for x in countries.values())
+    total_engaged = sum(x["engaged_views"] for x in countries.values())
+    for item in countries.values():
+        item["view_share"] = (
+            item["views"] / total_views * 100 if total_views else 0.0
+        )
+        item["engaged_share"] = (
+            item["engaged_views"] / total_engaged * 100
+            if total_engaged else 0.0
+        )
+
+    # Country trend over the last 30 days, split into weekly blocks.
+    trend = {}
+    try:
+        trend_response = youtube_analytics.reports().query(
+            ids="channel==MINE",
+            startDate=start.strftime("%Y-%m-%d"),
+            endDate=end.strftime("%Y-%m-%d"),
+            metrics="views",
+            dimensions="day,country,creatorContentType",
+            maxResults=2000,
+        ).execute()
+        trend_headers = [
+            h["name"] for h in trend_response.get("columnHeaders", [])
+        ]
+        for row in trend_response.get("rows", []):
+            item = dict(zip(trend_headers, row))
+            if str(item.get("creatorContentType", "")).upper() != "SHORTS":
+                continue
+            country = str(item.get("country", "")).upper()
+            day = str(item.get("day", ""))
+            try:
+                views = float(item.get("views", 0) or 0)
+            except (TypeError, ValueError):
+                views = 0.0
+            if country and day:
+                trend.setdefault(country, {})[day] = views
+    except Exception as exc:
+        print(f"WARNING: Winner Hunter country trend unavailable ({exc}).")
+
+    return {
+        "countries": countries,
+        "total_views": total_views,
+        "trend": trend,
+        "period_days": 30,
+    }
+
+
+def _country_weekly_summary(geo: dict, country: str) -> str:
+    days = geo.get("trend", {}).get(country, {})
+    if not days:
+        return "not enough country trend data"
+    dates = sorted(days)
+    if len(dates) < 8:
+        return "not enough daily data for a reliable trend"
+    recent = sum(days[d] for d in dates[-7:])
+    previous = sum(days[d] for d in dates[-14:-7])
+    if previous <= 0:
+        return f"last 7 days: {recent:.0f} views; prior week unavailable"
+    change = (recent - previous) / previous * 100
+    return (
+        f"last 7 days {recent:.0f} vs previous 7 days "
+        f"{previous:.0f} ({change:+.1f}%)"
+    )
+
 def _fetch_performance(youtube_analytics, video_ids: list[str]) -> dict:
     if not video_ids:
         return {}
@@ -253,6 +369,8 @@ def build_winner_context(channel_id: str) -> str | None:
     if not performance:
         return None
 
+    geography = _fetch_audience_geography(analytics)
+
     scored = []
     for entry in eligible:
         video_id = entry["video_id"]
@@ -325,9 +443,10 @@ def build_winner_context(channel_id: str) -> str | None:
     lines = [
         "WINNER HUNTER — CHANNEL GROWTH STRATEGY",
         "",
-        "MISSION: Think like an experienced YouTube creator whose job is to",
-        "find repeatable topics with breakout potential, not merely generate",
-        "interesting animal facts. No topic can guarantee viral results.",
+        "MISSION: Build every Short toward the stretch target of 5,000,000",
+        "views within 30 days. Treat this as an aggressive optimization goal,",
+        "never a guaranteed outcome. Think like a creator obsessed with",
+        "packaging, audience fit, retention, sharing, and repeatable growth.",
         "",
         "HOW TO READ THE DATA:",
         "- Views/day is recent-window view velocity, not lifetime views.",
@@ -376,6 +495,34 @@ def build_winner_context(channel_id: str) -> str | None:
             "- Do not suggest another felid under a different name or angle.",
         ])
 
+    if geography and geography.get("countries"):
+        countries = geography["countries"]
+        us = countries.get("US", {})
+        gb = countries.get("GB", {})
+        total_geo = geography.get("total_views", 0)
+        lines.extend([
+            "",
+            "AUDIENCE GEOGRAPHY — LAST 30 DAYS, SHORTS ONLY:",
+            f"- Country-report views total: {total_geo:,.0f}",
+            f"- United States: {us.get('view_share', 0):.1f}% of reported views; "
+            f"{us.get('views', 0):,.0f} views; "
+            f"{us.get('retention', 0):.1f}% average viewed",
+            f"- United Kingdom: {gb.get('view_share', 0):.1f}% of reported views; "
+            f"{gb.get('views', 0):,.0f} views; "
+            f"{gb.get('retention', 0):.1f}% average viewed",
+            f"- US trend: {_country_weekly_summary(geography, 'US')}",
+            f"- UK trend: {_country_weekly_summary(geography, 'GB')}",
+            "- Country reports can omit low-volume data and may not sum to "
+            "the channel total.",
+            "- Do not overreact to one day's country mix. Use 7-day movement "
+            "and the 30-day baseline.",
+            "- If US share and US views fall while another English-speaking "
+            "country rises, prioritize US-readable hooks, examples, wording, "
+            "and animal stories with broad US appeal in the next tests.",
+            "- Do not exclude the UK or other countries; optimize for US "
+            "audience growth without making content confusing elsewhere.",
+        ])
+
     lines.extend([
         "",
         "STRATEGY RULES FOR THE NEXT TOPIC:",
@@ -385,6 +532,12 @@ def build_winner_context(channel_id: str) -> str | None:
         "  consequence, hidden mechanism, or unexpected survival trick.",
         "- Learn from the best-performing topic patterns, especially those",
         "  that combine strong opening engagement with strong retention.",
+        "- Optimize for the United States as the primary growth market when",
+        "  the country data shows the US is underrepresented or losing share.",
+        "- Prefer subjects with strong US audience familiarity or universal",
+        "  visual appeal; use clear natural US English and US-readable framing.",
+        "- A 5M-in-30-days target requires mass appeal, a powerful first-second",
+        "  visual, a high-retention story, and strong share potential."
         "- Avoid topics whose core promise resembles the weak performers.",
         "- Avoid generic 'amazing facts' and topics needing long setup.",
         "- Favor subjects that can be explained accurately in 35-55 seconds.",
