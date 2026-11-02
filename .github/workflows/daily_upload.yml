@@ -59,6 +59,21 @@ jobs:
           mkdir -p tokens
           echo "$TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/cosmic_curious_token.pickle
 
+      - name: Restore YouTube token (Funny Kitties)
+        id: restore_funny_cats
+        env:
+          TOKEN_FUNNY_CATS: ${{ secrets.YOUTUBE_TOKEN_FUNNY_CATS }}
+        run: |
+          mkdir -p tokens
+          if [ -n "$TOKEN_FUNNY_CATS" ]; then
+            echo "$TOKEN_FUNNY_CATS" | base64 -d > tokens/funny_cats_token.pickle
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Funny Kitties token restored."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::YOUTUBE_TOKEN_FUNNY_CATS is not configured; Funny Kitties will be skipped."
+          fi
+
       - name: Restore YouTube Analytics token (Cosmic Curious)
         env:
           ANALYTICS_TOKEN_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS }}
@@ -82,7 +97,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          ENABLED_CHANNELS: "cosmic_curious"
+          ENABLED_CHANNELS: cosmic_curious,${{ steps.restore_funny_cats.outputs.enabled == 'true' && 'funny_cats' || '' }}
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
         run: |
           python -m src.scheduler
