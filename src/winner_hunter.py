@@ -544,7 +544,7 @@ def build_winner_context(channel_id: str) -> str | None:
         "- Prefer subjects with strong US audience familiarity or universal",
         "  visual appeal; use clear natural US English and US-readable framing.",
         "- A 5M-in-30-days target requires mass appeal, a powerful first-second",
-        "  visual, a high-retention story, and strong share potential."
+        "  visual, a high-retention story, and strong share potential.",
         "- Avoid topics whose core promise resembles the weak performers.",
         "- Avoid generic 'amazing facts' and topics needing long setup.",
         "- Favor subjects that can be explained accurately in 35-55 seconds.",
