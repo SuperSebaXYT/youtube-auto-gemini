@@ -337,6 +337,24 @@ def build_winner_context(channel_id: str) -> str | None:
                 f'{item["retention"]:.0f}% retention'
             )
 
+    # If a whole animal family repeatedly appears among the weakest videos,
+    # explicitly flag it. This prevents a wording change (cat -> bobcat)
+    # from slipping through as a supposedly fresh idea.
+    weak_topic_text = " ".join(item["topic"].lower() for item in weak)
+    feline_terms = (
+        "cat", "cats", "kitten", "kittens", "feline", "bobcat",
+        "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
+        "cougar", "puma", "ocelot", "caracal", "serval",
+    )
+    if any(term in weak_topic_text for term in feline_terms):
+        lines.extend([
+            "",
+            "AVOID UNDERPERFORMING SUBJECT FAMILY:",
+            "- FELIDS: domestic cats, kittens, bobcats, lynx, lions, "
+            "tigers, leopards, jaguars, cheetahs, cougars and other cats.",
+            "- Do not suggest another felid under a different name or angle.",
+        ])
+
     lines.extend([
         "",
         "IMPORTANT:",
