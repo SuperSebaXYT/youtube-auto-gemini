@@ -389,11 +389,26 @@ CHANNEL PERFORMANCE DATA:
 PREVIOUSLY USED TOPICS. Do not repeat these or their underlying subjects:
 {used_sample}
 
+Act like a top YouTube Shorts channel strategist, not a random idea generator.
+Your goal is to identify the single strongest opportunity for the next upload.
+Study the actual channel performance above. Learn from high-performing
+patterns and actively avoid the promise, pacing, and subject types behind
+weak performers.
+
 Reuse successful CONTENT PATTERNS, not the same subjects. Find different
 animals, species, behaviors, abilities, adaptations, and survival methods.
 
-Topics must be specific, fact-checkable, and curiosity-driven.
-Never invent species, behavior, abilities, statistics, or discoveries.
+Score each candidate from 0-100 using this rubric:
+- 25 points: immediate visual hook understandable in the first second
+- 20 points: curiosity gap and surprising but clear premise
+- 20 points: likely broad audience appeal
+- 15 points: strong factual payoff that can be delivered in 35-55 seconds
+- 10 points: visual footage potential for a faceless animal Short
+- 10 points: novelty and distance from previous channel topics
+
+Subtract points for generic facts, slow setup, weak visuals, narrow appeal,
+or a premise similar to underperforming videos. Accuracy is mandatory.
+Do not invent species, behavior, abilities, statistics, or discoveries.
 No astronomy, space, NASA, or unrelated science.
 
 Treat every "AVOID" instruction in the performance data as a HARD BAN.
@@ -401,7 +416,9 @@ Do not propose the same animal family, species, or subject with a new
 wording, angle, or example. If a family is flagged as underperforming,
 all members of that family are forbidden in this batch.
 
-Return exactly 12 topics, one per line, without numbering or commentary.
+Return exactly 12 lines in this format:
+SCORE: <0-100> | TOPIC: <specific topic>
+Sort from highest score to lowest score. No explanations.
 """
 
     try:
@@ -413,7 +430,7 @@ Return exactly 12 topics, one per line, without numbering or commentary.
         candidates = []
         comparison_set = set(used_topics)
 
-        for candidate in _parse_topic_lines(response.text):
+        for candidate_line in _parse_topic_lines(response.text):
             if "AVOID UNDERPERFORMING SUBJECT FAMILY:" in winner_context:
                 candidate_lower = candidate.lower()
                 feline_terms = (
@@ -432,17 +449,36 @@ Return exactly 12 topics, one per line, without numbering or commentary.
                 print(f"Winner Hunter duplicate rejected: {candidate}")
                 continue
 
-            candidates.append(candidate)
+            score_match = re.match(
+                r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                candidate_line,
+                flags=re.IGNORECASE,
+            )
+            if score_match:
+                candidate_score = max(0, min(100, int(score_match.group(1))))
+                candidate = score_match.group(2).strip()
+            else:
+                # Backward-compatible fallback if the model ignores the
+                # requested score format: keep the candidate, but rank it
+                # below properly scored ideas.
+                candidate_score = 0
+                candidate = candidate_line.strip()
+
+            if not candidate:
+                continue
+            candidates.append((candidate_score, candidate))
             comparison_set.add(candidate)
 
         if not candidates:
             print("Winner Hunter returned no fresh candidates.")
             return None
 
-        selected = random.choice(candidates)
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        selected_score, selected = candidates[0]
         print(
-            f"Winner Hunter selected from {len(candidates)} fresh "
-            f"candidates: {selected}"
+            f"Winner Hunter selected highest-ranked topic "
+            f"({selected_score}/100) from {len(candidates)} fresh candidates: "
+            f"{selected}"
         )
         return selected
 
