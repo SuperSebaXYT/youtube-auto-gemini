@@ -184,6 +184,47 @@ def _country_weekly_summary(geo: dict, country: str) -> str:
         f"{previous:.0f} ({change:+.1f}%)"
     )
 
+def _fetch_traffic_sources(youtube_analytics) -> list[dict]:
+    """Summarize where Shorts views came from during the last 30 days."""
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=30)
+    try:
+        response = youtube_analytics.reports().query(
+            ids="channel==MINE",
+            startDate=start.strftime("%Y-%m-%d"),
+            endDate=end.strftime("%Y-%m-%d"),
+            metrics="views,engagedViews,estimatedMinutesWatched",
+            dimensions="insightTrafficSourceType,creatorContentType",
+            maxResults=200,
+        ).execute()
+    except Exception as exc:
+        print(f"WARNING: Winner Hunter traffic-source report unavailable ({exc}).")
+        return []
+
+    headers = [h["name"] for h in response.get("columnHeaders", [])]
+    sources = {}
+    for row in response.get("rows", []):
+        item = dict(zip(headers, row))
+        if str(item.get("creatorContentType", "")).upper() != "SHORTS":
+            continue
+        source = str(item.get("insightTrafficSourceType", "UNKNOWN"))
+        try:
+            views = float(item.get("views", 0) or 0)
+            engaged = float(item.get("engagedViews", 0) or 0)
+            minutes = float(item.get("estimatedMinutesWatched", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        current = sources.setdefault(source, {"views": 0.0, "engaged_views": 0.0, "watch_minutes": 0.0})
+        current["views"] += views
+        current["engaged_views"] += engaged
+        current["watch_minutes"] += minutes
+    total = sum(item["views"] for item in sources.values())
+    result = []
+    for source, item in sources.items():
+        item["share"] = item["views"] / total * 100 if total else 0.0
+        result.append({"source": source, **item})
+    return sorted(result, key=lambda item: item["views"], reverse=True)
+
 def _fetch_performance(youtube_analytics, video_ids: list[str]) -> dict:
     if not video_ids:
         return {}
@@ -247,6 +288,49 @@ def _fetch_performance(youtube_analytics, video_ids: list[str]) -> dict:
     print("WARNING: Winner Hunter could not retrieve usable Analytics rows.")
     return {}
 
+
+def _fetch_retention_curve(youtube_analytics, video_id: str) -> dict:
+    """Fetch the official audience-retention curve for one video."""
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=LOOKBACK_DAYS)
+    try:
+        response = youtube_analytics.reports().query(
+            ids="channel==MINE",
+            startDate=start.strftime("%Y-%m-%d"),
+            endDate=end.strftime("%Y-%m-%d"),
+            metrics="audienceWatchRatio,relativeRetentionPerformance,startedWatching,stoppedWatching",
+            dimensions="elapsedVideoTimeRatio",
+            filters=f"video=={video_id}",
+            maxResults=200,
+        ).execute()
+    except Exception as exc:
+        print(f"WARNING: Winner Hunter retention report unavailable for {video_id} ({exc}).")
+        return {}
+    headers = [h["name"] for h in response.get("columnHeaders", [])]
+    points = []
+    for row in response.get("rows", []):
+        item = dict(zip(headers, row))
+        try:
+            points.append({
+                "position": float(item.get("elapsedVideoTimeRatio", 0) or 0),
+                "watch_ratio": float(item.get("audienceWatchRatio", 0) or 0),
+                "relative": float(item.get("relativeRetentionPerformance", 0) or 0),
+                "stopped": float(item.get("stoppedWatching", 0) or 0),
+            })
+        except (TypeError, ValueError):
+            continue
+    if not points:
+        return {}
+    peak = max(points, key=lambda point: point["watch_ratio"])
+    drop = max(points, key=lambda point: point["stopped"])
+    relative_values = [p["relative"] for p in points if p["relative"]]
+    return {
+        "points": len(points),
+        "peak_position": peak["position"] * 100,
+        "largest_drop_position": drop["position"] * 100,
+        "largest_drop": drop["stopped"],
+        "average_relative": sum(relative_values) / len(relative_values) if relative_values else 0.0,
+    }
 
 def _percentile(value: float, values: list[float]) -> float:
     if not values:
@@ -376,6 +460,7 @@ def build_winner_context(channel_id: str) -> str | None:
     if not performance:
         return None
 
+    traffic_sources = _fetch_traffic_sources(analytics)
     geography = _fetch_audience_geography(analytics)
 
     scored = []
@@ -442,6 +527,18 @@ def build_winner_context(channel_id: str) -> str | None:
     scored.sort(
         key=lambda item: item["performance_score"], reverse=True
     )
+    # Retention reports require one video ID per request. Inspect winners
+    # and weak performers, limiting calls to a small representative sample.
+    weak = sorted(scored, key=lambda item: item["performance_score"])
+    weak = weak[:max(3, min(5, len(weak)))]
+    retention_sample = []
+    for item in scored[:5] + weak:
+        if item not in retention_sample:
+            retention_sample.append(item)
+    for item in retention_sample:
+        matching = next((entry for entry in eligible if entry.get("topic") == item["topic"]), None)
+        if matching:
+            item["retention_curve"] = _fetch_retention_curve(analytics, matching["video_id"])
     patterns = _build_patterns(scored)
     weak = sorted(
         scored, key=lambda item: item["performance_score"]
@@ -462,6 +559,8 @@ def build_winner_context(channel_id: str) -> str | None:
         "- Retention is averageViewPercentage.",
         "- Subscriber, share and interaction rates are normalized per 1,000",
         "  engaged views to reduce the advantage of already-large videos.",
+        "- Retention curves use official audienceWatchRatio and stoppedWatching",
+        "  data. They show where attention drops, not why it drops.",
         "",
         "TOP PERFORMERS — STUDY THEIR TOPIC ANGLE AND VIEWER PROMISE:",
     ]
@@ -475,6 +574,25 @@ def build_winner_context(channel_id: str) -> str | None:
             f" | retention {item['retention']:.1f}%"
             f" | +{item['subs']:.0f} subscribers"
         )
+
+    lines.extend(["", "RETENTION DIAGNOSTICS — TOP AND WEAK SAMPLE:"])
+    for item in retention_sample:
+        curve = item.get("retention_curve") or {}
+        if curve:
+            lines.append(
+                f'- "{item["topic"]}" | {curve.get("points", 0)} points'
+                f" | largest drop near {curve.get('largest_drop_position', 0):.0f}%"
+                f" | retention peak near {curve.get('peak_position', 0):.0f}%"
+                f" | relative retention avg {curve.get('average_relative', 0):.3f}"
+            )
+
+    if traffic_sources:
+        lines.extend(["", "SHORTS TRAFFIC SOURCES — LAST 30 DAYS:"])
+        for item in traffic_sources[:8]:
+            lines.append(
+                f"- {item['source']}: {item['views']:,.0f} views "
+                f"({item['share']:.1f}%); {item['engaged_views']:,.0f} engaged views"
+            )
 
     if patterns:
         lines.extend(["", "WINNING CONTENT PATTERNS:"])
@@ -546,6 +664,10 @@ def build_winner_context(channel_id: str) -> str | None:
         "- A 5M-in-30-days target requires mass appeal, a powerful first-second",
         "  visual, a high-retention story, and strong share potential.",
         "- Avoid topics whose core promise resembles the weak performers.",
+        "- Use retention diagnostics to locate likely drop-off moments; improve",
+        "  the opening or pacing, but do not assume the graph explains why.",
+        "- Use traffic-source mix to separate Shorts Feed discovery from search",
+        "  and external traffic when judging each content strategy.",
         "- Avoid generic 'amazing facts' and topics needing long setup.",
         "- Favor subjects that can be explained accurately in 35-55 seconds.",
         "- Never sacrifice factual accuracy for a more clickable claim.",
