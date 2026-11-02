@@ -17,7 +17,7 @@ from src.agents.video_registry import recent_videos
 from src.analytics_auth import get_analytics_service
 
 
-MIN_AGE_DAYS = 3
+MIN_AGE_DAYS = 10
 LOOKBACK_DAYS = 90
 MIN_ELIGIBLE_VIDEOS = 5
 MAX_VIDEOS = 200
