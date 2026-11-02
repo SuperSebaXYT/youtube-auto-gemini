@@ -396,6 +396,11 @@ Topics must be specific, fact-checkable, and curiosity-driven.
 Never invent species, behavior, abilities, statistics, or discoveries.
 No astronomy, space, NASA, or unrelated science.
 
+Treat every "AVOID" instruction in the performance data as a HARD BAN.
+Do not propose the same animal family, species, or subject with a new
+wording, angle, or example. If a family is flagged as underperforming,
+all members of that family are forbidden in this batch.
+
 Return exactly 12 topics, one per line, without numbering or commentary.
 """
 
@@ -409,6 +414,20 @@ Return exactly 12 topics, one per line, without numbering or commentary.
         comparison_set = set(used_topics)
 
         for candidate in _parse_topic_lines(response.text):
+            if "AVOID UNDERPERFORMING SUBJECT FAMILY:" in winner_context:
+                candidate_lower = candidate.lower()
+                feline_terms = (
+                    "cat", "cats", "kitten", "kittens", "feline", "bobcat",
+                    "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
+                    "cougar", "puma", "ocelot", "caracal", "serval",
+                )
+                if any(term in candidate_lower for term in feline_terms):
+                    print(
+                        "Winner Hunter weak-family rejection "
+                        f"(felids): {candidate}"
+                    )
+                    continue
+
             if _looks_like_duplicate_topic(candidate, comparison_set):
                 print(f"Winner Hunter duplicate rejected: {candidate}")
                 continue
