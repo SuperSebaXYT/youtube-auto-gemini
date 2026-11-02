@@ -10,6 +10,7 @@ Fails safely if the registry or YouTube Analytics is unavailable.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from src.agents.video_registry import recent_videos
@@ -346,7 +347,7 @@ def build_winner_context(channel_id: str) -> str | None:
         "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
         "cougar", "puma", "ocelot", "caracal", "serval",
     )
-    if any(term in weak_topic_text for term in feline_terms):
+    if re.search(r"\\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\\b", weak_topic_text):
         lines.extend([
             "",
             "AVOID UNDERPERFORMING SUBJECT FAMILY:",
