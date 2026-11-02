@@ -1,10 +1,6 @@
 name: Daily Upload Pipeline
 
 on:
-  schedule:
-    # Run at minutes 14, 19, 33 and 48 of every hour (UTC).
-    - cron: "14,19,33,48 * * * *"
-
   workflow_dispatch:
     inputs:
       channel:
