@@ -390,7 +390,10 @@ PREVIOUSLY USED TOPICS. Do not repeat these or their underlying subjects:
 {used_sample}
 
 Act like a top YouTube Shorts channel strategist, not a random idea generator.
-Your goal is to identify the single strongest opportunity for the next upload.
+MISSION: choose a topic with the best realistic chance of reaching
+5,000,000 views within 30 days. This is an aggressive target, not a promise.
+Behave like a data-driven creator: audience geography, packaging, first-second
+hook, retention, shareability, and broad appeal matter more than novelty alone.
 Study the actual channel performance above. Learn from high-performing
 patterns and actively avoid the promise, pacing, and subject types behind
 weak performers.
@@ -401,10 +404,13 @@ animals, species, behaviors, abilities, adaptations, and survival methods.
 Score each candidate from 0-100 using this rubric:
 - 25 points: immediate visual hook understandable in the first second
 - 20 points: curiosity gap and surprising but clear premise
-- 20 points: likely broad audience appeal
+- 20 points: likely broad US audience appeal and international clarity
 - 15 points: strong factual payoff that can be delivered in 35-55 seconds
 - 10 points: visual footage potential for a faceless animal Short
 - 10 points: novelty and distance from previous channel topics
+- Use the 30-day country report: if US share or views are weak or falling,
+  prioritize topics with strong US audience relevance and clear US English.
+  Do not chase a single day's country fluctuation.
 
 Subtract points for generic facts, slow setup, weak visuals, narrow appeal,
 or a premise similar to underperforming videos. Accuracy is mandatory.
