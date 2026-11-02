@@ -421,7 +421,7 @@ Return exactly 12 topics, one per line, without numbering or commentary.
                     "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
                     "cougar", "puma", "ocelot", "caracal", "serval",
                 )
-                if re.search(r"\\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\\b", candidate_lower):
+                if re.search(r"\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\\b", candidate_lower):
                     print(
                         "Winner Hunter weak-family rejection "
                         f"(felids): {candidate}"
