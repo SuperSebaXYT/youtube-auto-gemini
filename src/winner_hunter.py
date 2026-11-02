@@ -347,7 +347,7 @@ def build_winner_context(channel_id: str) -> str | None:
         "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
         "cougar", "puma", "ocelot", "caracal", "serval",
     )
-    if re.search(r"\\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\\b", weak_topic_text):
+    if re.search(r"\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\\b", weak_topic_text):
         lines.extend([
             "",
             "AVOID UNDERPERFORMING SUBJECT FAMILY:",
