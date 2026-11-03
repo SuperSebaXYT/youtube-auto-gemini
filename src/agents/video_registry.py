@@ -87,3 +87,35 @@ def recent_performance_snapshots(
     return _read_json_list(
         _channel_dir(channel_id) / "performance_history.json"
     )[-limit:]
+
+
+
+def sync_channel_videos(channel_id: str, videos: list[dict]) -> int:
+    """Merge Data API channel metadata without overwriting pipeline-specific fields."""
+    if not videos:
+        return 0
+    folder = _channel_dir(channel_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    existing = load_registry(channel_id)
+    by_id = {
+        str(item.get("video_id")): dict(item)
+        for item in existing
+        if item.get("video_id")
+    }
+    for video in videos:
+        video_id = str(video.get("video_id") or "")
+        if not video_id:
+            continue
+        merged = by_id.get(video_id, {})
+        # Preserve topic/script/source and pipeline timestamps; refresh YouTube metadata.
+        for key, value in video.items():
+            if value is not None:
+                merged[key] = value
+        by_id[video_id] = merged
+    rows = list(by_id.values())
+    rows.sort(key=lambda item: str(item.get("published_at") or item.get("recorded_at") or ""))
+    _path(channel_id).write_text(
+        json.dumps(rows[-5000:], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return len(videos)
