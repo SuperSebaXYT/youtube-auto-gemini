@@ -11,7 +11,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-from src.agents.video_registry import recent_videos
+from src.agents.video_registry import recent_videos, record_performance_snapshot
 from src.analytics_auth import get_analytics_service
 
 
@@ -459,6 +459,15 @@ def build_winner_context(channel_id: str) -> str | None:
     performance = _fetch_performance(analytics, video_ids)
     if not performance:
         return None
+
+    # Keep timestamped snapshots so performance history survives later runs.
+    try:
+        saved_count = record_performance_snapshot(channel_id, performance)
+        print(
+            f"Winner Hunter: saved Analytics snapshot for {saved_count} videos."
+        )
+    except Exception as exc:
+        print(f"WARNING: Winner Hunter could not save performance history ({exc}).")
 
     traffic_sources = _fetch_traffic_sources(analytics)
     geography = _fetch_audience_geography(analytics)
