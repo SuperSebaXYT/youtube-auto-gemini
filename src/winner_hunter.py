@@ -11,21 +11,16 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-from src.agents.video_registry import recent_videos, record_performance_snapshot
+from src.agents.video_registry import recent_videos, record_performance_snapshot, sync_channel_videos
+from src.agents.youtube_channel_videos import fetch_channel_videos
 from src.analytics_auth import get_analytics_service
 
 
 MIN_AGE_DAYS = 0.5
 LOOKBACK_DAYS = 90
-MIN_ELIGIBLE_VIDEOS = 5
+MIN_ELIGIBLE_VIDEOS = 1
 MAX_VIDEOS = 200
-
-FELID_TERMS = (
-    "cat", "cats", "kitten", "kittens", "feline", "bobcat",
-    "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
-    "cougar", "puma", "ocelot", "caracal", "serval",
-)
-
+ANALYTICS_BATCH_SIZE = 50
 
 def _get_token_path(channel_id: str) -> str | None:
     channel_key = channel_id.upper().replace("-", "_")
@@ -411,22 +406,29 @@ def _has_felid_topic(topic_text: str) -> bool:
 def build_winner_context(channel_id: str) -> str | None:
     """Return a data-backed strategy brief for the topic generator."""
     try:
+        readonly_path = os.environ.get("YOUTUBE_READONLY_TOKEN_PATH")
+        if readonly_path:
+            channel_videos = fetch_channel_videos(readonly_path)
+            sync_channel_videos(channel_id, channel_videos)
+            print(f"Winner Hunter: synchronized {len(channel_videos)} channel videos.")
+        else:
+            print("WARNING: YOUTUBE_READONLY_TOKEN_PATH is not configured; using pipeline registry only.")
         registry = recent_videos(channel_id, limit=MAX_VIDEOS)
     except Exception as exc:
-        print(f"WARNING: Winner Hunter could not read registry ({exc}).")
-        return None
+        print(f"WARNING: Winner Hunter could not sync channel videos ({exc}); using registry ({exc}).")
+        registry = recent_videos(channel_id, limit=MAX_VIDEOS)
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=MIN_AGE_DAYS)
     eligible = []
 
     for entry in registry:
-        published = _parse_datetime(entry.get("recorded_at"))
+        published = _parse_datetime(entry.get("published_at") or entry.get("recorded_at"))
         if (
             published
             and published <= cutoff
             and entry.get("video_id")
-            and entry.get("topic")
+            and (entry.get("topic") or entry.get("title"))
         ):
             entry = dict(entry)
             entry["_published_at"] = published
@@ -456,8 +458,12 @@ def build_winner_context(channel_id: str) -> str | None:
     video_ids = list(dict.fromkeys(
         entry["video_id"] for entry in eligible
     ))
-    performance = _fetch_performance(analytics, video_ids)
+    performance = {}
+    for offset in range(0, len(video_ids), ANALYTICS_BATCH_SIZE):
+        batch = video_ids[offset:offset + ANALYTICS_BATCH_SIZE]
+        performance.update(_fetch_performance(analytics, batch))
     if not performance:
+        print("Winner Hunter: Analytics returned no per-video rows.")
         return None
 
     # Keep timestamped snapshots so performance history survives later runs.
@@ -497,9 +503,9 @@ def build_winner_context(channel_id: str) -> str | None:
 
         scored.append({
             "video_id": video_id,
-            "topic": entry["topic"],
+            "topic": entry.get("topic") or entry.get("title") or "Untitled video",
             **stats,
-            "categories": _classify_topic(entry["topic"]),
+            "categories": _classify_topic(entry.get("topic") or entry.get("title") or "Untitled video"),
         })
 
     if not scored:
@@ -617,16 +623,6 @@ def build_winner_context(channel_id: str) -> str | None:
             f" | retention {item['retention']:.1f}%"
         )
 
-    weak_text = " ".join(item["topic"] for item in weak)
-    if _has_felid_topic(weak_text):
-        lines.extend([
-            "",
-            "AVOID UNDERPERFORMING SUBJECT FAMILY:",
-            "- FELIDS: domestic cats, kittens, bobcats, lynx, lions, tigers,",
-            "  leopards, jaguars, cheetahs, cougars and other cats.",
-            "- Do not suggest another felid under a different name or angle.",
-        ])
-
     if geography and geography.get("countries"):
         countries = geography["countries"]
         us = countries.get("US", {})
@@ -658,6 +654,7 @@ def build_winner_context(channel_id: str) -> str | None:
     lines.extend([
         "",
         "STRATEGY RULES FOR THE NEXT TOPIC:",
+        "- Choose topics from the full channel evidence; do not impose arbitrary animal-family bans.",
         "- Find a NEW animal and a NEW specific behavior or ability.",
         "- Prefer a clear, instantly understandable visual event.",
         "- Prefer a strong curiosity gap: an unusual action, surprising",
