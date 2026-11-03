@@ -19,7 +19,7 @@ from src.analytics_auth import get_analytics_service
 MIN_AGE_DAYS = 0.5
 LOOKBACK_DAYS = 90
 MIN_ELIGIBLE_VIDEOS = 1
-MAX_VIDEOS = 200
+MAX_VIDEOS = 5000
 ANALYTICS_BATCH_SIZE = 50
 
 def _get_token_path(channel_id: str) -> str | None:
