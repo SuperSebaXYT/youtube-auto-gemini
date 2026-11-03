@@ -97,6 +97,7 @@ jobs:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           ENABLED_CHANNELS: "cosmic_curious"
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
+          YOUTUBE_READONLY_TOKEN_PATH: tokens/youtube_readonly_token.pickle
         run: |
           python -m src.scheduler
 
