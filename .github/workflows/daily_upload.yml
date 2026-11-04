@@ -1,5 +1,11 @@
 name: Daily Upload Pipeline
 
+# Prevent overlapping runs from reading the same schedule state and uploading
+# the same overdue slot concurrently. Queued runs are allowed to finish.
+concurrency:
+  group: cosmic-curious-publishing
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
