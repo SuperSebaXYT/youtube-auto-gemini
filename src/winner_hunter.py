@@ -560,10 +560,10 @@ def build_winner_context(channel_id: str) -> str | None:
     lines = [
         "WINNER HUNTER — CHANNEL GROWTH STRATEGY",
         "",
-        "MISSION: Build every Short toward the stretch target of 5,000,000",
-        "views within 30 days. Treat this as an aggressive optimization goal,",
-        "never a guaranteed outcome. Think like a creator obsessed with",
-        "packaging, audience fit, retention, sharing, and repeatable growth.",
+        "MISSION: Build every Short toward the stretch target of 20,000,000",
+        "views within 30 days, regardless of the country where viewers live.",
+        "Treat this as an aggressive optimization goal, never a guarantee.",
+        "Optimize for global reach, retention, sharing, and repeatable growth.",
         "",
         "HOW TO READ THE DATA:",
         "- Views/day is recent-window view velocity, not lifetime views.",
@@ -644,11 +644,10 @@ def build_winner_context(channel_id: str) -> str | None:
             "the channel total.",
             "- Do not overreact to one day's country mix. Use 7-day movement "
             "and the 30-day baseline.",
-            "- If US share and US views fall while another English-speaking "
-            "country rises, prioritize US-readable hooks, examples, wording, "
-            "and animal stories with broad US appeal in the next tests.",
-            "- Do not exclude the UK or other countries; optimize for US "
-            "audience growth without making content confusing elsewhere.",
+            "- Treat country data as descriptive analytics only, never as a "
+            "targeting restriction or reason to reject a topic.",
+            "- Do not favor or exclude any country. Optimize for worldwide "
+            "viewer appeal, with clear storytelling that travels across markets.",
         ])
 
     lines.extend([
@@ -661,11 +660,11 @@ def build_winner_context(channel_id: str) -> str | None:
         "  consequence, hidden mechanism, or unexpected survival trick.",
         "- Learn from the best-performing topic patterns, especially those",
         "  that combine strong opening engagement with strong retention.",
-        "- Optimize for the United States as the primary growth market when",
-        "  the country data shows the US is underrepresented or losing share.",
-        "- Prefer subjects with strong US audience familiarity or universal",
-        "  visual appeal; use clear natural US English and US-readable framing.",
-        "- A 5M-in-30-days target requires mass appeal, a powerful first-second",
+        "- Ignore country as a targeting constraint: no country is the goal",
+        "  and no country is excluded. Seek the strongest global audience fit.",
+        "- Prefer universal visual appeal and clear language that can travel",
+        "  across countries; use the configured language naturally.",
+        "- A 20M-in-30-days target requires mass appeal, a powerful first-second",
         "  visual, a high-retention story, and strong share potential.",
         "- Avoid topics whose core promise resembles the weak performers.",
         "- Use retention diagnostics to locate likely drop-off moments; improve",
