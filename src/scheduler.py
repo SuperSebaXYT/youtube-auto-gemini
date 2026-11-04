@@ -75,11 +75,14 @@ def _mark_slot_done(
     channel_id: str,
     state: dict,
     slot_id: str,
+    upload_hour_utc: str,
 ) -> None:
-    """Save a successfully completed slot immediately."""
+    """Save the completed slot and hourly upload lock immediately."""
 
     if slot_id not in state["done_slots"]:
         state["done_slots"].append(slot_id)
+
+    state["last_successful_upload_hour_utc"] = upload_hour_utc
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -242,6 +245,17 @@ def main():
                 today,
             )
 
+            # HARD HOURLY LOCK:
+            # Even if the external trigger starts this workflow repeatedly,
+            # this channel can complete at most one upload per UTC hour.
+            current_hour_utc = now.strftime("%Y-%m-%dT%H")
+            if state.get("last_successful_upload_hour_utc") == current_hour_utc:
+                print(
+                    f"Hourly upload limit reached for {channel_id} "
+                    f"({current_hour_utc} UTC). Skipping."
+                )
+                continue
+
             done_slots = set(
                 state["done_slots"]
             )
@@ -382,6 +396,7 @@ def main():
                         channel_id,
                         state,
                         slot_id,
+                        current_hour_utc,
                     )
 
                     if not is_short:
