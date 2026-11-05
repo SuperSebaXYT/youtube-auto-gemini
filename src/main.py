@@ -131,6 +131,13 @@ def run(
 
     config = load_channel_config(channel_id)
 
+    # Long-form is globally disabled. Reject manual/default invocations
+    # before authentication, topic selection, or any Gemini API calls.
+    if not is_short:
+        raise RuntimeError(
+            "Long-form is disabled. Run the pipeline with --short."
+        )
+
     is_kids_channel = (
         config.get("visual_style") == "puppet_animation"
     )
