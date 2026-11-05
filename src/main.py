@@ -31,7 +31,7 @@ from src.generate_script import (
 )
 from src.quality_gate import validate_and_repair
 from src.tts import synthesize_speech
-from src.fetch_stock import fetch_clips_for_topic
+from src.fetch_stock import fetch_clips_for_topic, fetch_clips_for_shots
 from src.assemble_video import assemble_video
 from src.generate_thumbnail import generate_thumbnail
 from src.generate_kids_video import generate_kids_video
@@ -349,16 +349,38 @@ def run(
 
             clips_dir = tmp / "clips"
 
-            clip_paths = fetch_clips_for_topic(
-                topic,
-                str(clips_dir),
-                count=clip_count,
-                orientation=(
-                    "portrait"
-                    if is_short
-                    else "landscape"
-                ),
-            )
+            orientation = "portrait" if is_short else "landscape"
+
+            if channel_id == "cosmic_curious":
+                from src.agents.visual_agent import plan as plan_visuals
+
+                print("Cosmic Curious: building narration-synced animal shot plan...")
+                visual_plan = plan_visuals(
+                    topic,
+                    script_text,
+                    shot_count=clip_count,
+                )
+                shots = visual_plan.get("shots", []) if isinstance(visual_plan, dict) else []
+
+                if len(shots) != clip_count:
+                    raise RuntimeError(
+                        "Visual Director did not return exactly "
+                        f"{clip_count} shots (received {len(shots)}). "
+                        "Upload blocked."
+                    )
+
+                clip_paths = fetch_clips_for_shots(
+                    shots,
+                    str(clips_dir),
+                    orientation=orientation,
+                )
+            else:
+                clip_paths = fetch_clips_for_topic(
+                    topic,
+                    str(clips_dir),
+                    count=clip_count,
+                    orientation=orientation,
+                )
 
             print(
                 f"Downloaded {len(clip_paths)} clips"
