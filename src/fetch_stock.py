@@ -925,6 +925,7 @@ def _verify_clip_matches_shot(
     action: str,
     sentence: str,
     visual: str,
+    require_action: bool = True,
 ) -> tuple[bool, str]:
     """Use the configured vision model to verify downloaded video frames."""
     from src.gemini_client import generate_vision, is_available
@@ -948,20 +949,21 @@ REQUIRED ANIMAL:
 REQUIRED VISIBLE ACTION:
 {action}
 
+ACTION REQUIREMENT:
+{"The exact behavior is required for this candidate." if require_action else "This is an exact-species-only fallback: the required animal must be clearly visible, but the exact behavior is not required."}
+
 INTENDED SHOT:
 {visual}
 
 Approve ONLY if:
 1. The required animal is clearly visible and is the main subject.
-2. The frames visibly show the required action/behavior, not merely an
-   animal that could theoretically perform it.
+2. If this candidate requires the exact behavior, frames visibly show that
+   behavior. Otherwise, do not infer or claim the behavior from the footage.
 3. There is no unrelated object or food being used as a substitute.
-4. The visual evidence is clear enough to identify the animal and action.
+4. The visual evidence is clear enough to identify the animal.
 
-Reject pasta, food, cooking, liquid in a bowl, unrelated animals, generic
-nature scenery, empty habitats, and clips where the correct behavior is
-not visible. Do not infer the action from the narration. Judge only what
-is actually visible in the frames.
+Reject humans, office workers, unrelated animals, food, generic nature
+scenery, and empty habitats. Judge only what is actually visible in frames.
 
 Return ONLY valid JSON:
 {{
@@ -991,10 +993,15 @@ Return ONLY valid JSON:
             confidence = 0.0
 
         reason = str(result.get("reason", "No reason returned"))
-        approved = animal_ok and action_ok and confidence >= 0.80
+        approved = (
+            animal_ok
+            and (action_ok or not require_action)
+            and confidence >= 0.80
+        )
 
         return approved, (
             f"animal_visible={animal_ok}, action_visible={action_ok}, "
+            f"action_required={require_action}, "
             f"confidence={confidence:.2f}: {reason}"
         )
 
@@ -1053,64 +1060,118 @@ def fetch_clips_for_shots(
             f"animal={animal!r} action={action!r} query={query!r}"
         )
 
-        candidates = _search_pexels(
-            query,
-            headers,
-            orientation,
-            per_page=15,
-            page=1,
-        )
-        ranked = sorted(
-            candidates,
-            key=lambda video: _score_video(video, orientation),
-            reverse=True,
+        # First try the director's exact behavior query. If no matching
+        # action is available, search only for the named species and allow a
+        # subject-only clip after vision confirms the species. Never broaden
+        # to general wildlife footage.
+        fallback_queries = [animal, f"{animal} wildlife"]
+        normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
+        if normalized_animal == "secretary bird":
+            fallback_queries = [
+                "Sagittarius serpentarius",
+                "Sagittarius serpentarius bird",
+                "secretary bird animal",
+                "secretarybird",
+            ]
+
+        search_modes = [(query, True)]
+        search_modes.extend(
+            (fallback_query, False)
+            for fallback_query in dict.fromkeys(fallback_queries)
+            if fallback_query.lower() != query.lower()
         )
 
         accepted_path = None
-        checked = 0
-
-        for video in ranked:
-            video_id = video.get("id")
-            if not video_id or video_id in used_video_ids:
-                continue
-
-            checked += 1
-            if checked > max_candidates_per_shot:
-                break
-
-            candidate_path = out_path / f"candidate_{index:02d}_{checked:02d}.mp4"
-            if not _download_pexels_video(video, candidate_path):
-                continue
+        for mode_index, (search_query, require_action) in enumerate(search_modes):
+            if not require_action:
+                print(
+                    f"Visual shot {index + 1}: trying exact-species search "
+                    f"{search_query!r} (behavior match not required)."
+                )
 
             try:
-                approved, audit_reason = _verify_clip_matches_shot(
-                    candidate_path,
-                    animal=animal,
-                    action=action,
-                    sentence=sentence,
-                    visual=visual,
+                candidates = _search_pexels(
+                    search_query,
+                    headers,
+                    orientation,
+                    per_page=15,
+                    page=1,
                 )
             except Exception as exc:
+                print(
+                    f"WARNING: Pexels search failed for shot {index + 1} "
+                    f"query {search_query!r}: {exc}"
+                )
+                continue
+
+            ranked = sorted(
+                candidates,
+                key=lambda video: _score_video(video, orientation),
+                reverse=True,
+            )
+            checked = 0
+            checked_video_ids = set()
+
+            for video in ranked:
+                video_id = video.get("id")
+                if (
+                    not video_id
+                    or video_id in used_video_ids
+                    or video_id in checked_video_ids
+                ):
+                    continue
+
+                checked += 1
+                checked_video_ids.add(video_id)
+                if checked > max_candidates_per_shot:
+                    break
+
+                candidate_path = out_path / (
+                    f"candidate_{index:02d}_{mode_index:02d}_{checked:02d}.mp4"
+                )
+                if not _download_pexels_video(video, candidate_path):
+                    continue
+
+                try:
+                    approved, audit_reason = _verify_clip_matches_shot(
+                        candidate_path,
+                        animal=animal,
+                        action=action,
+                        sentence=sentence,
+                        visual=visual,
+                        require_action=require_action,
+                    )
+                except Exception as exc:
+                    candidate_path.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"Visual verification failed for shot {index + 1}; "
+                        f"upload blocked. Details: {exc}"
+                    ) from exc
+
+                if approved:
+                    accepted_path = out_path / f"clip_{index:02d}.mp4"
+                    candidate_path.replace(accepted_path)
+                    used_video_ids.add(video_id)
+                    print(
+                        f"Visual QA PASSED for shot {index + 1}: "
+                        f"{audit_reason}"
+                    )
+                    break
+
+                print(
+                    f"Visual QA REJECTED candidate for shot {index + 1}: "
+                    f"{audit_reason}"
+                )
                 candidate_path.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"Visual verification failed for shot {index + 1}; "
-                    f"upload blocked. Details: {exc}"
-                ) from exc
 
-            if approved:
-                accepted_path = out_path / f"clip_{index:02d}.mp4"
-                candidate_path.replace(accepted_path)
-                used_video_ids.add(video_id)
-                print(f"Visual QA PASSED for shot {index + 1}: {audit_reason}")
+            if accepted_path is not None:
                 break
-
-            print(f"Visual QA REJECTED candidate for shot {index + 1}: {audit_reason}")
-            candidate_path.unlink(missing_ok=True)
 
         if accepted_path is None:
             raise RuntimeError(
-                f"No verified Pexels clip for shot {index + 1}: "
-                f"{animal} — {action}. Pipeline stopped; no unrelated fallback."
+                f"No verified footage of the required animal for shot "
+                f"{index + 1}: {animal}. Searched the exact shot and "
+                "species-specific queries only; pipeline stopped before upload."
             )
 
         downloaded.append(str(accepted_path))

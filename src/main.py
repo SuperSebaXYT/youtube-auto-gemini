@@ -401,18 +401,16 @@ def run(
                     )
 
                 except Exception as exc:
-                    print(
-                        "WARNING: Visual Director unavailable "
-                        f"({str(exc)[:180]}); "
-                        "falling back to topic-based stock clips."
-                    )
+                    raise RuntimeError(
+                        "Cosmic Curious visual sourcing failed; refusing to "
+                        "publish a video with unrelated stock footage. "
+                        f"Details: {str(exc)[:300]}"
+                    ) from exc
 
                 if not clip_paths:
-                    clip_paths = fetch_clips_for_topic(
-                        topic,
-                        str(clips_dir),
-                        count=clip_count,
-                        orientation=orientation,
+                    raise RuntimeError(
+                        "Cosmic Curious visual sourcing returned no verified "
+                        "animal clips; upload blocked."
                     )
             else:
                 clip_paths = fetch_clips_for_topic(

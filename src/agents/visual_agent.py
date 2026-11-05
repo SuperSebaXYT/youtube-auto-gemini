@@ -41,9 +41,12 @@ performing its closest directly relevant natural behavior and state that
 honestly in the visual field. Never invent an action or fake evidence.
 
 Search queries must be concise English searches naming the exact animal
-and the exact visible behavior. Do not include ambiguous words that can
-lead to unrelated objects. Do not use generic queries such as "wildlife",
-"animals", "nature", or "documentary".
+and the exact visible behavior. Disambiguate species names that also mean
+people or objects. For the secretary bird, use "Sagittarius serpentarius"
+or "secretary bird animal"; never use "secretary" by itself and never show
+a human office secretary. For snakes, explicitly request a real snake.
+Do not include ambiguous words that can lead to unrelated objects. Do not
+use generic queries such as "wildlife", "animals", "nature", or "documentary".
 
 Return exactly the requested number of shots, in narration order. Each shot
 must cover a distinct consecutive part of the narration. Do not skip or
