@@ -362,26 +362,49 @@ def run(
                 from src.agents.visual_agent import plan as plan_visuals
 
                 print("Cosmic Curious: building narration-synced animal shot plan...")
-                visual_plan = plan_visuals(
-                    topic,
-                    script_text,
-                    shot_count=clip_count,
-                    title=editorial_title,
-                )
-                shots = visual_plan.get("shots", []) if isinstance(visual_plan, dict) else []
 
-                if len(shots) != clip_count:
-                    raise RuntimeError(
-                        "Visual Director did not return exactly "
-                        f"{clip_count} shots (received {len(shots)}). "
-                        "Upload blocked."
+                clip_paths = None
+
+                try:
+                    visual_plan = plan_visuals(
+                        topic,
+                        script_text,
+                        shot_count=clip_count,
+                        title=editorial_title,
+                    )
+                    shots = (
+                        visual_plan.get("shots", [])
+                        if isinstance(visual_plan, dict)
+                        else []
                     )
 
-                clip_paths = fetch_clips_for_shots(
-                    shots,
-                    str(clips_dir),
-                    orientation=orientation,
-                )
+                    if len(shots) != clip_count:
+                        raise RuntimeError(
+                            "Visual Director did not return exactly "
+                            f"{clip_count} shots (received {len(shots)}). "
+                            "Upload blocked."
+                        )
+
+                    clip_paths = fetch_clips_for_shots(
+                        shots,
+                        str(clips_dir),
+                        orientation=orientation,
+                    )
+
+                except Exception as exc:
+                    print(
+                        "WARNING: Visual Director unavailable "
+                        f"({str(exc)[:180]}); "
+                        "falling back to topic-based stock clips."
+                    )
+
+                if not clip_paths:
+                    clip_paths = fetch_clips_for_topic(
+                        topic,
+                        str(clips_dir),
+                        count=clip_count,
+                        orientation=orientation,
+                    )
             else:
                 clip_paths = fetch_clips_for_topic(
                     topic,
