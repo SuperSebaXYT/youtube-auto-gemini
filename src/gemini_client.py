@@ -158,12 +158,13 @@ def generate(
         ).send_message(prompt)
     else:
         from google.genai import types
-        config = (
-            types.GenerateContentConfig(max_output_tokens=max_output_tokens)
-            if max_output_tokens
-            else None
-        )
-        chat = client.chats.create(model=model, config=config)
+        if max_output_tokens:
+            config = types.GenerateContentConfig(
+                max_output_tokens=max_output_tokens
+            )
+            chat = client.chats.create(model=model, config=config)
+        else:
+            chat = client.chats.create(model=model)
         response = chat.send_message(prompt)
 
     text = getattr(response, "text", None)
@@ -221,10 +222,11 @@ def generate_response(
         ).send_message(prompt)
 
     from google.genai import types
-    config = (
-        types.GenerateContentConfig(max_output_tokens=max_output_tokens)
-        if max_output_tokens
-        else None
-    )
-    chat = client.chats.create(model=model, config=config)
+    if max_output_tokens:
+        config = types.GenerateContentConfig(
+            max_output_tokens=max_output_tokens
+        )
+        chat = client.chats.create(model=model, config=config)
+    else:
+        chat = client.chats.create(model=model)
     return chat.send_message(prompt)
