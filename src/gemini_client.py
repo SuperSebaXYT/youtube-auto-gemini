@@ -104,11 +104,15 @@ class _OpenRouterChat:
 
     def send_message(self, prompt):
         self.messages.append({"role": "user", "content": prompt})
-        response = _openrouter_request(
-            self.messages,
-            self.max_output_tokens,
-            self.model,
-        )
+        try:
+            response = _openrouter_request(
+                self.messages,
+                self.max_output_tokens,
+                self.model,
+            )
+        except Exception:
+            self.messages.pop()
+            raise
         self.messages.append(
             {"role": "assistant", "content": response.text}
         )
