@@ -9,6 +9,7 @@ that only happens once, locally, when you generate the refresh token.
 """
 import os
 import pickle
+import unicodedata
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -17,6 +18,55 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+YOUTUBE_TAGS_MAX_CHARS = 500
+
+
+def _sanitize_youtube_tags(tags: list) -> list:
+    """Return unique tags within YouTube's combined 500-character limit."""
+    if isinstance(tags, str):
+        tags = [tags]
+
+    cleaned = []
+    seen = set()
+    used_chars = 0
+    skipped = 0
+
+    for raw_tag in tags or []:
+        if not isinstance(raw_tag, str):
+            skipped += 1
+            continue
+
+        tag = unicodedata.normalize("NFKC", raw_tag)
+        tag = "".join(
+            char for char in tag
+            if char not in "<>" and not unicodedata.category(char).startswith("C")
+        )
+        tag = " ".join(tag.replace("#", " ").split()).strip(" ,")
+        if not tag:
+            skipped += 1
+            continue
+
+        key = tag.casefold()
+        if key in seen:
+            continue
+
+        # YouTube counts separators and quotation marks for tags with spaces.
+        tag_cost = len(tag) + (2 if " " in tag else 0)
+        separator_cost = 1 if cleaned else 0
+        if used_chars + separator_cost + tag_cost > YOUTUBE_TAGS_MAX_CHARS:
+            skipped += 1
+            continue
+
+        cleaned.append(tag)
+        seen.add(key)
+        used_chars += separator_cost + tag_cost
+
+    if skipped:
+        print(f"WARNING: omitted {skipped} invalid, duplicate, or over-limit YouTube tag(s).")
+    print(f"YouTube tags validated: {len(cleaned)} tag(s), {used_chars}/{YOUTUBE_TAGS_MAX_CHARS} characters.")
+    return cleaned
 
 
 def get_authenticated_service(token_path: str, client_secret_path: str = None):
@@ -113,13 +163,17 @@ def upload_video(
     if is_short and "#shorts" not in description.lower():
         description = f"{description}\n\n#Shorts"
 
+    safe_tags = _sanitize_youtube_tags(tags)
+    snippet = {
+        "title": title[:100],  # YouTube title limit
+        "description": description[:5000],
+        "categoryId": category_id,
+    }
+    if safe_tags:
+        snippet["tags"] = safe_tags
+
     body = {
-        "snippet": {
-            "title": title[:100],  # YouTube title limit
-            "description": description[:5000],
-            "tags": tags,
-            "categoryId": category_id,
-        },
+        "snippet": snippet,
         "status": {
             "privacyStatus": privacy_status,
             "selfDeclaredMadeForKids": made_for_kids,
