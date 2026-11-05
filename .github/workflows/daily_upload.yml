@@ -31,12 +31,15 @@ jobs:
 
       - name: Install ffmpeg and fonts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-freefont-ttf wget
+          # Bound APT network waits so a slow Ubuntu mirror cannot consume
+          # most of the workflow runtime.
+          sudo timeout 8m apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo timeout 10m apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y ffmpeg fonts-freefont-ttf
 
           mkdir -p ~/.local/share/fonts
-
-          wget -O ~/.local/share/fonts/Chewy-Regular.ttf \
+          curl --fail --location --silent --show-error \
+            --retry 3 --connect-timeout 10 --max-time 45 \
+            -o ~/.local/share/fonts/Chewy-Regular.ttf \
             https://github.com/google/fonts/raw/main/apache/chewy/Chewy-Regular.ttf
 
           fc-cache -f
