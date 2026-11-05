@@ -359,6 +359,7 @@ def run(
                     topic,
                     script_text,
                     shot_count=clip_count,
+                    title=editorial_title,
                 )
                 shots = visual_plan.get("shots", []) if isinstance(visual_plan, dict) else []
 
