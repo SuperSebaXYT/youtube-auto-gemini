@@ -33,11 +33,7 @@ try:
 except ImportError:
     WINNER_HUNTER_AVAILABLE = False
 
-try:
-    from google import genai as genai_client
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
+from src.gemini_client import get_client, is_available
 
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
@@ -243,6 +239,11 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
+    if os.environ.get("AI_PROVIDER", "gemini").lower() == "openrouter":
+        return client.chats.create(
+            max_output_tokens=max_output_tokens
+        ).send_message(prompt)
+
     try:
         from google.genai import types
 
@@ -294,13 +295,11 @@ def _generate_more_topics(
     existing: list,
     count: int = 20,
 ) -> list:
-    if not (GEMINI_AVAILABLE and os.environ.get("GEMINI_API_KEY")):
+    if not is_available():
         return []
 
     try:
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
-        )
+        client = get_client()
 
         existing_sample = "\n".join(
             f"- {topic}" for topic in existing[-100:]
@@ -358,7 +357,7 @@ def _generate_winner_inspired_topic(
         print("Winner Hunter unavailable.")
         return None
 
-    if not (GEMINI_AVAILABLE and os.environ.get("GEMINI_API_KEY")):
+    if not is_available():
         print("Gemini unavailable; Winner Hunter cannot generate candidates.")
         return None
 
@@ -428,9 +427,7 @@ Sort from highest score to lowest score. No explanations.
 """
 
     try:
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
-        )
+        client = get_client()
         response = _generate_with_token_budget(client, prompt, 1200)
 
         candidates = []
@@ -588,9 +585,7 @@ def generate_with_gemini(
     length_seconds: int,
     language: str,
 ) -> dict:
-    client = genai_client.Client(
-        api_key=os.environ["GEMINI_API_KEY"]
-    )
+    client = get_client()
 
     if length_seconds <= 45:
         words_target = 105
@@ -816,7 +811,7 @@ def generate_script(
 
     generated = None
 
-    if GEMINI_AVAILABLE and os.environ.get("GEMINI_API_KEY"):
+    if is_available():
         try:
             generated = generate_with_gemini(
                 topic, config, length, language
@@ -887,13 +882,11 @@ def _generate_more_kids_topics(
     existing: list,
     count: int = 20,
 ) -> list:
-    if not (GEMINI_AVAILABLE and os.environ.get("GEMINI_API_KEY")):
+    if not is_available():
         return []
 
     try:
-        client = genai_client.Client(
-            api_key=os.environ["GEMINI_API_KEY"]
-        )
+        client = get_client()
         existing_sample = "\n".join(
             f"- {topic}" for topic in existing[-60:]
         )
@@ -987,9 +980,7 @@ def generate_kids_script_with_gemini(
     length_seconds: int,
     language: str,
 ) -> dict:
-    client = genai_client.Client(
-        api_key=os.environ["GEMINI_API_KEY"]
-    )
+    client = get_client()
 
     words_target = int(length_seconds * 2.2)
     language_name = LANGUAGE_NAMES.get(language, language)
@@ -1124,7 +1115,7 @@ def generate_kids_script(
     )
 
     try:
-        if GEMINI_AVAILABLE and os.environ.get("GEMINI_API_KEY"):
+        if is_available():
             generated = generate_kids_script_with_gemini(
                 topic,
                 config,
