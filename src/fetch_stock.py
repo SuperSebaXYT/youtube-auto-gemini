@@ -15,8 +15,11 @@ V4:
 - Falls back gracefully when the main search returns too few results.
 """
 
+import json
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 import requests
@@ -833,3 +836,302 @@ if __name__ == "__main__":
     print(
         "\n".join(paths)
     )
+
+
+def _download_pexels_video(video: dict, clip_path: Path) -> bool:
+    """Download one Pexels candidate to clip_path."""
+    target = _choose_video_file(video)
+    if not target:
+        return False
+
+    url = target.get("link")
+    if not url:
+        return False
+
+    try:
+        with requests.get(url, stream=True, timeout=60) as response:
+            response.raise_for_status()
+            with open(clip_path, "wb") as output:
+                for chunk in response.iter_content(chunk_size=1024 * 64):
+                    if chunk:
+                        output.write(chunk)
+
+        if clip_path.exists() and clip_path.stat().st_size > 10000:
+            return True
+    except Exception as exc:
+        print(f"WARNING: Pexels candidate download failed ({exc})")
+
+    try:
+        clip_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
+
+
+def _extract_audit_frames(clip_path: Path, frame_dir: Path) -> list[Path]:
+    """Extract five evenly spaced frames so QA checks actual clip content."""
+    frame_dir.mkdir(parents=True, exist_ok=True)
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(clip_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(f"Could not inspect downloaded clip: {probe.stderr[-500:]}")
+
+    duration = float(probe.stdout.strip())
+    if duration <= 0:
+        raise RuntimeError("Downloaded clip has an invalid duration.")
+
+    frames = []
+    for index, fraction in enumerate((0.10, 0.30, 0.50, 0.70, 0.90)):
+        timestamp = min(max(0.05, duration * fraction), max(0.05, duration - 0.05))
+        frame_path = frame_dir / f"frame_{index}.jpg"
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{timestamp:.2f}",
+                "-i", str(clip_path),
+                "-frames:v", "1",
+                "-vf", "scale=640:-2",
+                "-q:v", "4",
+                str(frame_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode == 0 and frame_path.exists() and frame_path.stat().st_size > 1000:
+            frames.append(frame_path)
+
+    if not frames:
+        raise RuntimeError("Could not extract any frames for visual verification.")
+
+    return frames
+
+
+def _verify_clip_matches_shot(
+    clip_path: Path,
+    animal: str,
+    action: str,
+    sentence: str,
+    visual: str,
+) -> tuple[bool, str]:
+    """Use Gemini vision to verify the actual downloaded frames; fail closed."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is required for Cosmic Curious visual verification.")
+
+    from google import genai
+    from google.genai import types
+
+    with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
+        frames = _extract_audit_frames(clip_path, Path(temp_dir))
+
+        prompt = f"""
+You are a strict visual evidence inspector for a wildlife video.
+Inspect the attached frames from ONE real video clip.
+
+NARRATION SEGMENT:
+{sentence}
+
+REQUIRED ANIMAL:
+{animal}
+
+REQUIRED VISIBLE ACTION:
+{action}
+
+INTENDED SHOT:
+{visual}
+
+Approve ONLY if:
+1. The required animal is clearly visible and is the main subject.
+2. The frames visibly show the required action/behavior, not merely an
+   animal that could theoretically perform it.
+3. There is no unrelated object or food being used as a substitute.
+4. The visual evidence is clear enough to identify the animal and action.
+
+Reject pasta, food, cooking, liquid in a bowl, unrelated animals, generic
+nature scenery, empty habitats, and clips where the correct behavior is
+not visible. Do not infer the action from the narration. Judge only what
+is actually visible in the attached frames.
+
+Return ONLY valid JSON:
+{{
+  "animal_visible": true,
+  "animal_identification": "what is visibly shown",
+  "action_visible": true,
+  "confidence": 0.95,
+  "reason": "brief evidence-based explanation"
+}}
+"""
+
+        contents = [prompt]
+        for frame_path in frames:
+            contents.append(
+                types.Part.from_bytes(
+                    data=frame_path.read_bytes(),
+                    mime_type="image/jpeg",
+                )
+            )
+
+        client = genai.Client(api_key=api_key)
+        model = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.5-flash-lite")
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+        )
+
+        raw = (getattr(response, "text", None) or "").strip()
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not match:
+            raise RuntimeError(f"Gemini visual QA returned invalid JSON: {raw[:300]}")
+
+        result = json.loads(match.group(0))
+        animal_ok = result.get("animal_visible") is True
+        action_ok = result.get("action_visible") is True
+
+        try:
+            confidence = float(result.get("confidence", 0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        reason = str(result.get("reason", "No reason returned"))
+        approved = animal_ok and action_ok and confidence >= 0.80
+
+        return approved, (
+            f"animal_visible={animal_ok}, action_visible={action_ok}, "
+            f"confidence={confidence:.2f}: {reason}"
+        )
+
+
+def fetch_clips_for_shots(
+    shots: list,
+    out_dir: str,
+    orientation: str = "portrait",
+    max_candidates_per_shot: int = 4,
+) -> list:
+    """
+    Fetch one clip per narration shot, using only that shot's exact animal
+    and behavior query. Every downloaded clip is frame-checked by Gemini.
+    There is deliberately NO generic wildlife/nature fallback. If a matching
+    clip cannot be found and verified, the pipeline stops before upload.
+    """
+    api_key = os.environ.get("PEXELS_API_KEY")
+    if not api_key:
+        raise RuntimeError("PEXELS_API_KEY not set.")
+
+    if not shots:
+        raise RuntimeError("Visual Director returned an empty shot list.")
+
+    headers = {"Authorization": api_key}
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    downloaded = []
+    used_video_ids = set()
+
+    for index, shot in enumerate(shots):
+        if not isinstance(shot, dict):
+            raise RuntimeError(f"Visual shot {index + 1} is not a JSON object.")
+
+        animal = str(shot.get("animal", "")).strip()
+        action = str(shot.get("action", "")).strip()
+        sentence = str(shot.get("sentence", "")).strip()
+        visual = str(shot.get("visual", "")).strip()
+        query = str(shot.get("search_query", "")).strip()
+
+        if not all((animal, action, sentence, visual, query)):
+            raise RuntimeError(
+                f"Visual shot {index + 1} is missing animal/action/query details."
+            )
+
+        # Prevent the director from silently reverting to broad stock searches.
+        query_words = set(re.findall(r"[a-zA-Z]+", query.lower()))
+        animal_words = set(re.findall(r"[a-zA-Z]+", animal.lower()))
+        if not animal_words.intersection(query_words):
+            raise RuntimeError(
+                f"Visual shot {index + 1} query does not name its required animal: {query!r}"
+            )
+
+        print(
+            f"Visual shot {index + 1}/{len(shots)}: "
+            f"animal={animal!r} action={action!r} query={query!r}"
+        )
+
+        candidates = _search_pexels(
+            query,
+            headers,
+            orientation,
+            per_page=15,
+            page=1,
+        )
+        ranked = sorted(
+            candidates,
+            key=lambda video: _score_video(video, orientation),
+            reverse=True,
+        )
+
+        accepted_path = None
+        checked = 0
+
+        for video in ranked:
+            video_id = video.get("id")
+            if not video_id or video_id in used_video_ids:
+                continue
+
+            checked += 1
+            if checked > max_candidates_per_shot:
+                break
+
+            candidate_path = out_path / f"candidate_{index:02d}_{checked:02d}.mp4"
+            if not _download_pexels_video(video, candidate_path):
+                continue
+
+            try:
+                approved, audit_reason = _verify_clip_matches_shot(
+                    candidate_path,
+                    animal=animal,
+                    action=action,
+                    sentence=sentence,
+                    visual=visual,
+                )
+            except Exception as exc:
+                candidate_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Visual verification failed for shot {index + 1}; "
+                    f"upload blocked. Details: {exc}"
+                ) from exc
+
+            if approved:
+                accepted_path = out_path / f"clip_{index:02d}.mp4"
+                candidate_path.replace(accepted_path)
+                used_video_ids.add(video_id)
+                print(f"Visual QA PASSED for shot {index + 1}: {audit_reason}")
+                break
+
+            print(f"Visual QA REJECTED candidate for shot {index + 1}: {audit_reason}")
+            candidate_path.unlink(missing_ok=True)
+
+        if accepted_path is None:
+            raise RuntimeError(
+                f"No verified Pexels clip for shot {index + 1}: "
+                f"{animal} — {action}. Pipeline stopped; no unrelated fallback."
+            )
+
+        downloaded.append(str(accepted_path))
+
+    print(
+        f"Cosmic Curious visual QA: verified {len(downloaded)}/{len(shots)} "
+        "animal-and-action-matched clips."
+    )
+    return downloaded
