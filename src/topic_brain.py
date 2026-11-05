@@ -30,7 +30,7 @@ import os
 import re
 from pathlib import Path
 
-from src.gemini_client import generate
+from src.gemini_client import generate, is_available
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
@@ -39,8 +39,8 @@ STATE_DIR = ROOT / "state"
 
 
 def _gemini_available():
-    """Return True when the Gemini API key is configured."""
-    return bool(os.environ.get("GEMINI_API_KEY"))
+    """Return True when the configured text provider has an API key."""
+    return is_available()
 
 
 def _clean_lines(text):
@@ -61,7 +61,7 @@ def generate_candidates(config, existing_topics, count=30):
     """
 
     if not _gemini_available():
-        raise RuntimeError("GEMINI_API_KEY is not set")
+        raise RuntimeError("Configured AI API key is not set")
 
     existing = "\n".join(
         f"- {topic}"
