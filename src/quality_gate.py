@@ -42,7 +42,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from google import genai as genai_client
+from src.gemini_client import get_client, is_available
 
 
 # Keep this synchronized with the rest of the project.
@@ -158,12 +158,11 @@ def _client():
     Create a Gemini client.
     """
 
-    key = os.environ.get("GEMINI_API_KEY")
+    if not is_available():
+        provider = os.environ.get("AI_PROVIDER", "gemini").upper()
+        raise RuntimeError(f"{provider} API key is missing.")
 
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY is missing.")
-
-    return genai_client.Client(api_key=key)
+    return get_client()
 
 
 def _chat(client):
