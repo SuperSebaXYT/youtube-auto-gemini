@@ -12,10 +12,6 @@ on:
       channel:
         description: "Run a single channel manually (leave blank for scheduler)"
         required: false
-      short:
-        description: "Make it a short?"
-        type: boolean
-        default: true
       dry_run:
         description: "Dry run (build video, skip upload)?"
         type: boolean
@@ -93,7 +89,7 @@ jobs:
           YOUTUBE_READONLY_TOKEN_PATH: tokens/youtube_readonly_token.pickle
         run: |
           python -m src.main "${{ inputs.channel }}" \
-            ${{ inputs.short == true && '--short' || '' }} \
+            --short \
             ${{ inputs.dry_run == true && '--dry-run' || '' }}
 
       - name: Scheduled run
