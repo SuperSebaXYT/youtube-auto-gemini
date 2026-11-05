@@ -1,7 +1,7 @@
 from src.agents.orchestrator import run_json_batch
 
 
-def plan(topic: str, script: str, shot_count: int = 15) -> dict:
+def plan(topic: str, script: str, shot_count: int = 15, title: str = "") -> dict:
     """Create an ordered, narration-synced shot plan for one animal video."""
     if shot_count < 1:
         raise ValueError("shot_count must be at least 1")
