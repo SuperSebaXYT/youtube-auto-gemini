@@ -15,7 +15,7 @@ on:
       short:
         description: "Make it a short?"
         type: boolean
-        default: false
+        default: true
       dry_run:
         description: "Dry run (build video, skip upload)?"
         type: boolean
