@@ -926,17 +926,15 @@ def _verify_clip_matches_shot(
     sentence: str,
     visual: str,
 ) -> tuple[bool, str]:
-    """Use Gemini vision to verify the actual downloaded frames; fail closed."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is required for Cosmic Curious visual verification.")
+    """Use the configured vision model to verify downloaded video frames."""
+    from src.gemini_client import generate_vision, is_available
 
-    from google import genai
-    from google.genai import types
+    if not is_available():
+        provider = os.environ.get("AI_PROVIDER", "gemini").upper()
+        raise RuntimeError(f"{provider} API key is required for Cosmic Curious visual verification.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
-
         prompt = f"""
 You are a strict visual evidence inspector for a wildlife video.
 Inspect the attached frames from ONE real video clip.
@@ -963,7 +961,7 @@ Approve ONLY if:
 Reject pasta, food, cooking, liquid in a bowl, unrelated animals, generic
 nature scenery, empty habitats, and clips where the correct behavior is
 not visible. Do not infer the action from the narration. Judge only what
-is actually visible in the attached frames.
+is actually visible in the frames.
 
 Return ONLY valid JSON:
 {{
@@ -974,27 +972,14 @@ Return ONLY valid JSON:
   "reason": "brief evidence-based explanation"
 }}
 """
-
-        contents = [prompt]
-        for frame_path in frames:
-            contents.append(
-                types.Part.from_bytes(
-                    data=frame_path.read_bytes(),
-                    mime_type="image/jpeg",
-                )
-            )
-
-        client = genai.Client(api_key=api_key)
-        model = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.5-flash-lite")
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
+        response = generate_vision(
+            prompt,
+            [(frame_path.read_bytes(), "image/jpeg") for frame_path in frames],
         )
-
         raw = (getattr(response, "text", None) or "").strip()
         match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
         if not match:
-            raise RuntimeError(f"Gemini visual QA returned invalid JSON: {raw[:300]}")
+            raise RuntimeError(f"Vision model returned invalid JSON: {raw[:300]}")
 
         result = json.loads(match.group(0))
         animal_ok = result.get("animal_visible") is True
@@ -1022,7 +1007,7 @@ def fetch_clips_for_shots(
 ) -> list:
     """
     Fetch one clip per narration shot, using only that shot's exact animal
-    and behavior query. Every downloaded clip is frame-checked by Gemini.
+    and behavior query. Every downloaded clip is frame-checked by the configured vision model.
     There is deliberately NO generic wildlife/nature fallback. If a matching
     clip cannot be found and verified, the pipeline stops before upload.
     """

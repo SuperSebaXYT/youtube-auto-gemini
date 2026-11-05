@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import argparse
+import os
 import random
 import re
 import sys
@@ -130,6 +131,14 @@ def run(
 ) -> None:
 
     config = load_channel_config(channel_id)
+
+    # Select the model provider per channel. Cosmic Curious uses OpenRouter;
+    # other channels keep Gemini unless their own config says otherwise.
+    os.environ["AI_PROVIDER"] = str(config.get("ai_provider", "gemini")).lower()
+    openrouter_model = config.get("openrouter_model")
+    if openrouter_model:
+        os.environ["OPENROUTER_MODEL"] = str(openrouter_model)
+
 
     # Long-form is globally disabled. Reject manual/default invocations
     # before authentication, topic selection, or any Gemini API calls.
