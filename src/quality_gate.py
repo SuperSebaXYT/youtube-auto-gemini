@@ -143,7 +143,7 @@ def _send_message_with_retry(
             if delay is None:
                 delay = backoff * random.uniform(0.8, 1.2)
             else:
-                delay = min(60.0, max(delay, backoff))
+                delay = max(delay, backoff)
 
             print(
                 "WARNING: Gemini transient API failure; "
