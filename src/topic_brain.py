@@ -294,7 +294,7 @@ def score_candidates(config, candidates):
     """
 
     if not _gemini_available():
-        raise RuntimeError("GEMINI_API_KEY is not set")
+        raise RuntimeError("Configured AI API key is not set")
 
     topics = "\n".join(
         f"{i+1}. {topic}"
