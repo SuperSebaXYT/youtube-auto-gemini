@@ -1,53 +1,70 @@
 from src.agents.orchestrator import run_json_batch
 
 
-def plan(topic: str, script: str) -> dict:
+def plan(topic: str, script: str, shot_count: int = 15) -> dict:
+    """Create an ordered, narration-synced shot plan for one animal video."""
+    if shot_count < 1:
+        raise ValueError("shot_count must be at least 1")
+
     return run_json_batch(
         "Visual Director",
-        """Create scene-specific visuals that match the narration exactly.
-The channel is exclusively about real animals and wildlife.
+        """Create a precise, narration-synced wildlife shot list.
 
-HARD VISUAL RULE: EVERY shot must visibly feature the exact animal species
-being discussed. The animal must be the clear main subject and occupy most
-of the frame. If a sentence cannot be illustrated with that animal, show
-that same animal in a relevant natural behavior or habitat.
+NON-NEGOTIABLE VISUAL RULE:
+Every shot must visibly show the exact animal species being discussed in
+that narration segment. The animal must be the main subject, not a tiny
+background detail.
 
-ABSOLUTE BANS: Never show food, meals, soup, broth, cooking, kitchens,
-plates, bowls, cutlery, ingredients, vegetables, fruit, or food preparation.
-Never show bicycles, bikes, cars, vehicles, machines, tools, household
-objects, toys, products, people, or unrelated props as a visual subject.
-Never replace an animal with an object that resembles its name or with a
-metaphorical illustration. For example, a bee topic must show real bees,
-never honey jars, food, soup, or unrelated objects.
+ACTION LOCK:
+The visible action must match the sentence. If the narration says an animal
+sprays, fires, spits, stings, attacks, builds, hunts, swims, flies, or performs
+another specific behavior, the shot must show that exact behavior in progress.
+A generic close-up of the animal is NOT an acceptable substitute when a
+specific action is described.
 
-Do not use object-only scenes, generic nature scenery, landscapes, flowers,
-plants, or empty habitats. A habitat may appear only as background while
-the correct animal remains clearly visible. No diagrams or symbolic
-substitutions. No space, planets, aliens, vampires, horror, fantasy, or
-unrelated footage.
+EXAMPLES:
+- "The bombardier beetle fires a boiling chemical spray" means a real
+  bombardier beetle visibly discharging its defensive spray. Not pasta,
+  boiling liquid, food, a kitchen, or a beetle merely sitting still.
+- "Bees spray/defend using a toxin" means the exact bee species and the
+  described defensive behavior, not honey, flowers, or generic insects.
 
-Use real, recognizable animal footage or photorealistic depictions of the
-correct species. Keep species, anatomy, colors, and behavior accurate.
-Prefer a different animal-focused visual every 1–3 seconds when possible.
-Every search_query must name the exact animal and include animal/wildlife
-context. Never include food, object, vehicle, or prop terms in search_query.""",
-        f'''Create a shot plan for:
+ABSOLUTE BANS:
+No food, meals, soup, broth, cooking, kitchens, plates, bowls, cutlery,
+ingredients, vegetables, fruit, vehicles, bicycles, tools, products, people,
+household objects, diagrams, metaphors, unrelated animals, or generic
+nature filler. A habitat may appear only as background behind the correct
+animal. Never substitute an object for an animal or its behavior.
+
+If the exact behavior is not realistically filmable, use the same species
+performing its closest directly relevant natural behavior and state that
+honestly in the visual field. Never invent an action or fake evidence.
+
+Search queries must be concise English searches naming the exact animal
+and the exact visible behavior. Do not include ambiguous words that can
+lead to unrelated objects. Do not use generic queries such as "wildlife",
+"animals", "nature", or "documentary".
+
+Return exactly the requested number of shots, in narration order. Each shot
+must cover a distinct consecutive part of the narration. Do not skip or
+reorder narration.""",
+        f'''Create exactly {shot_count} consecutive shots for this video.
+
 TOPIC: {topic}
-SCRIPT: {script}
+FULL NARRATION:
+{script}
 
-The visuals MUST show only the exact animal species discussed in the
-narration. The animal must be visible in every shot and be the main subject.
-Do not show food, soup, cooking, dishes, ingredients, bicycles, vehicles,
-tools, products, people, objects, or unrelated scenery in any shot.
-Do not substitute objects or metaphors for animals. If the narration
-mentions an animal behavior involving food, show the animal performing
-the behavior, not the food itself.
+For every shot return:
+- "sentence": the exact sentence or short consecutive narration segment
+- "animal": exact common animal/species name visible in the shot
+- "action": exact visible behavior/action that must be shown
+- "visual": a concrete description of what the camera must show
+- "search_query": concise English Pexels query containing the animal and action
 
-Reject any visual idea that does not clearly show the correct animal.
-Write each search_query as a direct search for real footage of that exact
-animal, with no unrelated keywords.
+Reject any idea that would show only an object, food, scenery, or an unrelated
+animal. The animal and action must both be explicit in every shot.
 
 Return exactly:
-{{"shots":[{{"sentence":"...","visual":"...","search_query":"...","animation":"...","on_screen_text":"..."}}]}}.''',
-        max_output_tokens=3000,
+{{"shots":[{{"sentence":"...","animal":"...","action":"...","visual":"...","search_query":"..."}}]}}.''',
+        max_output_tokens=4500,
     )
