@@ -36,8 +36,11 @@ V3 improvements:
 
 import json
 import os
+import random
 import re
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 from google import genai as genai_client
 
@@ -52,23 +55,99 @@ MAX_REPAIR_ATTEMPTS = 2
 MIN_APPROVAL_SCORE = 8.0
 
 
-def _send_message_with_retry(chat, prompt: str, max_attempts: int = 4):
-    """Retry transient Gemini capacity, rate-limit, and server errors."""
-    retryable_markers = (
-        "429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504",
-        "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED",
+class GeminiUnavailableError(RuntimeError):
+    """Gemini remained unavailable after retrying transient API failures."""
+
+
+def _retry_after_seconds(exc) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    if not value:
+        return None
+
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(value))
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _is_retryable_gemini_error(exc) -> bool:
+    """Recognize transient Gemini/API failures using status fields and message."""
+    retryable_codes = {408, 409, 429, 500, 502, 503, 504}
+
+    for attribute in ("code", "status_code", "http_status"):
+        value = getattr(exc, attribute, None)
+        try:
+            if int(value) in retryable_codes:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    status = str(getattr(exc, "status", "")).upper()
+    if status in {
+        "UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL",
+        "DEADLINE_EXCEEDED",
+        "SERVICE_UNAVAILABLE",
+        "TOO_MANY_REQUESTS",
+    }:
+        return True
+
+    message = str(exc).upper()
+    if re.search(r"\b(408|409|429|500|502|503|504)\b", message):
+        return True
+
+    return any(
+        marker in message
+        for marker in (
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "DEADLINE_EXCEEDED",
+            "SERVICE_UNAVAILABLE",
+            "TOO_MANY_REQUESTS",
+        )
     )
+
+
+def _send_message_with_retry(
+    chat,
+    prompt: str,
+    max_attempts: int = 5,
+):
+    """Retry transient Gemini failures with backoff, jitter and Retry-After."""
     for attempt in range(max_attempts):
         try:
             return chat.send_message(prompt)
         except Exception as exc:
-            message = str(exc).upper()
-            retryable = any(marker in message for marker in retryable_markers)
-            if not retryable or attempt == max_attempts - 1:
+            if not _is_retryable_gemini_error(exc):
                 raise
-            delay = min(30, 3 * (2 ** attempt))
+
+            if attempt == max_attempts - 1:
+                raise GeminiUnavailableError(
+                    f"Gemini remained unavailable after {max_attempts} attempts: {exc}"
+                ) from exc
+
+            backoff = min(30.0, 2.0 * (2 ** attempt))
+            delay = _retry_after_seconds(exc)
+            if delay is None:
+                delay = backoff * random.uniform(0.8, 1.2)
+            else:
+                delay = min(60.0, max(delay, backoff))
+
             print(
-                f"WARNING: Gemini transient error; retrying in {delay}s "
+                "WARNING: Gemini transient API failure; "
+                f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/{max_attempts}): {exc}"
             )
             time.sleep(delay)
@@ -1010,6 +1089,11 @@ def validate_and_repair(
                 config,
                 target_words,
             )
+        except GeminiUnavailableError:
+            # Infrastructure failure is not a scientific score. Stop safely
+            # and let the next scheduled run retry the review.
+            raise
+
         except Exception as e:
 
             print(
@@ -1080,6 +1164,10 @@ def validate_and_repair(
                 config=config,
                 target_words=target_words,
             )
+
+        except GeminiUnavailableError:
+            # Do not mislabel a Gemini outage as a failed script repair.
+            raise
 
         except Exception as e:
 
