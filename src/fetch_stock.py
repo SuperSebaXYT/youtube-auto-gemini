@@ -1007,7 +1007,7 @@ def fetch_clips_for_shots(
 ) -> list:
     """
     Fetch one clip per narration shot, using only that shot's exact animal
-    and behavior query. Every downloaded clip is frame-checked by Gemini.
+    and behavior query. Every downloaded clip is frame-checked by the configured vision model.
     There is deliberately NO generic wildlife/nature fallback. If a matching
     clip cannot be found and verified, the pipeline stops before upload.
     """
