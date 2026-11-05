@@ -37,6 +37,7 @@ V3 improvements:
 import json
 import os
 import re
+import time
 
 from google import genai as genai_client
 
@@ -49,6 +50,28 @@ MAX_REPAIR_ATTEMPTS = 2
 
 # Minimum score required for approval.
 MIN_APPROVAL_SCORE = 8.0
+
+
+def _send_message_with_retry(chat, prompt: str, max_attempts: int = 4):
+    """Retry transient Gemini capacity, rate-limit, and server errors."""
+    retryable_markers = (
+        "429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504",
+        "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED",
+    )
+    for attempt in range(max_attempts):
+        try:
+            return chat.send_message(prompt)
+        except Exception as exc:
+            message = str(exc).upper()
+            retryable = any(marker in message for marker in retryable_markers)
+            if not retryable or attempt == max_attempts - 1:
+                raise
+            delay = min(30, 3 * (2 ** attempt))
+            print(
+                f"WARNING: Gemini transient error; retrying in {delay}s "
+                f"(attempt {attempt + 2}/{max_attempts}): {exc}"
+            )
+            time.sleep(delay)
 
 
 def _client():
@@ -698,8 +721,8 @@ scientific error.
 Do NOT invent facts in order to justify a rejection.
 """
 
-    response = chat.send_message(
-        prompt
+    response = _send_message_with_retry(
+        chat, prompt
     )
 
     result = _clean_json(
@@ -907,8 +930,8 @@ Target approximately {target_words} words.
 Return ONLY the spoken script.
 """
 
-    response = chat.send_message(
-        prompt
+    response = _send_message_with_retry(
+        chat, prompt
     )
 
     text = getattr(
