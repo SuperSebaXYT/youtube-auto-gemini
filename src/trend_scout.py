@@ -23,15 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-try:
-    from .gemini_client import generate as gemini_generate
-    GEMINI_AVAILABLE = True
-except ImportError:
-    try:
-        from gemini_client import generate as gemini_generate
-        GEMINI_AVAILABLE = True
-    except ImportError:
-        GEMINI_AVAILABLE = False
+from .gemini_client import generate as gemini_generate, is_available as ai_available
 
 
 def _fetch_reddit_trending(
@@ -255,8 +247,7 @@ def get_trending_topic(
         return None
 
     if not (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
+        ai_available()
     ):
         return None
 
