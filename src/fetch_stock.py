@@ -956,11 +956,14 @@ INTENDED SHOT:
 {visual}
 
 Approve ONLY if:
-1. The required animal is clearly visible and is the main subject.
-2. If this candidate requires the exact behavior, frames visibly show that
+1. The visible animal is positively identifiable as the exact REQUIRED ANIMAL.
+   Similar species, related species, generic raptors, and lookalikes are NOT matches.
+2. Set "species_match" to true only when the visible evidence supports the exact
+   required species. If uncertain, set it to false.
+3. If this candidate requires the exact behavior, frames visibly show that
    behavior. Otherwise, do not infer or claim the behavior from the footage.
-3. There is no unrelated object or food being used as a substitute.
-4. The visual evidence is clear enough to identify the animal.
+4. There is no unrelated object or food being used as a substitute.
+5. The visual evidence is clear enough to identify the animal.
 
 Reject humans, office workers, unrelated animals, food, generic nature
 scenery, and empty habitats. Judge only what is actually visible in frames.
@@ -968,7 +971,8 @@ scenery, and empty habitats. Judge only what is actually visible in frames.
 Return ONLY valid JSON:
 {{
   "animal_visible": true,
-  "animal_identification": "what is visibly shown",
+  "species_match": true,
+  "animal_identification": "exact species visibly shown, or why it cannot be confirmed",
   "action_visible": true,
   "confidence": 0.95,
   "reason": "brief evidence-based explanation"
@@ -1007,6 +1011,7 @@ Return ONLY valid JSON:
                 candidate_confidence = 0.0
             candidate_passes = (
                 candidate.get("animal_visible") is True
+                and candidate.get("species_match") is True
                 and (
                     candidate.get("action_visible") is True
                     or not require_action
@@ -1018,6 +1023,7 @@ Return ONLY valid JSON:
         # do not combine unrelated evidence across distant clip frames.
         result = max(audit_results, key=_audit_score)
         animal_ok = result.get("animal_visible") is True
+        species_ok = result.get("species_match") is True
         action_ok = result.get("action_visible") is True
 
         try:
@@ -1028,13 +1034,14 @@ Return ONLY valid JSON:
         reason = str(result.get("reason", "No reason returned"))
         approved = (
             animal_ok
+            and species_ok
             and (action_ok or not require_action)
             and confidence >= 0.80
         )
 
         return approved, (
-            f"animal_visible={animal_ok}, action_visible={action_ok}, "
-            f"action_required={require_action}, "
+            f"animal_visible={animal_ok}, species_match={species_ok}, "
+            f"action_visible={action_ok}, action_required={require_action}, "
             f"confidence={confidence:.2f}: {reason}"
         )
 
