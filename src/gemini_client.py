@@ -47,8 +47,10 @@ def _groq_request(messages, max_output_tokens: int | None, model: str | None = N
         "model": _model(model),
         "messages": messages,
     }
-    if max_output_tokens:
-        body["max_completion_tokens"] = max_output_tokens
+    # Groq's free tier has a low per-minute output-token budget. Keep
+    # individual generations bounded and leave room for subsequent QA calls.
+    requested_tokens = max_output_tokens if max_output_tokens else 700
+    body["max_completion_tokens"] = min(int(requested_tokens), 900)
 
     request = Request(
         GROQ_URL,
@@ -66,7 +68,11 @@ def _groq_request(messages, max_output_tokens: int | None, model: str | None = N
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Groq API HTTP {exc.code}: {detail}") from exc
+        error = RuntimeError(f"Groq API HTTP {exc.code}: {detail}")
+        # Preserve Retry-After so the shared retry logic can respect Groq's
+        # rate-limit window instead of retrying too early.
+        error.response = SimpleNamespace(headers=exc.headers)
+        raise error from exc
     except URLError as exc:
         raise RuntimeError(f"Groq API connection failed: {exc}") from exc
 
