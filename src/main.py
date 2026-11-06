@@ -132,12 +132,12 @@ def run(
 
     config = load_channel_config(channel_id)
 
-    # Select the model provider per channel. Cosmic Curious uses xAI Grok;
+    # Select the model provider per channel. Cosmic Curious uses Groq;
     # other channels keep Gemini unless their own config says otherwise.
     os.environ["AI_PROVIDER"] = str(config.get("ai_provider", "gemini")).lower()
-    xai_model = config.get("xai_model")
-    if xai_model:
-        os.environ["XAI_MODEL"] = str(xai_model)
+    groq_model = config.get("groq_model")
+    if groq_model:
+        os.environ["GROQ_MODEL"] = str(groq_model)
 
 
     # Long-form is globally disabled. Reject manual/default invocations
