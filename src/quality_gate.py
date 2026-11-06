@@ -919,10 +919,34 @@ def repair_script(
     # to independently fix the listed problems without inventing science.
     if not corrections:
         corrections = (
-            "- Correct every factual problem identified by the fact-check.\n"
+            "- Correct every factual problem identified by the fact-check.\\n"
             "- If a claim depends on conditions, use scientifically "
             "appropriate conditional wording."
         )
+
+    # Add an explicit, concrete correction when the reviewer flags the
+    # recurring whip-spider / pistol-shrimp taxonomy confusion. The generic
+    # repair prompt was allowing Gemini to preserve the misleading hook.
+    taxonomy_repair = ""
+    combined_review = " ".join(
+        str(item) for item in review.get("problems", [])
+    ) + " " + " ".join(
+        str(item) for item in review.get("corrections", [])
+    )
+    if (
+        "pistol shrimp" in combined_review.lower()
+        and "whip spider" in (topic + " " + script).lower()
+        and any(term in combined_review.lower() for term in ("relative", "taxonom", "phylogen"))
+    ):
+        taxonomy_repair = """
+CRITICAL CORRECTION FOR THIS SCRIPT:
+The whip spider (an arachnid) is NOT a close relative of the pistol shrimp
+(a crustacean). Do not call it "the pistol shrimp's relative", a cousin,
+or imply a close evolutionary relationship. Remove the pistol-shrimp
+comparison entirely. Build the hook around the whip spider's own
+extraordinarily sensitive, whip-like front legs and its hunting behavior.
+The corrected script must not mention the pistol shrimp.
+"""
 
     prompt = f"""
 You are a senior science editor repairing a YouTube Short that failed
@@ -945,6 +969,8 @@ FACT-CHECK PROBLEMS:
 
 REQUIRED CORRECTIONS:
 {corrections}
+
+{taxonomy_repair}
 
 Your job is to produce a corrected version that is both exciting and
 scientifically defensible.
