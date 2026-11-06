@@ -33,25 +33,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install static FFmpeg
+      - name: Install FFmpeg
         run: |
-          archive="$RUNNER_TEMP/ffmpeg-static.tar.xz"
-          install_dir="$RUNNER_TEMP/ffmpeg-static"
-          mkdir -p "$install_dir"
-
-          curl --fail --location --silent --show-error \
-            --retry 5 --retry-all-errors --retry-delay 2 \
-            --connect-timeout 15 --max-time 180 \
-            -o "$archive" \
-            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
-
-          tar -xJf "$archive" -C "$install_dir"
-          ffmpeg_bin="$(find "$install_dir" -type f -name ffmpeg -print -quit)"
-          ffprobe_bin="$(find "$install_dir" -type f -name ffprobe -print -quit)"
-          test -n "$ffmpeg_bin"
-          test -n "$ffprobe_bin"
-          sudo install -m 0755 "$ffmpeg_bin" /usr/local/bin/ffmpeg
-          sudo install -m 0755 "$ffprobe_bin" /usr/local/bin/ffprobe
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
 
@@ -103,7 +88,6 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && (inputs.channel != '' || inputs.force_run == true)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
           YOUTUBE_READONLY_TOKEN_PATH: tokens/youtube_readonly_token.pickle
@@ -117,7 +101,6 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.channel == '' && inputs.force_run != true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           ENABLED_CHANNELS: "cosmic_curious"
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
