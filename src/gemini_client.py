@@ -16,6 +16,10 @@ from urllib.request import Request, urlopen
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 GROQ_MODEL = "qwen/qwen3.8-27b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_USER_AGENT = (
+    "CosmicCurious/1.0 "
+    "(GitHub Actions; https://github.com/SuperSebaXYT/youtube-auto-gemini)"
+)
 
 
 def _provider() -> str:
@@ -52,6 +56,8 @@ def _groq_request(messages, max_output_tokens: int | None, model: str | None = N
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": GROQ_USER_AGENT,
         },
         method="POST",
     )
