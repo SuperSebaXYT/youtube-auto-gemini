@@ -1207,14 +1207,37 @@ def fetch_clips_for_shots(
                     if existing is None or (require_action and not existing["require_action"]):
                         candidates_by_id[video_id] = candidate
 
-        ranked = sorted(
-            candidates_by_id.items(),
-            key=lambda item: (
-                item[1]["require_action"],
-                _score_video(item[1]["video"], orientation),
-            ),
-            reverse=True,
-        )
+        # Do not let one noisy Pexels query monopolize the verification
+        # budget. Action-specific searches often return semantically
+        # unrelated stock; interleave their candidates with exact-species
+        # fallback searches. Vision QA still enforces exact species identity,
+        # and enforces the action whenever the candidate came from the
+        # action-specific query.
+        candidates_by_mode = {}
+        for video_id, candidate in candidates_by_id.items():
+            candidates_by_mode.setdefault(candidate["mode_index"], []).append(
+                (video_id, candidate)
+            )
+
+        for mode_candidates in candidates_by_mode.values():
+            mode_candidates.sort(
+                key=lambda item: _score_video(item[1]["video"], orientation),
+                reverse=True,
+            )
+
+        ranked = []
+        mode_indexes = sorted(candidates_by_mode)
+        depth = 0
+        while True:
+            added_this_round = False
+            for mode_index in mode_indexes:
+                mode_candidates = candidates_by_mode[mode_index]
+                if depth < len(mode_candidates):
+                    ranked.append(mode_candidates[depth])
+                    added_this_round = True
+            if not added_this_round:
+                break
+            depth += 1
 
         print(
             f"Visual shot {index + 1}: Pexels returned "
