@@ -7,3 +7,4 @@ google-auth-oauthlib
 google-api-python-client
 Pillow
 python-dotenv
+openai>=1.60.0
