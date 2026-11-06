@@ -61,6 +61,8 @@ def _request_with_fallback(kwargs: dict):
         if isinstance(message, dict) and message.get("content") is not None:
             prompt_parts.append(str(message["content"]))
     prompt = "\n\n".join(prompt_parts).strip()
+    if kwargs.get("response_format", {}).get("type") == "json_object":
+        prompt += "\n\nReturn only one valid JSON object. Do not use markdown fences or add commentary."
     if not prompt:
         raise RuntimeError("OpenCode request has no text prompt.")
 
@@ -99,7 +101,10 @@ def _request_with_fallback(kwargs: dict):
                 elif event.get("type") == "error":
                     error = event.get("error") or {}
                     data = error.get("data") or {}
-                    event_errors.append(data.get("message") or error.get("name") or str(error))
+                    event_errors.append(
+                        f"{data.get('message') or error.get('name') or str(error)} "
+                        f"(status={data.get('statusCode', 'unknown')})"
+                    )
 
             content = "\n".join(text_parts).strip()
             if result.returncode != 0 or not content:
