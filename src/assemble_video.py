@@ -1255,6 +1255,8 @@ def assemble_video(
         )
     )
 
+    font_dir = str(Path.home() / ".local" / "share" / "fonts").replace(":", r"\:")
+
     final_cmd = [
         "ffmpeg",
         "-y",
@@ -1263,7 +1265,7 @@ def assemble_video(
         "-i",
         audio_path,
         "-vf",
-        f"ass='{ass_filter_path}'",
+        f"ass='{ass_filter_path}':fontsdir='{font_dir}'",
         "-map",
         "0:v:0",
         "-map",
