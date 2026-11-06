@@ -1,5 +1,5 @@
 """
-Shared text and vision client for Gemini and xAI Grok.
+Shared text and vision client for Gemini and Groq.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
-XAI_MODEL = "grok-4.7"
-XAI_URL = "https://api.x.ai/v1/chat/completions"
+GROQ_MODEL = "qwen/qwen3.8-27b"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def _provider() -> str:
@@ -23,31 +23,31 @@ def _provider() -> str:
 
 
 def _model(model: str | None = None) -> str:
-    if _provider() in {"grok", "xai"}:
-        return os.environ.get("XAI_MODEL") or os.environ.get("AI_MODEL") or model or XAI_MODEL
+    if _provider() in {"groq"}:
+        return os.environ.get("GROQ_MODEL") or os.environ.get("AI_MODEL") or model or GROQ_MODEL
     return model or GEMINI_MODEL
 
 
 def is_available() -> bool:
-    if _provider() in {"grok", "xai"}:
-        return bool(os.environ.get("XAI_API_KEY"))
+    if _provider() in {"groq"}:
+        return bool(os.environ.get("GROQ_API_KEY"))
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
-def _grok_request(messages, max_output_tokens: int | None, model: str | None = None):
-    api_key = os.environ.get("XAI_API_KEY")
+def _groq_request(messages, max_output_tokens: int | None, model: str | None = None):
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("XAI_API_KEY is not set")
+        raise RuntimeError("GROQ_API_KEY is not set")
 
     body = {
         "model": _model(model),
         "messages": messages,
     }
     if max_output_tokens:
-        body["max_tokens"] = max_output_tokens
+        body["max_completion_tokens"] = max_output_tokens
 
     request = Request(
-        XAI_URL,
+        GROQ_URL,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -60,9 +60,9 @@ def _grok_request(messages, max_output_tokens: int | None, model: str | None = N
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"xAI API HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"Groq API HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
-        raise RuntimeError(f"xAI API connection failed: {exc}") from exc
+        raise RuntimeError(f"Groq API connection failed: {exc}") from exc
 
     try:
         choice = payload["choices"][0]
@@ -77,11 +77,11 @@ def _grok_request(messages, max_output_tokens: int | None, model: str | None = N
         text = str(text or "").strip()
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(
-            f"xAI returned an unexpected response: {str(payload)[:500]}"
+            f"Groq returned an unexpected response: {str(payload)[:500]}"
         ) from exc
 
     if not text:
-        raise RuntimeError("xAI returned an empty response.")
+        raise RuntimeError("Groq returned an empty response.")
 
     return SimpleNamespace(
         text=text,
@@ -92,7 +92,7 @@ def _grok_request(messages, max_output_tokens: int | None, model: str | None = N
     )
 
 
-class _GrokChat:
+class _GroqChat:
     def __init__(self, model: str | None = None, max_output_tokens: int | None = None):
         self.model = model
         self.max_output_tokens = max_output_tokens
@@ -101,7 +101,7 @@ class _GrokChat:
     def send_message(self, prompt):
         self.messages.append({"role": "user", "content": prompt})
         try:
-            response = _grok_request(
+            response = _groq_request(
                 self.messages,
                 self.max_output_tokens,
                 self.model,
@@ -115,23 +115,23 @@ class _GrokChat:
         return response
 
 
-class _GrokChats:
+class _GroqChats:
     def create(self, model: str | None = None, config=None, max_output_tokens=None):
         if max_output_tokens is None and config is not None:
             max_output_tokens = getattr(config, "max_output_tokens", None)
-        return _GrokChat(model=model, max_output_tokens=max_output_tokens)
+        return _GroqChat(model=model, max_output_tokens=max_output_tokens)
 
 
-class _GrokClient:
+class _GroqClient:
     def __init__(self):
-        self.chats = _GrokChats()
+        self.chats = _GroqChats()
 
 
 def get_client():
-    if _provider() in {"grok", "xai"}:
+    if _provider() in {"groq"}:
         if not is_available():
-            raise RuntimeError("XAI_API_KEY is not set")
-        return _GrokClient()
+            raise RuntimeError("GROQ_API_KEY is not set")
+        return _GroqClient()
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -147,7 +147,7 @@ def generate(
 ) -> str:
     """Generate text using the provider selected by AI_PROVIDER."""
     client = get_client()
-    if _provider() in {"grok", "xai"}:
+    if _provider() in {"groq"}:
         response = client.chats.create(
             model=_model(model),
             max_output_tokens=max_output_tokens,
@@ -175,7 +175,7 @@ def generate_vision(
     model: str | None = None,
 ):
     """Inspect image bytes and return a text response."""
-    if _provider() in {"grok", "xai"}:
+    if _provider() in {"groq"}:
         content = [{"type": "text", "text": prompt}]
         for image_bytes, mime_type in images:
             encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -185,7 +185,7 @@ def generate_vision(
                     "url": f"data:{mime_type};base64,{encoded}"
                 },
             })
-        return _grok_request(
+        return _groq_request(
             [{"role": "user", "content": content}],
             max_output_tokens=1200,
             model=model,
@@ -211,7 +211,7 @@ def generate_response(
 ):
     """Generate text and return the complete provider response."""
     client = get_client()
-    if _provider() in {"grok", "xai"}:
+    if _provider() in {"groq"}:
         return client.chats.create(
             model=_model(model),
             max_output_tokens=max_output_tokens,
