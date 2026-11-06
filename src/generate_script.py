@@ -435,16 +435,18 @@ def _generate_winner_inspired_topic(
         print("Winner Hunter unavailable.")
         return None
 
-    if not is_available():
-        print("GLM text API unavailable; Winner Hunter cannot generate candidates.")
-        return None
-
-    # Generate one Analytics-based batch per UTC day, then consume its
-    # ranked topics across the day's Shorts instead of making a new GLM
-    # request for every upload slot.
+    # Reuse today's cached Analytics batch even if the text API is
+    # temporarily unavailable. The API is needed only to create a new batch.
     candidates = _load_winner_hunter_queue(channel_id)
 
     if candidates is None:
+        if not is_available():
+            print("GLM text API unavailable; Winner Hunter cannot generate candidates.")
+            return None
+
+        # Generate one Analytics-based batch per UTC day, then consume its
+        # ranked topics across the day's Shorts instead of making a new GLM
+        # request for every upload slot.
         try:
             winner_context = build_winner_context(channel_id)
             if not winner_context:
