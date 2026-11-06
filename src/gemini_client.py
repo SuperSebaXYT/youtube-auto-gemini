@@ -7,6 +7,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +16,7 @@ from urllib.request import Request, urlopen
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 OPENROUTER_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+RATE_LIMIT_STATE = Path(__file__).resolve().parent.parent / "state" / "openrouter_rate_limit.json"
 
 
 def _provider() -> str:
@@ -36,85 +39,51 @@ def is_available() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
-def _gemini_fallback_request(messages, max_output_tokens: int | None):
-    """Replay an OpenRouter request through Gemini when OpenRouter is unavailable."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set; no AI fallback is available")
-
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(api_key=api_key)
-    contents = []
-
-    for message in messages:
-        role = "model" if message.get("role") == "assistant" else "user"
-        raw_content = message.get("content", "")
-        parts = []
-
-        if isinstance(raw_content, str):
-            if raw_content:
-                parts.append(types.Part.from_text(text=raw_content))
-        elif isinstance(raw_content, list):
-            for item in raw_content:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "text":
-                    text = item.get("text", "")
-                    if text:
-                        parts.append(types.Part.from_text(text=text))
-                elif item.get("type") == "image_url":
-                    image_url = item.get("image_url", {}).get("url", "")
-                    if image_url.startswith("data:") and "," in image_url:
-                        header, encoded = image_url.split(",", 1)
-                        mime_type = header[5:].split(";", 1)[0]
-                        parts.append(types.Part.from_bytes(
-                            data=base64.b64decode(encoded),
-                            mime_type=mime_type,
-                        ))
-
-        if parts:
-            contents.append(types.Content(role=role, parts=parts))
-
-    if not contents:
-        raise RuntimeError("No usable prompt content for Gemini fallback")
-
-    config = None
-    if max_output_tokens:
-        config = types.GenerateContentConfig(max_output_tokens=max_output_tokens)
-
-    return client.models.generate_content(
-        model=os.environ.get("GEMINI_FALLBACK_MODEL", GEMINI_MODEL),
-        contents=contents,
-        config=config,
-    )
-
-
-def _openrouter_request_with_fallback(messages, max_output_tokens: int | None, model: str | None = None):
+def _active_openrouter_reset():
     try:
-        return _openrouter_request(messages, max_output_tokens, model)
-    except RuntimeError as openrouter_error:
-        if not os.environ.get("GEMINI_API_KEY"):
-            raise
+        data = json.loads(RATE_LIMIT_STATE.read_text(encoding="utf-8"))
+        reset_at = datetime.fromisoformat(data["reset_at"])
+        if reset_at.tzinfo is None:
+            reset_at = reset_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) < reset_at:
+            return reset_at
+        RATE_LIMIT_STATE.unlink(missing_ok=True)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return None
 
-        print("[AI] OpenRouter failed; retrying the request through Gemini fallback.")
-        try:
-            response = _gemini_fallback_request(messages, max_output_tokens)
-        except Exception as fallback_error:
-            raise RuntimeError(
-                "OpenRouter failed and Gemini fallback also failed: "
-                f"{fallback_error}"
-            ) from fallback_error
 
-        if not getattr(response, "text", None):
-            raise RuntimeError(
-                "OpenRouter failed and Gemini fallback returned an empty response."
-            ) from openrouter_error
-        return response
+def _save_openrouter_reset(reset_epoch_ms: str | None):
+    try:
+        if reset_epoch_ms:
+            reset_at = datetime.fromtimestamp(
+                int(reset_epoch_ms) / 1000,
+                tz=timezone.utc,
+            )
+        else:
+            now = datetime.now(timezone.utc)
+            reset_at = now.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) + timedelta(days=1)
+
+        RATE_LIMIT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        RATE_LIMIT_STATE.write_text(
+            json.dumps({"reset_at": reset_at.isoformat()}),
+            encoding="utf-8",
+        )
+        return reset_at
+    except (OSError, ValueError, TypeError, OverflowError):
+        return None
 
 
 def _openrouter_request(messages, max_output_tokens: int | None, model: str | None = None):
+    reset_at = _active_openrouter_reset()
+    if reset_at:
+        raise RuntimeError(
+            "OPENROUTER_FREE_TIER_DAILY limit active until "
+            f"{reset_at.isoformat()}"
+        )
+
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
@@ -142,6 +111,19 @@ def _openrouter_request(messages, max_output_tokens: int | None, model: str | No
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        lowered = detail.lower()
+        if exc.code == 429 and (
+            "free-models-per-day" in lowered
+            or "openrouter_free_tier_daily" in lowered
+        ):
+            reset_at = _save_openrouter_reset(
+                exc.headers.get("X-RateLimit-Reset")
+            )
+            reset_label = reset_at.isoformat() if reset_at else "the next UTC midnight"
+            raise RuntimeError(
+                "OPENROUTER_FREE_TIER_DAILY limit reached; "
+                f"retry after {reset_label}"
+            ) from exc
         raise RuntimeError(f"OpenRouter API HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
         raise RuntimeError(f"OpenRouter API connection failed: {exc}") from exc
@@ -183,7 +165,7 @@ class _OpenRouterChat:
     def send_message(self, prompt):
         self.messages.append({"role": "user", "content": prompt})
         try:
-            response = _openrouter_request_with_fallback(
+            response = _openrouter_request(
                 self.messages,
                 self.max_output_tokens,
                 self.model,
@@ -267,7 +249,7 @@ def generate_vision(
                     "url": f"data:{mime_type};base64,{encoded}"
                 },
             })
-        return _openrouter_request_with_fallback(
+        return _openrouter_request(
             [{"role": "user", "content": content}],
             max_output_tokens=1200,
             model=model,
