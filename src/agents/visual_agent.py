@@ -6,132 +6,217 @@ from src.agents.orchestrator import run_json_batch
 
 
 def plan(topic: str, script: str, shot_count: int = 15, title: str = "") -> dict:
-    """Create an ordered, narration-synced shot plan for one animal video."""
+    """Generate 3 visual candidates per narration segment, then select the best 15."""
     if shot_count < 1:
         raise ValueError("shot_count must be at least 1")
 
-    role = """Create a precise, narration-synced wildlife shot list.
+    candidate_count = shot_count * 3
 
-NON-NEGOTIABLE VISUAL RULE:
-Every shot must visibly show the exact animal species being discussed in
-that narration segment. The animal must be the main subject, not a tiny
-background detail.
+    role = """You are a strict wildlife footage director and visual fact-checker.
 
-ACTION LOCK:
-The visible action must match the sentence. If the narration says an animal
-sprays, fires, spits, stings, attacks, builds, hunts, swims, flies, or performs
-another specific behavior, the shot must show that exact behavior in progress.
-A generic close-up of the animal is NOT an acceptable substitute when a
-specific action is described.
+NON-NEGOTIABLE SPECIES MATCH:
+Every proposed shot must visibly show the exact animal species named or
+clearly implied by its narration segment. The animal must be the main subject.
 
-EXAMPLES:
-- "The bombardier beetle fires a boiling chemical spray" means a real
-  bombardier beetle visibly discharging its defensive spray. Not pasta,
-  boiling liquid, food, a kitchen, or a beetle merely sitting still.
-- "Bees spray/defend using a toxin" means the exact bee species and the
-  described defensive behavior, not honey, flowers, or generic insects.
+ACTION MATCH:
+The visible behavior must match the narration. If it describes spraying,
+striking, stinging, hunting, building, swimming, flying, or another action,
+the proposed footage must show that action in progress. A generic animal
+close-up is not an adequate substitute for a specific narrated behavior.
 
 ABSOLUTE BANS:
-No food, meals, soup, broth, cooking, kitchens, plates, bowls, cutlery,
-ingredients, vegetables, fruit, vehicles, bicycles, tools, products, people,
-household objects, diagrams, metaphors, unrelated animals, or generic
-nature filler. A habitat may appear only as background behind the correct
-animal. Never substitute an object for an animal or its behavior.
+No food, cooking, kitchens, objects, tools, products, people, diagrams,
+metaphors, unrelated animals, generic nature filler, or scenery-only shots.
+Habitat is allowed only as background behind the correct animal.
 
-If the exact behavior is not realistically filmable, use the same species
-performing its closest directly relevant natural behavior and state that
-honestly in the visual field. Never invent an action or fake evidence.
+Never invent evidence. If an exact behavior is unlikely to be filmable,
+describe the same species performing its closest directly relevant natural
+behavior, and make that limitation explicit.
 
-Search queries must be concise English searches naming the exact animal
-and the exact visible behavior. Disambiguate species names that also mean
-people or objects. For the secretary bird, use "Sagittarius serpentarius"
-or "secretary bird animal"; never use "secretary" by itself and never show
-a human office secretary. For snakes, explicitly request a real snake.
-Do not include ambiguous words that can lead to unrelated objects. Do not
-use generic queries such as "wildlife", "animals", "nature", or "documentary".
+Search queries must be concise English phrases naming the exact animal and
+visible behavior. Disambiguate animal names that also mean objects or jobs.
+Never use generic queries such as wildlife, animals, nature, or documentary.
 
-SHOT COUNT AND NARRATION COVERAGE:
-Return EXACTLY the requested number of shots, even when the narration has
-fewer sentences. A shot is a short consecutive time segment, NOT necessarily
-a whole sentence. Split long sentences into multiple smaller consecutive
-segments. For a 15-shot Short, aim for roughly 5-8 spoken words per segment,
-adjusting boundaries to keep each segment meaningful. Cover the narration
-from its first word to its last word in order, with no skipped or repeated
-words. The "sentence" field must contain the exact consecutive words from
-the narration assigned to that shot. Do not invent or paraphrase narration.
-Each shot must cover a distinct consecutive segment. Do not combine distant
-parts of the narration or reorder anything."""
+Narration segments must be exact consecutive words copied from the script.
+Do not paraphrase, omit, repeat, or reorder narration."""
 
-    task = f'''Create exactly {shot_count} consecutive shots for this video.
+    # Stage 1: create three genuinely different footage options for each
+    # of the 15 consecutive narration segments (45 candidates total).
+    candidate_task = f'''Generate exactly {candidate_count} visual candidates for
+this video: exactly 3 alternatives for each of {shot_count} narration slots.
 
 TITLE: {title}
 TOPIC: {topic}
 FULL NARRATION:
 {script}
 
-For every shot return:
-- "sentence": exact consecutive words copied from the narration for this shot
-- "animal": exact common animal/species name visible in the shot
-- "action": exact visible behavior/action that must be shown
-- "visual": concrete description of what the camera must show
-- "search_query": concise English Pexels query containing the animal and action
+First divide the complete narration into exactly {shot_count} consecutive,
+chronological slots. Each slot should cover a meaningful short segment.
+The "sentence" value must be copied verbatim from the narration. Together,
+the 15 slot sentences must cover the entire narration in order, with no
+missing or repeated words.
 
-The narration may have fewer sentences than the requested shot count. Split
-sentences into short word-level segments. Do NOT return one shot per sentence.
-For {shot_count} shots, return {shot_count} objects. Count them before answering.
-Reject any idea that would show only an object, food, scenery, or an unrelated
-animal. The animal and action must both be explicit in every shot.
+For EACH slot, create exactly 3 different candidate shots:
+- Keep all 3 alternatives tied to that slot's exact narration segment.
+- Prefer different realistic camera views or directly relevant behaviors.
+- Do not change the animal species to create variety.
+- Do not invent behavior that the narration does not support.
+- Each candidate must have a distinct search query.
 
-Return exactly:
-{{"shots":[{{"sentence":"...","animal":"...","action":"...","visual":"...","search_query":"..."}}]}}.'''
+Return exactly {candidate_count} objects. Use candidate_id values 1 through
+{candidate_count}, and slot values 1 through {shot_count}. Each slot must
+have exactly three candidates. Include:
+- "candidate_id": unique integer from 1 to {candidate_count}
+- "slot": narration slot integer from 1 to {shot_count}
+- "sentence": exact consecutive narration words for this slot
+- "animal": exact common animal/species name
+- "action": exact visible behavior required
+- "visual": concrete description of the footage
+- "search_query": concise English Pexels query naming animal and action
 
-    result = run_json_batch(
-        "Visual Director",
+No candidate may be scenery, an object, food, or an unrelated animal.
+Return only:
+{{"candidates":[{{"candidate_id":1,"slot":1,"sentence":"...","animal":"...","action":"...","visual":"...","search_query":"..."}}]}}'''
+
+    generated = run_json_batch(
+        "Visual Candidate Generator",
         role,
-        task,
-        max_output_tokens=6500,
+        candidate_task,
+        max_output_tokens=11000,
+    )
+    candidates = (
+        generated.get("candidates", [])
+        if isinstance(generated, dict)
+        else []
     )
 
-    shots = result.get("shots", []) if isinstance(result, dict) else []
-    if len(shots) == shot_count:
-        return result
+    def candidates_are_valid(items: list) -> bool:
+        if len(items) != candidate_count:
+            return False
+        ids = [item.get("candidate_id") for item in items if isinstance(item, dict)]
+        slots = [item.get("slot") for item in items if isinstance(item, dict)]
+        if len(ids) != candidate_count or len(set(ids)) != candidate_count:
+            return False
+        if set(ids) != set(range(1, candidate_count + 1)):
+            return False
+        return all(slots.count(slot) == 3 for slot in range(1, shot_count + 1))
 
-    # A count correction is cheaper and safer than silently filling gaps with
-    # generic stock footage. Preserve the first response as context and ask
-    # Gemini to repartition the same narration into the exact required count.
-    correction = f'''Your previous response returned {len(shots)} shots, but exactly
-{shot_count} are required. This is invalid.
-
-Rebuild the complete shot list from scratch with EXACTLY {shot_count} shots.
-Do not merely return the previous short list. Split the narration into smaller
-consecutive word-level segments, roughly 5-8 spoken words per shot.
-The "sentence" fields together must cover every narration word exactly once,
-in original order, without omissions, repetitions, or paraphrasing.
-Keep the exact-species and exact-visible-action rules from your role.
+    if not candidates_are_valid(candidates):
+        repair_task = f'''Repair this invalid candidate list. Return exactly
+{candidate_count} candidates, with IDs 1..{candidate_count} and exactly
+three alternatives for each slot 1..{shot_count}. Preserve exact narration
+segments, species accuracy, and action accuracy. Do not invent footage.
 
 NARRATION:
 {script}
 
-INVALID PREVIOUS RESPONSE (for diagnosis only):
-{json.dumps(result, ensure_ascii=False)}
+INVALID RESULT:
+{json.dumps(generated, ensure_ascii=False)}
 
-Return only JSON with exactly {shot_count} objects in "shots".'''
-
-    corrected = run_json_batch(
-        "Visual Director",
-        role,
-        correction,
-        max_output_tokens=6500,
-    )
-    corrected_shots = (
-        corrected.get("shots", [])
-        if isinstance(corrected, dict)
-        else []
-    )
-    if len(corrected_shots) != shot_count:
-        raise RuntimeError(
-            f"Visual Director returned {len(corrected_shots)} shots after "
-            f"count correction; exactly {shot_count} are required."
+Return only JSON using the required "candidates" schema.'''
+        generated = run_json_batch(
+            "Visual Candidate Generator",
+            role,
+            repair_task,
+            max_output_tokens=11000,
+        )
+        candidates = (
+            generated.get("candidates", [])
+            if isinstance(generated, dict)
+            else []
         )
 
-    return corrected
+    if not candidates_are_valid(candidates):
+        raise RuntimeError(
+            f"Visual Director generated an invalid candidate pool "
+            f"({len(candidates)} received; {candidate_count} required, "
+            "three per narration slot)."
+        )
+
+    # Stage 2: Gemini judges all 45 options and selects exactly one best
+    # species/action-matched candidate for each narration slot.
+    selection_task = f'''Select the best {shot_count} shots from this pool of
+{candidate_count} candidates. You MUST select exactly one candidate for
+each narration slot 1..{shot_count}, preserving slot order.
+
+Selection priority:
+1. Exact animal species match.
+2. Exact visible action match to the narration (not merely a similar animal).
+3. Footage that is realistically searchable and filmable.
+4. Clear visual composition with the animal as the main subject.
+5. Search query that is specific and unambiguous.
+
+Reject candidates that show generic animal footage, scenery, objects, or
+actions unsupported by the narration. Do not choose multiple candidates
+from one slot. Do not invent or rewrite candidate details.
+
+NARRATION:
+{script}
+
+ALL {candidate_count} CANDIDATES:
+{json.dumps(candidates, ensure_ascii=False)}
+
+Return exactly {shot_count} selected objects in slot order, preserving the
+selected candidate's fields and adding "selected_candidate_id". The slots
+must be exactly 1..{shot_count}, one each.
+Return only:
+{{"shots":[{{"selected_candidate_id":1,"slot":1,"sentence":"...","animal":"...","action":"...","visual":"...","search_query":"..."}}]}}'''
+
+    selected = run_json_batch(
+        "Visual Director Selector",
+        role,
+        selection_task,
+        max_output_tokens=7000,
+    )
+    shots = selected.get("shots", []) if isinstance(selected, dict) else []
+
+    def selection_is_valid(items: list) -> bool:
+        if len(items) != shot_count:
+            return False
+        slots = [item.get("slot") for item in items if isinstance(item, dict)]
+        ids = [item.get("selected_candidate_id") for item in items if isinstance(item, dict)]
+        if len(slots) != shot_count or len(ids) != shot_count:
+            return False
+        if slots != list(range(1, shot_count + 1)):
+            return False
+        candidate_by_id = {item["candidate_id"]: item for item in candidates}
+        if len(set(ids)) != shot_count or any(cid not in candidate_by_id for cid in ids):
+            return False
+        for shot in items:
+            source = candidate_by_id[shot["selected_candidate_id"]]
+            if source["slot"] != shot["slot"]:
+                return False
+        return True
+
+    if not selection_is_valid(shots):
+        correction_task = f'''Your selection is invalid. Select exactly one
+candidate for every slot 1..{shot_count}, in ascending slot order. Use only
+candidate IDs from the supplied pool. Do not modify candidate details.
+
+CANDIDATES:
+{json.dumps(candidates, ensure_ascii=False)}
+
+INVALID SELECTION:
+{json.dumps(selected, ensure_ascii=False)}
+
+Return exactly {shot_count} shots with fields selected_candidate_id, slot,
+sentence, animal, action, visual, and search_query.'''
+        selected = run_json_batch(
+            "Visual Director Selector",
+            role,
+            correction_task,
+            max_output_tokens=7000,
+        )
+        shots = selected.get("shots", []) if isinstance(selected, dict) else []
+
+    if not selection_is_valid(shots):
+        raise RuntimeError(
+            f"Gemini could not select exactly {shot_count} valid shots "
+            f"from the {candidate_count}-candidate pool."
+        )
+
+    print(
+        f"Visual Director: Gemini generated {candidate_count} candidates "
+        f"and selected {shot_count} narration-matched shots."
+    )
+    return {"shots": shots}
