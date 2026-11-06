@@ -1,9 +1,12 @@
 """
-Z.AI client adapter for Cosmic Curious.
+OpenCode Zen text client adapter for Cosmic Curious.
 
-Text generation uses GLM-4.7-Flash with ZAI_TEXT_API_KEY.
-Visual verification uses GLM-4.6V-Flash with ZAI_VISION_API_KEY.
-The two credentials are deliberately isolated.
+Text generation uses a free-model fallback chain:
+1. DeepSeek V4.1 Flash Free
+2. GLM-5.3-Flash Free
+3. Nemotron 3.5 Super VL Free
+
+Visual verification remains on the existing Z.AI vision credential.
 """
 from __future__ import annotations
 
@@ -11,60 +14,84 @@ import base64
 import os
 from types import SimpleNamespace
 
-ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
-TEXT_MODEL = "glm-4.7-flash"
+OPENCODE_BASE_URL = "https://opencode.ai/inference/openai/v1"
+TEXT_MODELS = (
+    "deepseek-v4.1-flash-free",
+    "glm-5.3-flash-free",
+    "nemotron-3.5-super-vl-free",
+)
+TEXT_MODEL = TEXT_MODELS[0]
+VISION_BASE_URL = "https://api.z.ai/api/paas/v4/"
 VISION_MODEL = "glm-4.6v-flash"
 
 
 def is_available() -> bool:
-    return bool(os.environ.get("ZAI_TEXT_API_KEY"))
+    return bool(os.environ.get("OPENCODE_API_KEY"))
 
 
 def is_vision_available() -> bool:
     return bool(os.environ.get("ZAI_VISION_API_KEY"))
 
 
-def _openai_client(api_key: str):
+def _openai_client(api_key: str, base_url: str = OPENCODE_BASE_URL):
     try:
         from openai import OpenAI
     except ImportError as exc:
         raise RuntimeError(
-            "The openai package is required for the Z.AI API. "
-            "Install dependencies from requirements.txt."
+            "The openai package is required. Install dependencies from requirements.txt."
         ) from exc
-    return OpenAI(api_key=api_key, base_url=ZAI_BASE_URL, timeout=120.0)
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
+
+
+def _request_with_fallback(kwargs: dict):
+    api_key = os.environ.get("OPENCODE_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENCODE_API_KEY is not set.")
+
+    last_error = None
+    for model in TEXT_MODELS:
+        try:
+            request = dict(kwargs)
+            request["model"] = model
+            response = _openai_client(api_key).chat.completions.create(**request)
+            content = (response.choices[0].message.content or "").strip()
+            if not content:
+                raise RuntimeError(f"{model} returned an empty response.")
+            print(f"Text generation succeeded with OpenCode model: {model}")
+            return response
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).lower()
+            # Authentication and permission failures affect the key, not a model.
+            if any(code in message for code in ("401", "403", "unauthorized", "invalid api key")):
+                raise
+            print(f"WARNING: OpenCode model {model} failed; trying next fallback: {exc}")
+
+    raise RuntimeError(
+        "All OpenCode free models failed: " + str(last_error)
+    ) from last_error
 
 
 class _ChatSession:
     def __init__(self, owner, model: str, config=None):
         self.owner = owner
-        self.model = TEXT_MODEL
+        self.model = model or TEXT_MODEL
         self.config = config
 
     def send_message(self, prompt: str):
         max_tokens = getattr(self.config, "max_output_tokens", None)
         response_format = None
-        mime_type = getattr(self.config, "response_mime_type", None)
-        if mime_type == "application/json":
+        if getattr(self.config, "response_mime_type", None) == "application/json":
             response_format = {"type": "json_object"}
-
-        kwargs = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": str(prompt)}],
-        }
+        kwargs = {"messages": [{"role": "user", "content": str(prompt)}]}
         if max_tokens:
             kwargs["max_tokens"] = int(max_tokens)
         if response_format:
             kwargs["response_format"] = response_format
-
-        response = self.owner._client.chat.completions.create(**kwargs)
-        message = response.choices[0].message
-        text = (message.content or "").strip()
+        response = _request_with_fallback(kwargs)
         return SimpleNamespace(
-            text=text,
-            candidates=[
-                SimpleNamespace(finish_reason=response.choices[0].finish_reason)
-            ],
+            text=(response.choices[0].message.content or "").strip(),
+            candidates=[SimpleNamespace(finish_reason=response.choices[0].finish_reason)],
             raw=response,
         )
 
@@ -93,57 +120,36 @@ class _Models:
                 if data:
                     images.append((data, mime))
         if images:
-            return generate_vision("\n".join(prompt_parts), images)
-        return generate_response("\n".join(prompt_parts))
+            return generate_vision("\\n".join(prompt_parts), images)
+        return generate_response("\\n".join(prompt_parts))
 
 
-class ZAITextClient:
+class OpenCodeTextClient:
     def __init__(self):
-        api_key = os.environ.get("ZAI_TEXT_API_KEY")
-        if not api_key:
-            raise RuntimeError("ZAI_TEXT_API_KEY is not set.")
-        self._client = _openai_client(api_key)
+        if not is_available():
+            raise RuntimeError("OPENCODE_API_KEY is not set.")
         self.chats = _Chats(self)
         self.models = _Models(self)
 
 
 def get_client():
-    """Return a text client compatible with the existing pipeline call sites."""
-    return ZAITextClient()
+    return OpenCodeTextClient()
 
 
-def generate(
-    prompt: str,
-    max_output_tokens: int | None = None,
-    model: str = TEXT_MODEL,
-    json_mode: bool = False,
-) -> str:
-    if not is_available():
-        raise RuntimeError("ZAI_TEXT_API_KEY is not set.")
-    kwargs = {
-        "model": TEXT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+def generate(prompt: str, max_output_tokens: int | None = None,
+             model: str = TEXT_MODEL, json_mode: bool = False) -> str:
+    kwargs = {"messages": [{"role": "user", "content": prompt}]}
     if max_output_tokens:
         kwargs["max_tokens"] = int(max_output_tokens)
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    response = _openai_client(os.environ["ZAI_TEXT_API_KEY"]).chat.completions.create(**kwargs)
-    result = (response.choices[0].message.content or "").strip()
-    if not result:
-        raise RuntimeError("GLM-4.7-Flash returned an empty response.")
-    return result
+    response = _request_with_fallback(kwargs)
+    return (response.choices[0].message.content or "").strip()
 
 
-def generate_vision(
-    prompt: str,
-    images: list[tuple[bytes, str]],
-    model: str | None = None,
-):
-    """Send image frames only to GLM-4.6V-Flash using the vision secret."""
+def generate_vision(prompt: str, images: list[tuple[bytes, str]], model: str | None = None):
     if not is_vision_available():
         raise RuntimeError("ZAI_VISION_API_KEY is not set.")
-
     content = [{"type": "text", "text": prompt}]
     for image_bytes, mime_type in images:
         encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -151,8 +157,9 @@ def generate_vision(
             "type": "image_url",
             "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
         })
-
-    response = _openai_client(os.environ["ZAI_VISION_API_KEY"]).chat.completions.create(
+    response = _openai_client(
+        os.environ["ZAI_VISION_API_KEY"], VISION_BASE_URL
+    ).chat.completions.create(
         model=VISION_MODEL,
         messages=[{"role": "user", "content": content}],
         max_tokens=1800,
@@ -163,24 +170,14 @@ def generate_vision(
     return SimpleNamespace(text=text, raw=response)
 
 
-def generate_response(
-    prompt: str,
-    max_output_tokens: int | None = None,
-    model: str = TEXT_MODEL,
-):
-    if not is_available():
-        raise RuntimeError("ZAI_TEXT_API_KEY is not set.")
-    kwargs = {
-        "model": TEXT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+def generate_response(prompt: str, max_output_tokens: int | None = None,
+                      model: str = TEXT_MODEL):
+    kwargs = {"messages": [{"role": "user", "content": prompt}]}
     if max_output_tokens:
         kwargs["max_tokens"] = int(max_output_tokens)
-    response = _openai_client(os.environ["ZAI_TEXT_API_KEY"]).chat.completions.create(**kwargs)
+    response = _request_with_fallback(kwargs)
     return SimpleNamespace(
         text=(response.choices[0].message.content or "").strip(),
-        candidates=[
-            SimpleNamespace(finish_reason=response.choices[0].finish_reason)
-        ],
+        candidates=[SimpleNamespace(finish_reason=response.choices[0].finish_reason)],
         raw=response,
     )
