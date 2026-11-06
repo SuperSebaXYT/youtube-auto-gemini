@@ -69,7 +69,7 @@ def _retry_after_seconds(exc) -> float | None:
     if not value:
         # Groq may put the precise wait time in its JSON error body instead
         # of a Retry-After header.
-        match = re.search(r"try again in\\s+([0-9.]+)s", str(exc), re.IGNORECASE)
+        match = re.search(r"try again in[ ]+([0-9.]+)s", str(exc), re.IGNORECASE)
         if match:
             return max(0.0, float(match.group(1)))
         return None
