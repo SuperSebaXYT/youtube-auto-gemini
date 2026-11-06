@@ -1,8 +1,6 @@
 channel_id: cosmic_curious
 
-ai_provider: groq
-groq_model: openai/gpt-oss-120b
-groq_vision_model: qwen/qwen3.8-27b
+ai_provider: gemini
 display_name: "Animal Discovery & Compilations"
 
 niche: "Animals & wildlife facts"
