@@ -31,7 +31,7 @@ V3 improvements:
 - Outdated terminology and scientific interpretations are checked
 - Misleading hooks are checked
 - Repair instructions explicitly address each failed claim
-- Uses Chat.send_message() for GLM-4.7-Flash text generation
+- Uses Chat.send_message() for OpenCode text model text generation
 """
 
 import json
@@ -42,11 +42,11 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from src.gemini_client import get_client, is_available
+from src.gemini_client import get_client, is_available, TEXT_MODEL as DEFAULT_TEXT_MODEL
 
 
 # Keep this synchronized with the rest of the project.
-TEXT_MODEL = "glm-4.7-flash"
+TEXT_MODEL = DEFAULT_TEXT_MODEL
 
 # Initial check + 2 repairs = maximum 3 checks.
 MAX_REPAIR_ATTEMPTS = 2
@@ -55,8 +55,8 @@ MAX_REPAIR_ATTEMPTS = 2
 MIN_APPROVAL_SCORE = 8.0
 
 
-class GLMUnavailableError(RuntimeError):
-    """GLM-4.7-Flash remained unavailable after retrying transient API failures."""
+class AIProviderUnavailableError(RuntimeError):
+    """OpenCode text model remained unavailable after retrying transient API failures."""
 
 
 def _retry_after_seconds(exc) -> float | None:
@@ -81,8 +81,8 @@ def _retry_after_seconds(exc) -> float | None:
             return None
 
 
-def _is_retryable_GLM_error(exc) -> bool:
-    """Recognize transient GLM-4.7-Flash/API failures using status fields and message."""
+def _is_retryable_ai_error(exc) -> bool:
+    """Recognize transient OpenCode text model/API failures using status fields and message."""
     if isinstance(exc, TimeoutError) or type(exc).__name__ in {
         "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"
     }:
@@ -134,17 +134,17 @@ def _send_message_with_retry(
     prompt: str,
     max_attempts: int = 5,
 ):
-    """Retry transient GLM-4.7-Flash failures with backoff, jitter and Retry-After."""
+    """Retry transient OpenCode text model failures with backoff, jitter and Retry-After."""
     for attempt in range(max_attempts):
         try:
             return chat.send_message(prompt)
         except Exception as exc:
-            if not _is_retryable_GLM_error(exc):
+            if not _is_retryable_ai_error(exc):
                 raise
 
             if attempt == max_attempts - 1:
-                raise GLMUnavailableError(
-                    f"GLM-4.7-Flash remained unavailable after {max_attempts} attempts: {exc}"
+                raise AIProviderUnavailableError(
+                    f"OpenCode text model remained unavailable after {max_attempts} attempts: {exc}"
                 ) from exc
 
             backoff = min(30.0, 2.0 * (2 ** attempt))
@@ -155,7 +155,7 @@ def _send_message_with_retry(
                 delay = max(delay, backoff)
 
             print(
-                "WARNING: GLM-4.7-Flash transient API failure; "
+                "WARNING: OpenCode text model transient API failure; "
                 f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/{max_attempts}): {exc}"
             )
@@ -164,18 +164,18 @@ def _send_message_with_retry(
 
 def _client():
     """
-    Create a GLM-4.7-Flash client.
+    Create a OpenCode text model client.
     """
 
     if not is_available():
-        raise RuntimeError("ZAI_TEXT_API_KEY is missing; GLM-4.7-Flash cannot run the Quality Gate.")
+        raise RuntimeError("OPENCODE_API_KEY is missing; OpenCode text generation cannot run the Quality Gate.")
 
     return get_client()
 
 
 def _chat(client):
     """
-    Create a GLM-4.7-Flash chat session.
+    Create a OpenCode text model chat session.
 
     IMPORTANT:
     Use Chat.send_message() rather than client.models.generate_content()
@@ -189,12 +189,12 @@ def _chat(client):
 
 def _clean_json(text: str) -> dict:
     """
-    Extract JSON even if GLM-4.7-Flash accidentally wraps it in markdown fences.
+    Extract JSON even if OpenCode text model accidentally wraps it in markdown fences.
     """
 
     if not text:
         raise ValueError(
-            "GLM-4.7-Flash returned an empty response."
+            "OpenCode text model returned an empty response."
         )
 
     text = text.strip()
@@ -219,7 +219,7 @@ def _clean_json(text: str) -> dict:
 
     if start == -1 or end == -1:
         raise ValueError(
-            f"GLM-4.7-Flash did not return JSON: {text[:500]}"
+            f"OpenCode text model did not return JSON: {text[:500]}"
         )
 
     try:
@@ -228,7 +228,7 @@ def _clean_json(text: str) -> dict:
         )
     except json.JSONDecodeError as e:
         raise ValueError(
-            f"GLM-4.7-Flash returned invalid JSON: {e}. "
+            f"OpenCode text model returned invalid JSON: {e}. "
             f"Response: {text[:500]}"
         ) from e
 
@@ -248,7 +248,7 @@ def _word_count(text: str) -> int:
 
 def _basic_script_checks(script: str, target_words: int = 150) -> list:
     """
-    Cheap deterministic checks before spending another GLM-4.7-Flash call.
+    Cheap deterministic checks before spending another OpenCode text model call.
 
     IMPORTANT:
     This function intentionally does NOT automatically reject normal
@@ -262,7 +262,7 @@ def _basic_script_checks(script: str, target_words: int = 150) -> list:
 
     Those words can be scientifically correct in the right context.
 
-    GLM-4.7-Flash performs the actual scientific certainty audit.
+    OpenCode text model performs the actual scientific certainty audit.
 
     Deterministic checks are reserved for obvious formatting/template
     problems.
@@ -395,7 +395,7 @@ def _basic_script_checks(script: str, target_words: int = 150) -> list:
     #
     # can be perfectly valid.
     #
-    # GLM-4.7-Flash's claim-by-claim scientific audit below is responsible
+    # OpenCode text model's claim-by-claim scientific audit below is responsible
     # for determining whether certainty wording is actually wrong.
     # ------------------------------------------------------------
 
@@ -409,7 +409,7 @@ def check_script(
     target_words: int = 150,
 ) -> dict:
     """
-    Ask GLM-4.7-Flash to perform a strict scientific/editorial audit.
+    Ask OpenCode text model to perform a strict scientific/editorial audit.
     """
 
     basic_problems = _basic_script_checks(
@@ -420,357 +420,59 @@ def check_script(
     chat = _chat(client)
 
     prompt = f"""
-You are the FINAL scientific fact-checker and editorial gatekeeper for
-a professional faceless YouTube science channel.
+You are the final scientific fact-checker and editorial gatekeeper for an
+animal and wildlife YouTube Shorts channel.
 
-CHANNEL:
-{config['display_name']}
-
-NICHE:
-{config['niche']}
-
-TONE:
-{config['tone']}
-
-TOPIC:
-{topic}
+CHANNEL: {config['display_name']}
+NICHE: {config['niche']}
+TONE: {config['tone']}
+TOPIC: {topic}
 
 SCRIPT:
 {script}
 
-Your decision determines whether this script is allowed to proceed to
-voice generation and publication.
-
-This is NOT primarily a creative-writing evaluation.
-
-SCIENCE ACCURACY IS THE HIGHEST PRIORITY.
-
-==================================================
-STEP 1 — CLAIM-BY-CLAIM FACT CHECK
-==================================================
-
-Read every sentence and identify factual claims.
-
-For each important claim, ask:
-
-- Is it scientifically correct?
-- Is it consistent with modern scientific understanding?
-- Is it supported by established physics/astronomy?
-- Is the wording stronger than the evidence?
-- Does the claim depend on conditions that the script ignores?
-- Is the claim outdated or based on an older interpretation?
-- Is a possibility being presented as a certainty?
-
-Do NOT simply ask whether the overall story "sounds plausible".
-
-A single scientifically misleading central claim is enough to reject
-the script.
-
-==================================================
-STEP 2 — HYPOTHETICAL SCENARIOS
-==================================================
-
-Hypothetical science is ALLOWED and encouraged when interesting.
-
-For example:
-
-"What would happen if a rogue planet entered our Solar System?"
-
-can be an excellent topic.
-
-But distinguish carefully between:
-
-A) established physical behavior
-
-and
-
-B) one possible outcome under a particular hypothetical configuration.
-
-Do NOT allow a hypothetical outcome to be presented as guaranteed when
-the result depends on variables such as:
-
-- mass
-- distance
-- velocity
-- angle
-- orbit
-- composition
-- energy
-- luminosity
-- timing
-- density
-- magnetic field
-- initial conditions
-
-Good:
-
-"A sufficiently massive companion could disturb the Oort Cloud."
-
-Bad:
-
-"A second star would send comets toward Earth."
-
-If the result is strongly dependent on conditions, the wording should
-reflect that with phrases such as:
-
-- could
-- might
-- under these conditions
-- depending on
-- in some scenarios
-- simulations suggest
-- researchers have proposed
-
-Use conditional language only when scientifically appropriate.
-
-Do NOT weaken statements that are genuinely established facts.
-
-==================================================
-STEP 3 — ABSOLUTE CLAIM AUDIT
-==================================================
-
-Words such as:
-
-always
-never
-will
-guaranteed
-definitely
-impossible
-instantly
-completely
-every
-none
-the entire
-the only
-exactly
-
-are NOT automatically errors.
-
-Evaluate them IN CONTEXT.
-
-For example:
-
-"Nothing can escape from inside an event horizon."
-
-may be scientifically defensible when correctly referring to signals
-escaping to the outside universe.
-
-But:
-
-"A black hole always destroys anything nearby instantly."
-
-would be misleading.
-
-Do not reject a script merely because it contains an absolute word.
-
-Reject it only if the actual scientific claim is materially
-overstated.
-
-==================================================
-STEP 4 — OUTDATED SCIENCE
-==================================================
-
-Check whether the script relies on a famous but outdated scientific
-claim.
-
-If historical measurements or interpretations were later revised,
-the script must NOT present the old interpretation as current
-scientific fact.
-
-A scientifically interesting correction is encouraged.
-
-==================================================
-STEP 5 — NUMBERS AND SCALE
-==================================================
-
-Pay special attention to:
-
-- distances
-- masses
-- speeds
-- temperatures
-- time scales
-- percentages
-- frequencies
-- energy
-- number of objects
-- comparisons with Earth
-- comparisons with the Sun
-- comparisons with the Milky Way
-
-If a numerical statement looks suspicious, flag it.
-
-Do not invent a correction.
-
-If exact verification is unavailable, recommend safer wording.
-
-A simple approximate statement is preferable to a fabricated precise
-number.
-
-==================================================
-STEP 6 — CAUSE AND EFFECT
-==================================================
-
-Do not allow the script to turn correlation or possibility into
-guaranteed cause and effect.
-
-Look for statements such as:
-
-"X causes Y"
-
-"X would definitely cause Y"
-
-"X means Y"
-
-"X proves Y"
-
-when the actual science is more conditional.
-
-==================================================
-STEP 7 — SCIENTIFIC TERMINOLOGY
-==================================================
-
-Flag terminology that is outdated, technically incorrect, or commonly
-misunderstood.
-
-Examples include:
-
-- treating relativistic mass as ordinary modern mass
-- confusing gravity with gravitational waves
-- confusing mass with weight
-- confusing an event horizon with a physical surface
-- confusing possibility with probability
-- treating theoretical predictions as observations
-- using "zero gravity" when microgravity/free fall is more accurate
-
-==================================================
-STEP 8 — MISLEADING HOOK TEST
-==================================================
-
-The first sentence is extremely important.
-
-Ask:
-
-"If a viewer watches the whole Short, will they understand what the
-hook actually meant?"
-
-Reject hooks that deliberately create a scientifically false
-impression.
-
-The hook may be dramatic.
-
-It may NOT be scientifically deceptive.
-
-==================================================
-STEP 9 — VISUAL CLAIM TEST
-==================================================
-
-The script will be paired with stock footage and generated visuals.
-
-The scientific phenomenon itself should be visually explainable.
-
-Do not reject a scientifically correct script merely because stock
-footage might be imperfect.
-
-==================================================
-STEP 10 — SHORT-FORM QUALITY
-==================================================
-
-The script should:
-
-- hook immediately
-- introduce one clear question
-- build curiosity
-- explain one central scientific idea
-- deliver a satisfying reveal
-- end strongly
-
-Avoid unnecessary background information.
-
-Avoid multiple unrelated scientific concepts.
-
-==================================================
-CRITICAL DECISION RULE
-==================================================
-
-Accuracy is a HARD CONSTRAINT.
-
-A dramatic script with questionable science must lose to a slightly
-less dramatic script with excellent science.
-
-Do NOT compensate for inaccurate science with high curiosity.
-
-A strong script should generally have:
-
-Accuracy >= 8
-Science >= 8
-Overall >= 8
-
-==================================================
-IMPORTANT SCORING RULE
-==================================================
-
-Do not automatically reject a script simply because:
-
-- it uses "will"
-- it uses "never"
-- it uses "always"
-- it uses "instantly"
-- it uses "completely"
-- it contains a hypothetical scenario
-
-Judge the COMPLETE CLAIM.
-
-Only flag such wording when it creates a genuine scientific
-overstatement or materially misleading impression.
-
-==================================================
-APPROVAL STANDARD
-==================================================
-
-APPROVE only if:
-
-1. The central scientific claim is accurate.
-2. Important supporting claims are accurate.
-3. Hypothetical scenarios are clearly treated as hypothetical when
-   their outcomes are conditional.
-4. Conditional outcomes use appropriately conditional language.
-5. There are no materially misleading statements.
-6. There are no important outdated scientific claims presented as
-   current.
-7. Numerical claims are reasonable.
-8. The script sounds natural.
-9. The script works as short-form science narration.
-
-REJECT if any major scientific claim is wrong or materially misleading.
-
-==================================================
-SCORING
-==================================================
-
-Give an overall score from 1-10.
-
-Consider:
-
-- scientific accuracy
-- scientific significance
-- clarity
-- curiosity
-- retention potential
-- visual storytelling
-- narration quality
-
-But NEVER allow entertainment value to hide a major factual problem.
-
-==================================================
-OUTPUT
-==================================================
-
-Return ONLY valid JSON.
-
-Use exactly:
-
+Your decision determines whether this script may proceed to voice generation
+and publication. Factual accuracy is the highest priority.
+
+FACT-CHECK EVERY IMPORTANT CLAIM:
+- Confirm the named animal, species, anatomy, behavior, habitat and
+  biological mechanism are described accurately.
+- Check taxonomy and evolutionary relationships. Do not imply two animals
+  are close relatives without evidence.
+- Distinguish observed, experimentally supported, inferred, debated and
+  hypothetical behavior. Never present uncertainty as fact.
+- Check numerical claims, measurements, speeds, strength, lifespan,
+  percentages and records. Flag unsupported precision.
+- Check cause-and-effect claims and whether context changes the outcome.
+- Distinguish species-wide traits from behavior seen only in some individuals,
+  populations, sexes, life stages or environments.
+- Flag outdated terminology and interpretations.
+- Do not invent a correction, source, study or measurement.
+
+ANIMAL-SPECIFIC SAFETY:
+- Do not attribute behavior to the wrong species or confuse similar animals.
+- Do not exaggerate danger, venom, intelligence, strength, senses or abilities.
+- Do not imply deliberate planning unless evidence supports that interpretation.
+- Treat rare events and exceptional individuals as exceptions, not universal traits.
+- If evidence is mixed, recommend accurate conditional wording.
+
+HOOK AND STORY:
+- The first sentence must create interest without making a false promise.
+- The payoff must answer the central question.
+- Keep the script focused on the animal or wildlife topic.
+- It must work as clear spoken narration for a 30-60 second Short.
+- Do not reject accurate simplification for a general audience.
+
+APPROVAL:
+Approve only when the central claim and supporting claims are accurate,
+appropriately qualified and not materially misleading. A major factual error
+requires rejection. Entertainment value never offsets a false biological claim.
+
+Score from 1 to 10. Accuracy is a hard constraint; also consider clarity,
+curiosity, retention, visual storytelling and natural narration. Do not
+penalize words such as "always", "never" or "will" without judging the claim.
+
+Return ONLY valid JSON in exactly this shape:
 {{
   "approved": true,
   "score": 9.2,
@@ -779,34 +481,10 @@ Use exactly:
   "reason": "Short explanation"
 }}
 
-OR:
-
-{{
-  "approved": false,
-  "score": 6.2,
-  "problems": [
-    "Specific factual problem"
-  ],
-  "corrections": [
-    "Specific scientifically accurate correction"
-  ],
-  "reason": "Short explanation"
-}}
-
-IMPORTANT:
-
-Problems must be specific.
-
-Corrections must explain what the writer should change.
-
-Do NOT rewrite the entire script.
-
-Do NOT reject normal certainty words unless they create an actual
-scientific error.
-
-Do NOT invent facts in order to justify a rejection.
+Use approved=false when a major issue remains. Problems must identify
+specific claims. Corrections must state the precise change needed. Do not
+invent facts to justify rejection.
 """
-
     response = _send_message_with_retry(
         chat, prompt
     )
@@ -816,7 +494,7 @@ Do NOT invent facts in order to justify a rejection.
     )
 
     # ------------------------------------------------------------
-    # Normalize GLM-4.7-Flash output.
+    # Normalize OpenCode text model output.
     # ------------------------------------------------------------
 
     if not isinstance(result, dict):
@@ -843,7 +521,7 @@ Do NOT invent facts in order to justify a rejection.
     # Add deterministic problems.
     #
     # These are hard failures because they are structural or editorial
-    # issues that GLM-4.7-Flash should not override.
+    # issues that OpenCode text model should not override.
     # ------------------------------------------------------------
 
     if basic_problems:
@@ -923,7 +601,7 @@ def repair_script(
         )
     )
 
-    # If GLM-4.7-Flash returned no corrections, explicitly tell the repair model
+    # If OpenCode text model returned no corrections, explicitly tell the repair model
     # to independently fix the listed problems without inventing science.
     if not corrections:
         corrections = (
@@ -934,7 +612,7 @@ def repair_script(
 
     # Add an explicit, concrete correction when the reviewer flags the
     # recurring whip-spider / pistol-shrimp taxonomy confusion. The generic
-    # repair prompt was allowing GLM-4.7-Flash to preserve the misleading hook.
+    # repair prompt was allowing OpenCode text model to preserve the misleading hook.
     taxonomy_repair = ""
     combined_review = " ".join(
         str(item) for item in review.get("problems", [])
@@ -957,17 +635,12 @@ The corrected script must not mention the pistol shrimp.
 """
 
     prompt = f"""
-You are a senior science editor repairing a YouTube Short that failed
+You are a senior animal-science editor repairing a YouTube Short that failed
 scientific fact-checking.
 
-CHANNEL:
-{config['display_name']}
-
-NICHE:
-{config['niche']}
-
-TOPIC:
-{topic}
+CHANNEL: {config['display_name']}
+NICHE: {config['niche']}
+TOPIC: {topic}
 
 ORIGINAL SCRIPT:
 {script}
@@ -980,68 +653,32 @@ REQUIRED CORRECTIONS:
 
 {taxonomy_repair}
 
-Your job is to produce a corrected version that is both exciting and
-scientifically defensible.
+Rewrite the narration so every listed factual problem is fixed. Keep the
+animal or wildlife premise, but never invent species, anatomy, behavior,
+abilities, statistics, observations, studies or discoveries.
 
-==================================================
-NON-NEGOTIABLE SCIENCE RULES
-==================================================
+BIOLOGICAL ACCURACY:
+- Every behavior must belong to the named species.
+- Do not invent evolutionary relationships or taxonomic links.
+- Distinguish established behavior from rare, disputed or hypothetical cases.
+- Do not exaggerate venom, danger, intelligence, strength, senses or speed.
+- Use conditional wording when behavior depends on context.
+- Preserve accurate facts instead of weakening them unnecessarily.
+- Remove unsupported exact numbers rather than guessing.
+- Do not add unrelated facts to fill space.
 
-1. Never invent facts.
-
-2. Never exaggerate a physical effect.
-
-3. Never turn a possibility into a certainty.
-
-4. Never present a hypothetical scenario as an observed fact.
-
-5. If the outcome depends on variables such as mass, distance, speed,
-   orbit, luminosity or initial conditions, use appropriately
-   conditional wording.
-
-6. Do not use outdated scientific terminology when a modern term is
-   available.
-
-7. Do not present old measurements or superseded interpretations as
-   current scientific consensus.
-
-8. If an exact numerical claim is uncertain, remove the number or use
-   a safer scientifically defensible comparison.
-
-9. Preserve the interesting idea whenever possible.
-
-10. The repair must fix EVERY listed factual problem.
-
-11. Do not add unrelated facts just to make the script longer.
-
-12. Do not weaken scientifically established facts unnecessarily.
-
-==================================================
-STYLE
-==================================================
-
-- Strong hook in the first sentence.
+STYLE:
+- Strong, accurate first-sentence hook.
 - Conversational spoken English.
-- One central scientific reveal.
-- Fast pacing.
-- Clear explanation.
-- Punchy ending.
+- One central animal-related reveal.
+- Fast pacing and clear explanation.
 - Natural for text-to-speech.
-- No headings.
-- No markdown.
-- No emojis.
-- No stage directions.
-- No "subscribe".
-- No generic AI filler.
-- Do not begin by simply repeating the topic.
-- Avoid "Here's something most people don't know".
-- Avoid "In conclusion".
+- No headings, markdown, emojis, stage directions or calls to subscribe.
+- Do not begin by repeating the topic. Avoid generic AI filler.
 
 Target approximately {target_words} words.
-
 Return ONLY the spoken script.
 """
-
     response = _send_message_with_retry(
         chat, prompt
     )
@@ -1054,10 +691,10 @@ Return ONLY the spoken script.
 
     if not text:
         raise RuntimeError(
-            "GLM-4.7-Flash returned an empty repair response."
+            "OpenCode text model returned an empty repair response."
         )
 
-    # Remove accidental markdown fences if GLM-4.7-Flash ignores the instruction.
+    # Remove accidental markdown fences if OpenCode text model ignores the instruction.
     text = re.sub(
         r"^```(?:text)?\s*",
         "",
@@ -1122,7 +759,7 @@ def validate_and_repair(
                 config,
                 target_words,
             )
-        except GLMUnavailableError:
+        except AIProviderUnavailableError:
             # Infrastructure failure is not a scientific score. Stop safely
             # and let the next scheduled run retry the review.
             raise
@@ -1198,8 +835,8 @@ def validate_and_repair(
                 target_words=target_words,
             )
 
-        except GLMUnavailableError:
-            # Do not mislabel a GLM-4.7-Flash outage as a failed script repair.
+        except AIProviderUnavailableError:
+            # Do not mislabel a OpenCode text model outage as a failed script repair.
             raise
 
         except Exception as e:
