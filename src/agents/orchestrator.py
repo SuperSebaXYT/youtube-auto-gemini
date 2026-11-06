@@ -16,7 +16,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from src.gemini_client import generate
+from src.gemini_client import GROQ_TEXT_OUTPUT_CAP, generate
 
 load_dotenv()
 
@@ -123,6 +123,7 @@ def generate_text(
     *,
     max_output_tokens: int = 2500,
     model: str | None = None,
+    json_mode: bool = False,
 ) -> str:
     """Central Gemini gateway with bounded exponential retry for transient errors."""
 
@@ -135,6 +136,7 @@ def generate_text(
                     model
                     or "gemini-3.5-flash-lite"
                 ),
+                json_mode=json_mode,
             )
 
         except Exception as exc:
@@ -167,28 +169,38 @@ def generate_json(
 ) -> Any:
     """Generate and parse JSON through the shared gateway."""
 
-    budget = max_output_tokens
+    is_groq = os.environ.get("AI_PROVIDER", "gemini").strip().lower() == "groq"
+    budget = (
+        min(int(max_output_tokens), GROQ_TEXT_OUTPUT_CAP)
+        if is_groq
+        else max_output_tokens
+    )
     last_error = None
+    max_attempts = 2 if is_groq else 3
 
-    for attempt in range(3):
+    for attempt in range(max_attempts):
         try:
             return _extract_json(
                 generate_text(
                     prompt,
                     max_output_tokens=budget,
                     model=model,
+                    json_mode=True,
                 )
             )
 
         except ValueError as e:
             last_error = e
-            budget = int(budget * 1.6)
+            if attempt >= max_attempts - 1:
+                break
+
+            if not is_groq:
+                budget = int(budget * 1.6)
 
             print(
-                "AI Gateway: JSON parse failed "
-                f"(likely truncated), retrying with "
-                f"max_output_tokens={budget} "
-                f"(attempt {attempt + 1}/3)..."
+                "AI Gateway: JSON parse failed; retrying "
+                f"with max_output_tokens={budget} "
+                f"(attempt {attempt + 2}/{max_attempts})..."
             )
 
     raise last_error
