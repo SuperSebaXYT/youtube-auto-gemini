@@ -87,7 +87,7 @@ jobs:
       - name: Manual run
         if: github.event_name == 'workflow_dispatch' && (inputs.channel != '' || inputs.force_run == true)
         env:
-          ZAI_TEXT_API_KEY: ${{ secrets.ZAI_TEXT_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           ZAI_VISION_API_KEY: ${{ secrets.ZAI_VISION_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
@@ -101,7 +101,7 @@ jobs:
       - name: Scheduler run
         if: github.event_name == 'workflow_dispatch' && inputs.channel == '' && inputs.force_run != true
         env:
-          ZAI_TEXT_API_KEY: ${{ secrets.ZAI_TEXT_API_KEY }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           ZAI_VISION_API_KEY: ${{ secrets.ZAI_VISION_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           ENABLED_CHANNELS: "cosmic_curious"
