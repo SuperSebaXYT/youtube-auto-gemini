@@ -1081,13 +1081,15 @@ def fetch_clips_for_shots(
     shots: list,
     out_dir: str,
     orientation: str = "portrait",
-    max_candidates_per_shot: int = 4,
+    max_candidates_per_shot: int = 20,
 ) -> list:
     """
-    Fetch one clip per narration shot, using only that shot's exact animal
-    and behavior query. Every downloaded clip is frame-checked by the configured vision model.
-    There is deliberately NO generic wildlife/nature fallback. If a matching
-    clip cannot be found and verified, the pipeline stops before upload.
+    Fetch one verified clip per narration shot.
+
+    Search a broad Pexels result pool for the exact species, then use Gemini
+    Vision to verify candidates. Search results are never trusted as proof:
+    wrong species are rejected and publication remains blocked if no exact
+    species match can be verified.
     """
     api_key = os.environ.get("PEXELS_API_KEY")
     if not api_key:
@@ -1102,6 +1104,12 @@ def fetch_clips_for_shots(
 
     downloaded = []
     used_video_ids = set()
+
+    # Pexels allows up to 80 results per page. Two pages across a small,
+    # species-specific query set gives us a much larger pool without resorting
+    # to unrelated wildlife searches.
+    pexels_per_page = 80
+    search_pages = (1, 2)
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1118,7 +1126,6 @@ def fetch_clips_for_shots(
                 f"Visual shot {index + 1} is missing animal/action/query details."
             )
 
-        # Prevent the director from silently reverting to broad stock searches.
         query_words = set(re.findall(r"[a-zA-Z]+", query.lower()))
         animal_words = set(re.findall(r"[a-zA-Z]+", animal.lower()))
         if not animal_words.intersection(query_words):
@@ -1131,131 +1138,142 @@ def fetch_clips_for_shots(
             f"animal={animal!r} action={action!r} query={query!r}"
         )
 
-        # First try the director's exact behavior query. If no matching
-        # action is available, search only for the named species and allow a
-        # subject-only clip after vision confirms the species. Never broaden
-        # to general wildlife footage.
-        fallback_queries = [animal, f"{animal} wildlife"]
         normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
         species_search_aliases = {
             "secretary bird": [
+                "Secretary bird",
                 "Sagittarius serpentarius",
                 "Sagittarius serpentarius bird",
-                "secretary bird animal",
                 "secretarybird",
+                "secretary bird hunting",
             ],
             "african fish eagle": [
+                "African fish eagle",
                 "Haliaeetus vocifer",
-                "Haliaeetus vocifer perched",
                 "African sea eagle",
-                "African fish eagle bird",
-                "African fish eagle Haliaeetus",
+                "African fish eagle fishing",
+                "African fish eagle flying",
                 "fish eagle Africa",
             ],
         }
-        fallback_queries = species_search_aliases.get(
-            normalized_animal,
-            fallback_queries,
-        )
 
+        # Keep searches species-specific. The director's action query comes
+        # first; the remaining queries broaden wording, never the animal.
+        aliases = species_search_aliases.get(
+            normalized_animal,
+            [animal, f"{animal} wildlife", f"{animal} {action}"],
+        )
         search_modes = [(query, True)]
         search_modes.extend(
-            (fallback_query, False)
-            for fallback_query in dict.fromkeys(fallback_queries)
-            if fallback_query.lower() != query.lower()
+            (candidate_query, False)
+            for candidate_query in aliases
+            if candidate_query.strip().lower() != query.lower()
+        )
+        # Bound API usage while still searching several alternate phrasings.
+        search_modes = search_modes[:5]
+
+        candidates_by_id = {}
+        for mode_index, (search_query, require_action) in enumerate(search_modes):
+            for page in search_pages:
+                try:
+                    results = _search_pexels(
+                        search_query,
+                        headers,
+                        orientation,
+                        per_page=pexels_per_page,
+                        page=page,
+                    )
+                except Exception as exc:
+                    print(
+                        f"WARNING: Pexels search failed for shot {index + 1} "
+                        f"query={search_query!r} page={page}: {exc}"
+                    )
+                    continue
+
+                for video in results:
+                    video_id = video.get("id")
+                    if not video_id or video_id in used_video_ids:
+                        continue
+
+                    existing = candidates_by_id.get(video_id)
+                    candidate = {
+                        "video": video,
+                        "require_action": require_action,
+                        "query": search_query,
+                        "mode_index": mode_index,
+                    }
+                    # If a video appears in both exact-action and species-only
+                    # searches, retain the stricter action requirement.
+                    if existing is None or (require_action and not existing["require_action"]):
+                        candidates_by_id[video_id] = candidate
+
+        ranked = sorted(
+            candidates_by_id.items(),
+            key=lambda item: (
+                item[1]["require_action"],
+                _score_video(item[1]["video"], orientation),
+            ),
+            reverse=True,
+        )
+
+        print(
+            f"Visual shot {index + 1}: Pexels returned "
+            f"{len(candidates_by_id)} unique candidates across "
+            f"{len(search_modes)} species-specific queries."
         )
 
         accepted_path = None
-        for mode_index, (search_query, require_action) in enumerate(search_modes):
-            if not require_action:
-                print(
-                    f"Visual shot {index + 1}: trying exact-species search "
-                    f"{search_query!r} (behavior match not required)."
-                )
+        checked = 0
+        for video_id, candidate in ranked:
+            if checked >= max_candidates_per_shot:
+                break
+            checked += 1
 
-            try:
-                candidates = _search_pexels(
-                    search_query,
-                    headers,
-                    orientation,
-                    per_page=15,
-                    page=1,
-                )
-            except Exception as exc:
-                print(
-                    f"WARNING: Pexels search failed for shot {index + 1} "
-                    f"query {search_query!r}: {exc}"
-                )
+            candidate_path = out_path / (
+                f"candidate_{index:02d}_{checked:03d}.mp4"
+            )
+            if not _download_pexels_video(candidate["video"], candidate_path):
                 continue
 
-            ranked = sorted(
-                candidates,
-                key=lambda video: _score_video(video, orientation),
-                reverse=True,
-            )
-            checked = 0
-            checked_video_ids = set()
-
-            for video in ranked:
-                video_id = video.get("id")
-                if (
-                    not video_id
-                    or video_id in used_video_ids
-                    or video_id in checked_video_ids
-                ):
-                    continue
-
-                checked += 1
-                checked_video_ids.add(video_id)
-                if checked > max_candidates_per_shot:
-                    break
-
-                candidate_path = out_path / (
-                    f"candidate_{index:02d}_{mode_index:02d}_{checked:02d}.mp4"
+            require_action = candidate["require_action"]
+            try:
+                approved, audit_reason = _verify_clip_matches_shot(
+                    candidate_path,
+                    animal=animal,
+                    action=action,
+                    sentence=sentence,
+                    visual=visual,
+                    require_action=require_action,
                 )
-                if not _download_pexels_video(video, candidate_path):
-                    continue
-
-                try:
-                    approved, audit_reason = _verify_clip_matches_shot(
-                        candidate_path,
-                        animal=animal,
-                        action=action,
-                        sentence=sentence,
-                        visual=visual,
-                        require_action=require_action,
-                    )
-                except Exception as exc:
-                    candidate_path.unlink(missing_ok=True)
-                    raise RuntimeError(
-                        f"Visual verification failed for shot {index + 1}; "
-                        f"upload blocked. Details: {exc}"
-                    ) from exc
-
-                if approved:
-                    accepted_path = out_path / f"clip_{index:02d}.mp4"
-                    candidate_path.replace(accepted_path)
-                    used_video_ids.add(video_id)
-                    print(
-                        f"Visual QA PASSED for shot {index + 1}: "
-                        f"{audit_reason}"
-                    )
-                    break
-
-                print(
-                    f"Visual QA REJECTED candidate for shot {index + 1}: "
-                    f"{audit_reason}"
-                )
+            except Exception as exc:
                 candidate_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Visual verification failed for shot {index + 1}; "
+                    f"upload blocked. Details: {exc}"
+                ) from exc
 
-            if accepted_path is not None:
+            if approved:
+                accepted_path = out_path / f"clip_{index:02d}.mp4"
+                candidate_path.replace(accepted_path)
+                used_video_ids.add(video_id)
+                print(
+                    f"Visual QA PASSED for shot {index + 1}: "
+                    f"source_query={candidate['query']!r}; {audit_reason}"
+                )
                 break
+
+            print(
+                f"Visual QA REJECTED candidate for shot {index + 1}: "
+                f"source_query={candidate['query']!r}; {audit_reason}"
+            )
+            candidate_path.unlink(missing_ok=True)
 
         if accepted_path is None:
             raise RuntimeError(
                 f"No verified footage of the required animal for shot "
-                f"{index + 1}: {animal}. Searched the exact shot and "
-                "species-specific queries only; pipeline stopped before upload."
+                f"{index + 1}: {animal}. Checked {checked} candidates from "
+                f"{len(search_modes)} species-specific Pexels queries "
+                f"(up to {pexels_per_page} results per page); upload blocked."
             )
 
         downloaded.append(str(accepted_path))
