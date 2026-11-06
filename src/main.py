@@ -132,15 +132,9 @@ def run(
 
     config = load_channel_config(channel_id)
 
-    # Select the model provider per channel. Cosmic Curious uses Groq;
-    # other channels keep Gemini unless their own config says otherwise.
-    os.environ["AI_PROVIDER"] = str(config.get("ai_provider", "gemini")).lower()
-    groq_model = config.get("groq_model")
-    if groq_model:
-        os.environ["GROQ_MODEL"] = str(groq_model)
-    groq_vision_model = config.get("groq_vision_model")
-    if groq_vision_model:
-        os.environ["GROQ_VISION_MODEL"] = str(groq_vision_model)
+    # Cosmic Curious runs on Gemini. Keep provider selection explicit so
+    # leftover Groq environment variables cannot switch this pipeline.
+    os.environ["AI_PROVIDER"] = "gemini"
 
 
     # Long-form is globally disabled. Reject manual/default invocations
