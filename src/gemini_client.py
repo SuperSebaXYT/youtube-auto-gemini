@@ -1,5 +1,5 @@
 """
-Shared text and vision client for Gemini and OpenRouter.
+Shared text and vision client for Gemini and xAI Grok.
 """
 
 from __future__ import annotations
@@ -14,9 +14,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
-OPENROUTER_MODEL = "nvidia/nemotron-3.5-super-vl:free"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-RATE_LIMIT_STATE = Path(__file__).resolve().parent.parent / "state" / "openrouter_rate_limit.json"
+XAI_MODEL = "grok-4.7"
+XAI_URL = "https://api.x.ai/v1/chat/completions"
 
 
 def _provider() -> str:
@@ -24,69 +23,21 @@ def _provider() -> str:
 
 
 def _model(model: str | None = None) -> str:
-    if _provider() == "openrouter":
-        return (
-            os.environ.get("OPENROUTER_MODEL")
-            or os.environ.get("AI_MODEL")
-            or OPENROUTER_MODEL
-        )
+    if _provider() in {"grok", "xai"}:
+        return os.environ.get("XAI_MODEL") or os.environ.get("AI_MODEL") or model or XAI_MODEL
     return model or GEMINI_MODEL
 
 
 def is_available() -> bool:
-    if _provider() == "openrouter":
-        return bool(os.environ.get("OPENROUTER_API_KEY"))
+    if _provider() in {"grok", "xai"}:
+        return bool(os.environ.get("XAI_API_KEY"))
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
-def _active_openrouter_reset():
-    try:
-        data = json.loads(RATE_LIMIT_STATE.read_text(encoding="utf-8"))
-        reset_at = datetime.fromisoformat(data["reset_at"])
-        if reset_at.tzinfo is None:
-            reset_at = reset_at.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) < reset_at:
-            return reset_at
-        RATE_LIMIT_STATE.unlink(missing_ok=True)
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    return None
-
-
-def _save_openrouter_reset(reset_epoch_ms: str | None):
-    try:
-        if reset_epoch_ms:
-            reset_at = datetime.fromtimestamp(
-                int(reset_epoch_ms) / 1000,
-                tz=timezone.utc,
-            )
-        else:
-            now = datetime.now(timezone.utc)
-            reset_at = now.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ) + timedelta(days=1)
-
-        RATE_LIMIT_STATE.parent.mkdir(parents=True, exist_ok=True)
-        RATE_LIMIT_STATE.write_text(
-            json.dumps({"reset_at": reset_at.isoformat()}),
-            encoding="utf-8",
-        )
-        return reset_at
-    except (OSError, ValueError, TypeError, OverflowError):
-        return None
-
-
-def _openrouter_request(messages, max_output_tokens: int | None, model: str | None = None):
-    reset_at = _active_openrouter_reset()
-    if reset_at:
-        raise RuntimeError(
-            "OPENROUTER_FREE_TIER_DAILY limit active until "
-            f"{reset_at.isoformat()}"
-        )
-
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+def _grok_request(messages, max_output_tokens: int | None, model: str | None = None):
+    api_key = os.environ.get("XAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is not set")
+        raise RuntimeError("XAI_API_KEY is not set")
 
     body = {
         "model": _model(model),
@@ -96,13 +47,11 @@ def _openrouter_request(messages, max_output_tokens: int | None, model: str | No
         body["max_tokens"] = max_output_tokens
 
     request = Request(
-        OPENROUTER_URL,
+        XAI_URL,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/SuperSebaXYT/youtube-auto-gemini",
-            "X-Title": "Cosmic Curious",
         },
         method="POST",
     )
@@ -111,22 +60,9 @@ def _openrouter_request(messages, max_output_tokens: int | None, model: str | No
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        lowered = detail.lower()
-        if exc.code == 429 and (
-            "free-models-per-day" in lowered
-            or "openrouter_free_tier_daily" in lowered
-        ):
-            reset_at = _save_openrouter_reset(
-                exc.headers.get("X-RateLimit-Reset")
-            )
-            reset_label = reset_at.isoformat() if reset_at else "the next UTC midnight"
-            raise RuntimeError(
-                "OPENROUTER_FREE_TIER_DAILY limit reached; "
-                f"retry after {reset_label}"
-            ) from exc
-        raise RuntimeError(f"OpenRouter API HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"xAI API HTTP {exc.code}: {detail}") from exc
     except URLError as exc:
-        raise RuntimeError(f"OpenRouter API connection failed: {exc}") from exc
+        raise RuntimeError(f"xAI API connection failed: {exc}") from exc
 
     try:
         choice = payload["choices"][0]
@@ -141,11 +77,11 @@ def _openrouter_request(messages, max_output_tokens: int | None, model: str | No
         text = str(text or "").strip()
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(
-            f"OpenRouter returned an unexpected response: {str(payload)[:500]}"
+            f"xAI returned an unexpected response: {str(payload)[:500]}"
         ) from exc
 
     if not text:
-        raise RuntimeError("OpenRouter returned an empty response.")
+        raise RuntimeError("xAI returned an empty response.")
 
     return SimpleNamespace(
         text=text,
@@ -156,7 +92,7 @@ def _openrouter_request(messages, max_output_tokens: int | None, model: str | No
     )
 
 
-class _OpenRouterChat:
+class _GrokChat:
     def __init__(self, model: str | None = None, max_output_tokens: int | None = None):
         self.model = model
         self.max_output_tokens = max_output_tokens
@@ -165,7 +101,7 @@ class _OpenRouterChat:
     def send_message(self, prompt):
         self.messages.append({"role": "user", "content": prompt})
         try:
-            response = _openrouter_request(
+            response = _grok_request(
                 self.messages,
                 self.max_output_tokens,
                 self.model,
@@ -179,23 +115,23 @@ class _OpenRouterChat:
         return response
 
 
-class _OpenRouterChats:
+class _GrokChats:
     def create(self, model: str | None = None, config=None, max_output_tokens=None):
         if max_output_tokens is None and config is not None:
             max_output_tokens = getattr(config, "max_output_tokens", None)
-        return _OpenRouterChat(model=model, max_output_tokens=max_output_tokens)
+        return _GrokChat(model=model, max_output_tokens=max_output_tokens)
 
 
-class _OpenRouterClient:
+class _GrokClient:
     def __init__(self):
-        self.chats = _OpenRouterChats()
+        self.chats = _GrokChats()
 
 
 def get_client():
-    if _provider() == "openrouter":
+    if _provider() in {"grok", "xai"}:
         if not is_available():
-            raise RuntimeError("OPENROUTER_API_KEY is not set")
-        return _OpenRouterClient()
+            raise RuntimeError("XAI_API_KEY is not set")
+        return _GrokClient()
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -211,7 +147,7 @@ def generate(
 ) -> str:
     """Generate text using the provider selected by AI_PROVIDER."""
     client = get_client()
-    if _provider() == "openrouter":
+    if _provider() in {"grok", "xai"}:
         response = client.chats.create(
             model=_model(model),
             max_output_tokens=max_output_tokens,
@@ -239,7 +175,7 @@ def generate_vision(
     model: str | None = None,
 ):
     """Inspect image bytes and return a text response."""
-    if _provider() == "openrouter":
+    if _provider() in {"grok", "xai"}:
         content = [{"type": "text", "text": prompt}]
         for image_bytes, mime_type in images:
             encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -249,7 +185,7 @@ def generate_vision(
                     "url": f"data:{mime_type};base64,{encoded}"
                 },
             })
-        return _openrouter_request(
+        return _grok_request(
             [{"role": "user", "content": content}],
             max_output_tokens=1200,
             model=model,
@@ -275,7 +211,7 @@ def generate_response(
 ):
     """Generate text and return the complete provider response."""
     client = get_client()
-    if _provider() == "openrouter":
+    if _provider() in {"grok", "xai"}:
         return client.chats.create(
             model=_model(model),
             max_output_tokens=max_output_tokens,
