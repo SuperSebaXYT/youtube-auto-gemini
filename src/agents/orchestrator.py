@@ -1,8 +1,8 @@
 """Shared runtime for Animals & Wildlife AI agents.
 
-The agent layer is deliberately batch-oriented: a single GLM-4.7-Flash request can
+The agent layer is deliberately batch-oriented: a single OpenCode text model request can
 review many topics/claims at once. This keeps the system comfortably below
-GLM-4.7-Flash free-tier request-per-minute limits and makes the agents easier to
+OpenCode text model free-tier request-per-minute limits and makes the agents easier to
 scale later.
 """
 
@@ -15,13 +15,13 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from src.gemini_client import generate
+from src.gemini_client import generate, TEXT_MODEL
 
 load_dotenv()
 
 
 class AgentRateLimitError(RuntimeError):
-    """Raised after the GLM-4.7-Flash gateway exhausts its retry budget."""
+    """Raised after the OpenCode text model gateway exhausts its retry budget."""
 
 
 MAX_RETRIES = 3
@@ -31,7 +31,7 @@ INITIAL_RETRY_SECONDS = 5
 def _extract_json(text: str) -> Any:
     """Parse JSON from a clean response or a fenced/extra-text response."""
     if not text:
-        raise ValueError("GLM-4.7-Flash returned an empty response.")
+        raise ValueError("OpenCode text model returned an empty response.")
 
     cleaned = text.strip()
     cleaned = re.sub(
@@ -62,7 +62,7 @@ def _extract_json(text: str) -> Any:
 
     if not starts:
         raise ValueError(
-            f"GLM-4.7-Flash did not return JSON: {cleaned[:600]}"
+            f"OpenCode text model did not return JSON: {cleaned[:600]}"
         )
 
     start = min(starts)
@@ -73,7 +73,7 @@ def _extract_json(text: str) -> Any:
 
     if end <= start:
         raise ValueError(
-            f"GLM-4.7-Flash did not return complete JSON: "
+            f"OpenCode text model did not return complete JSON: "
             f"{cleaned[:600]}"
         )
 
@@ -83,7 +83,7 @@ def _extract_json(text: str) -> Any:
         )
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"GLM-4.7-Flash returned invalid JSON: {exc}. "
+            f"OpenCode text model returned invalid JSON: {exc}. "
             f"Response: {cleaned[:600]}"
         ) from exc
 
@@ -123,7 +123,7 @@ def generate_text(
     model: str | None = None,
     json_mode: bool = False,
 ) -> str:
-    """Central GLM-4.7-Flash gateway with bounded exponential retry for transient errors."""
+    """Central OpenCode text model gateway with bounded exponential retry for transient errors."""
 
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -132,7 +132,7 @@ def generate_text(
                 max_output_tokens=max_output_tokens,
                 model=(
                     model
-                    or "glm-4.7-flash"
+                    or TEXT_MODEL
                 ),
                 json_mode=json_mode,
             )
@@ -147,7 +147,7 @@ def generate_text(
             delay = INITIAL_RETRY_SECONDS * (2 ** attempt)
 
             print(
-                "AI Gateway: temporary GLM-4.7-Flash service error "
+                "AI Gateway: temporary OpenCode text model service error "
                 f"({str(exc)[:180]}); retrying in {delay}s "
                 f"(attempt {attempt + 1}/{MAX_RETRIES})..."
             )
@@ -155,7 +155,7 @@ def generate_text(
             time.sleep(delay)
 
     raise AgentRateLimitError(
-        "GLM-4.7-Flash retry budget exhausted."
+        "OpenCode text model retry budget exhausted."
     )
 
 
