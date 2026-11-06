@@ -133,7 +133,7 @@ Return only JSON using the required "candidates" schema.'''
             "three per narration slot)."
         )
 
-    # Stage 2: Gemini judges all 45 options and selects exactly one best
+    # Stage 2: OpenCode judges all 45 options and selects exactly one best
     # species/action-matched candidate for each narration slot.
     selection_task = f'''Select the best {shot_count} shots from this pool of
 {candidate_count} candidates. You MUST select exactly one candidate for
@@ -223,12 +223,12 @@ sentence, animal, action, visual, and search_query.'''
 
     if not selection_is_valid(shots):
         raise RuntimeError(
-            f"Gemini could not select exactly {shot_count} valid shots "
+            f"OpenCode could not select exactly {shot_count} valid shots "
             f"from the {candidate_count}-candidate pool."
         )
 
     print(
-        f"Visual Director: Gemini generated {candidate_count} candidates "
+        f"Visual Director: OpenCode generated {candidate_count} candidates "
         f"and selected {shot_count} narration-matched shots."
     )
     return {"shots": shots}
