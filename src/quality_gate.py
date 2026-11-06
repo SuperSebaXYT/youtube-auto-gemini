@@ -81,6 +81,14 @@ def _retry_after_seconds(exc) -> float | None:
             return None
 
 
+def _is_openrouter_daily_quota_error(exc) -> bool:
+    message = str(exc).upper()
+    return (
+        "FREE-MODELS-PER-DAY" in message
+        or "OPENROUTER_FREE_TIER_DAILY" in message
+    )
+
+
 def _is_retryable_gemini_error(exc) -> bool:
     """Recognize transient Gemini/API failures using status fields and message."""
     retryable_codes = {408, 409, 429, 500, 502, 503, 504}
@@ -130,6 +138,10 @@ def _send_message_with_retry(
         try:
             return chat.send_message(prompt)
         except Exception as exc:
+            if _is_openrouter_daily_quota_error(exc):
+                raise GeminiUnavailableError(
+                    "OpenRouter free daily request limit reached; stopping retries."
+                ) from exc
             if not _is_retryable_gemini_error(exc):
                 raise
 
