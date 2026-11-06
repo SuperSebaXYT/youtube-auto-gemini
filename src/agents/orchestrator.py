@@ -90,8 +90,13 @@ def _extract_json(text: str) -> Any:
 
 
 def _looks_like_transient_error(exc: Exception) -> bool:
-    """Recognize temporary Gemini overload, quota and server failures."""
+    """Recognize temporary provider errors, excluding exhausted daily free quota."""
     message = str(exc).upper()
+    if (
+        "FREE-MODELS-PER-DAY" in message
+        or "OPENROUTER_FREE_TIER_DAILY" in message
+    ):
+        return False
 
     return any(
         token in message
