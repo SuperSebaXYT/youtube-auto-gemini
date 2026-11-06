@@ -20,7 +20,7 @@ V2 improvements:
 - Penalizes outdated or superseded scientific claims
 - Penalizes topics whose hook depends on a misleading premise
 
-Gemini calls are routed through the centralized gemini_client.py
+GLM-4.7-Flash calls are routed through the centralized GLM_client.py
 so the project consistently uses the current Chat.send_message()
 flow instead of direct client.models.generate_content().
 """
@@ -30,15 +30,15 @@ import os
 import re
 from pathlib import Path
 
-from src.gemini_client import generate, is_available
+from src.GLM_client import generate, is_available
 
-GEMINI_MODEL = "gemini-3.5-flash-lite"
+TEXT_MODEL = "glm-4.7-flash"
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
 
 
-def _gemini_available():
+def _GLM_available():
     """Return True when the configured text provider has an API key."""
     return is_available()
 
@@ -60,7 +60,7 @@ def generate_candidates(config, existing_topics, count=30):
     Generate a large batch of high-quality potential topics.
     """
 
-    if not _gemini_available():
+    if not _GLM_available():
         raise RuntimeError("Configured AI API key is not set")
 
     existing = "\n".join(
@@ -269,7 +269,7 @@ No quotes.
 
     text = generate(
         prompt,
-        model=GEMINI_MODEL,
+        model=TEXT_MODEL,
         max_output_tokens=2000,
     )
 
@@ -293,7 +293,7 @@ def score_candidates(config, candidates):
     The final score remains normalized to 100.
     """
 
-    if not _gemini_available():
+    if not _GLM_available():
         raise RuntimeError("Configured AI API key is not set")
 
     topics = "\n".join(
@@ -591,7 +591,7 @@ TOPICS:
 
     text = generate(
         prompt,
-        model=GEMINI_MODEL,
+        model=TEXT_MODEL,
         max_output_tokens=3000,
     )
 
