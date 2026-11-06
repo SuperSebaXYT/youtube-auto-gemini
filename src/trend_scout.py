@@ -5,7 +5,7 @@ Current-signal discovery for Animals & Wildlife.
 
 Strategy:
 
-YouTube -> optional Reddit -> GLM-4.7-Flash synthesis
+YouTube -> optional Reddit -> OpenCode text model synthesis
 
 Reddit is treated as an optional signal only.
 
@@ -15,7 +15,7 @@ If no trend source works, the caller falls back to Topic Brain/static topics.
 
 The trend system never becomes a hard dependency for video generation.
 
-GLM-4.7-Flash calls are routed through shared GLM client.
+OpenCode text model calls are routed through shared OpenCode adapter.
 """
 
 import os
@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from .gemini_client import generate as gemini_generate, is_available as ai_available
+from .gemini_client import generate as text_generate, is_available as ai_available
 
 
 def _fetch_reddit_trending(
@@ -214,7 +214,7 @@ No explanation.
 """
 
     topic = (
-        gemini_generate(prompt)
+        text_generate(prompt)
         .strip()
         .strip('"')
         .strip("'")
@@ -238,7 +238,7 @@ def get_trending_topic(
     Strategy:
         1. YouTube signal
         2. Reddit signal
-        3. GLM-4.7-Flash synthesis
+        3. OpenCode text model synthesis
 
     Returns None when no reliable signal is available.
     """
@@ -311,7 +311,7 @@ def get_trending_topic(
     )
 
     # ---------------------------------------------------------
-    # GLM-4.7-Flash synthesis
+    # OpenCode text model synthesis
     # ---------------------------------------------------------
 
     try:
