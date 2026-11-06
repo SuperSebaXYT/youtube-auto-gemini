@@ -455,7 +455,7 @@ def _generate_winner_inspired_topic(
             return None
 
         used_topics = get_used_topics(channel_id)
-        used_sample = "\\n".join(
+        used_sample = "\n".join(
             f"- {topic}"
             for topic in sorted(used_topics, key=str.casefold)[-120:]
         )
@@ -514,7 +514,7 @@ Sort from highest score to lowest score. No explanations.
 
             for candidate_line in _parse_topic_lines(response.text):
                 score_match = re.match(
-                    r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                    r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
                     candidate_line,
                     flags=re.IGNORECASE,
                 )
