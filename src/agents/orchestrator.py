@@ -93,7 +93,6 @@ def _looks_like_transient_error(exc: Exception) -> bool:
     message = str(exc).upper()
     if (
         "FREE-MODELS-PER-DAY" in message
-        or "OPENROUTER_FREE_TIER_DAILY" in message
     ):
         return False
 
