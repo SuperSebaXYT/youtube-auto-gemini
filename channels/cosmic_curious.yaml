@@ -1,7 +1,7 @@
 channel_id: cosmic_curious
 
-ai_provider: openrouter
-openrouter_model: nvidia/nemotron-3.5-super-vl:free
+ai_provider: grok
+xai_model: grok-4.7
 display_name: "Animal Discovery & Compilations"
 
 niche: "Animals & wildlife facts"
