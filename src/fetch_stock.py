@@ -1137,13 +1137,26 @@ def fetch_clips_for_shots(
         # to general wildlife footage.
         fallback_queries = [animal, f"{animal} wildlife"]
         normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
-        if normalized_animal == "secretary bird":
-            fallback_queries = [
+        species_search_aliases = {
+            "secretary bird": [
                 "Sagittarius serpentarius",
                 "Sagittarius serpentarius bird",
                 "secretary bird animal",
                 "secretarybird",
-            ]
+            ],
+            "african fish eagle": [
+                "Haliaeetus vocifer",
+                "Haliaeetus vocifer perched",
+                "African sea eagle",
+                "African fish eagle bird",
+                "African fish eagle Haliaeetus",
+                "fish eagle Africa",
+            ],
+        }
+        fallback_queries = species_search_aliases.get(
+            normalized_animal,
+            fallback_queries,
+        )
 
         search_modes = [(query, True)]
         search_modes.extend(
