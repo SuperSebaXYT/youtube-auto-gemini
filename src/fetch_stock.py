@@ -974,16 +974,49 @@ Return ONLY valid JSON:
   "reason": "brief evidence-based explanation"
 }}
 """
-        response = generate_vision(
-            prompt,
-            [(frame_path.read_bytes(), "image/jpeg") for frame_path in frames],
-        )
-        raw = (getattr(response, "text", None) or "").strip()
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            raise RuntimeError(f"Vision model returned invalid JSON: {raw[:300]}")
+        frame_images = [
+            (frame_path.read_bytes(), "image/jpeg")
+            for frame_path in frames
+        ]
+        provider = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+        if provider == "groq":
+            # Groq's Qwen 3.8 vision endpoint accepts at most 3 images
+            # per request. Audit all five sampled frames in two batches.
+            image_batches = [
+                frame_images[index:index + 3]
+                for index in range(0, len(frame_images), 3)
+            ]
+        else:
+            image_batches = [frame_images]
 
-        result = json.loads(match.group(0))
+        audit_results = []
+        for image_batch in image_batches:
+            response = generate_vision(prompt, image_batch)
+            raw = (getattr(response, "text", None) or "").strip()
+            match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+            if not match:
+                raise RuntimeError(
+                    f"Vision model returned invalid JSON: {raw[:300]}"
+                )
+            audit_results.append(json.loads(match.group(0)))
+
+        def _audit_score(candidate):
+            try:
+                candidate_confidence = float(candidate.get("confidence", 0))
+            except (TypeError, ValueError):
+                candidate_confidence = 0.0
+            candidate_passes = (
+                candidate.get("animal_visible") is True
+                and (
+                    candidate.get("action_visible") is True
+                    or not require_action
+                )
+            )
+            return (candidate_passes, candidate_confidence)
+
+        # Require animal and requested action evidence from the same batch;
+        # do not combine unrelated evidence across distant clip frames.
+        result = max(audit_results, key=_audit_score)
         animal_ok = result.get("animal_visible") is True
         action_ok = result.get("action_visible") is True
 
