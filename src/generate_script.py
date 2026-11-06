@@ -365,6 +365,67 @@ Return one topic per line, without numbering or explanations.
         return []
 
 
+WINNER_HUNTER_MAX_CANDIDATES = 10
+
+
+def _winner_hunter_queue_path(channel_id: str) -> Path:
+    return STATE_DIR / f"{channel_id}_winner_hunter_candidates.json"
+
+
+def _save_winner_hunter_queue(
+    channel_id: str,
+    candidates: list[tuple[int, str]],
+) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _winner_hunter_queue_path(channel_id)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    payload = {
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "max_candidates": WINNER_HUNTER_MAX_CANDIDATES,
+        "candidates": [
+            {"score": int(score), "topic": topic}
+            for score, topic in candidates[:WINNER_HUNTER_MAX_CANDIDATES]
+        ],
+    }
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def _load_winner_hunter_queue(channel_id: str) -> list[tuple[int, str]] | None:
+    path = _winner_hunter_queue_path(channel_id)
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if payload.get("date") != today:
+            return None
+
+        raw_candidates = payload.get("candidates")
+        if not isinstance(raw_candidates, list):
+            return None
+
+        candidates = []
+        for item in raw_candidates[:WINNER_HUNTER_MAX_CANDIDATES]:
+            if not isinstance(item, dict):
+                continue
+            topic = str(item.get("topic", "")).strip()
+            if not topic:
+                continue
+            try:
+                score = max(0, min(100, int(item.get("score", 0))))
+            except (TypeError, ValueError):
+                score = 0
+            candidates.append((score, topic))
+        return candidates
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        return None
+
+
 def _generate_winner_inspired_topic(
     channel_id: str,
     config: dict,
@@ -378,26 +439,32 @@ def _generate_winner_inspired_topic(
         print("GLM text API unavailable; Winner Hunter cannot generate candidates.")
         return None
 
-    try:
-        winner_context = build_winner_context(channel_id)
-        if not winner_context:
-            print("Winner Hunter has no performance context.")
+    # Generate one Analytics-based batch per UTC day, then consume its
+    # ranked topics across the day's Shorts instead of making a new GLM
+    # request for every upload slot.
+    candidates = _load_winner_hunter_queue(channel_id)
+
+    if candidates is None:
+        try:
+            winner_context = build_winner_context(channel_id)
+            if not winner_context:
+                print("Winner Hunter has no performance context.")
+                return None
+        except Exception as e:
+            print(f"WARNING: Winner Hunter context failed ({e}).")
             return None
-    except Exception as e:
-        print(f"WARNING: Winner Hunter context failed ({e}).")
-        return None
 
-    used_topics = get_used_topics(channel_id)
-    used_sample = "\n".join(
-        f"- {topic}"
-        for topic in sorted(used_topics, key=str.casefold)[-120:]
-    )
+        used_topics = get_used_topics(channel_id)
+        used_sample = "\\n".join(
+            f"- {topic}"
+            for topic in sorted(used_topics, key=str.casefold)[-120:]
+        )
 
-    content_length = "a YouTube Short" if is_short else "a YouTube video"
+        content_length = "a YouTube Short" if is_short else "a YouTube video"
 
-    prompt = f"""
+        prompt = f"""
 You are the topic strategist for a faceless animal and wildlife channel.
-Generate exactly 12 distinct candidate topics for {content_length}.
+Generate exactly {WINNER_HUNTER_MAX_CANDIDATES} distinct candidate topics for {content_length}.
 
 CHANNEL PERFORMANCE DATA:
 {winner_context}
@@ -405,120 +472,109 @@ CHANNEL PERFORMANCE DATA:
 PREVIOUSLY USED TOPICS. Do not repeat these or their underlying subjects:
 {used_sample}
 
-Act like a top YouTube Shorts channel strategist, not a random idea generator.
-MISSION: choose a topic with the best realistic chance of reaching
+Generate topics ONLY by applying patterns found in the channel's actual
+YouTube Analytics. Analytics determines which storytelling patterns,
+animal subjects, hooks, and topic angles deserve another attempt.
+Do not invent performance evidence or claim that an unmeasured topic won.
+
+MISSION: choose topics with the best realistic chance of reaching
 20,000,000 views within 30 days. This is an aggressive target, not a promise.
-Think globally. Do not target, prioritize, or exclude any country. Audience
-geography is descriptive data only. Optimize for packaging, first-second hook,
-retention, shareability, and broad worldwide appeal.
-Study the actual channel performance above. Learn from high-performing
-patterns and actively avoid the promise, pacing, and subject types behind
-weak performers.
+Optimize for global reach, first-second hook, retention, shareability,
+and broad worldwide appeal. Do not target or exclude any country.
 
 Reuse successful CONTENT PATTERNS, not the same subjects. Find different
 animals, species, behaviors, abilities, adaptations, and survival methods.
+Avoid the promise, pacing, and subject types behind weak performers.
 
 Score each candidate from 0-100 using this rubric:
 - 25 points: immediate visual hook understandable in the first second
 - 20 points: curiosity gap and surprising but clear premise
 - 20 points: broad worldwide appeal and cross-cultural clarity
-- 15 points: strong factual payoff that can be delivered in 35-55 seconds
+- 15 points: strong factual payoff for a 35-55 second Short
 - 10 points: visual footage potential for a faceless animal Short
 - 10 points: novelty and distance from previous channel topics
-- Do not use country reports to target or exclude a market. No country
-  receives a preference; pursue global viewer appeal in the configured language.
 
-Subtract points for generic facts, slow setup, weak visuals, narrow appeal,
-or a premise similar to underperforming videos. Accuracy is mandatory.
-Do not invent species, behavior, abilities, statistics, or discoveries.
-Every topic must describe a real, well-documented animal behavior or
-adaptation that you are highly confident exists. Prefer familiar facts
-supported by standard zoology references over a novel mechanism you cannot
-verify from reliable knowledge. Do not use fabricated technical labels,
-guaranteed predator escapes, or claims of being invisible, invincible, or
-"impregnable." If uncertain about a candidate's mechanism, omit it and
-choose a simpler established fact. Analytics may guide the storytelling
-pattern, but never use performance patterns as evidence that a biological
-claim is true.
+Accuracy is mandatory. Do not invent species, behavior, abilities,
+statistics, or discoveries. Every topic must describe a real,
+well-documented animal behavior or adaptation. Analytics guides the
+content strategy, never the truth of a biological claim.
 No astronomy, space, NASA, or unrelated science.
 
-Treat every "AVOID" instruction in the performance data as a HARD BAN.
-Do not propose the same animal family, species, or subject with a new
-wording, angle, or example. If a family is flagged as underperforming,
-all members of that family are forbidden in this batch.
-
-Return exactly 12 lines in this format:
-SCORE: <0-100> | TOPIC: <specific topic>
+Return exactly {WINNER_HUNTER_MAX_CANDIDATES} lines in this format:
+SCORE: <0-100> | TOPIC: <specific animal topic>
 Sort from highest score to lowest score. No explanations.
 """
 
-    try:
-        client = get_client()
-        response = _generate_with_token_budget(client, prompt, 1200)
+        try:
+            client = get_client()
+            response = _generate_with_token_budget(client, prompt, 1600)
 
-        candidates = []
-        comparison_set = set(used_topics)
+            generated = []
+            comparison_set = set(used_topics)
 
-        for candidate_line in _parse_topic_lines(response.text):
-            score_match = re.match(
-                r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
-                candidate_line,
-                flags=re.IGNORECASE,
-            )
-            if score_match:
-                candidate_score = max(0, min(100, int(score_match.group(1))))
-                candidate = score_match.group(2).strip()
-            else:
-                # Backward-compatible fallback if the model ignores the
-                # requested score format: keep the candidate, but rank it
-                # below properly scored ideas.
-                candidate_score = 0
-                candidate = candidate_line.strip()
-
-            if not candidate:
-                continue
-
-            if "AVOID UNDERPERFORMING SUBJECT FAMILY:" in winner_context:
-                candidate_lower = candidate.lower()
-                feline_terms = (
-                    "cat", "cats", "kitten", "kittens", "feline", "bobcat",
-                    "lynx", "lion", "tiger", "leopard", "jaguar", "cheetah",
-                    "cougar", "puma", "ocelot", "caracal", "serval",
+            for candidate_line in _parse_topic_lines(response.text):
+                score_match = re.match(
+                    r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                    candidate_line,
+                    flags=re.IGNORECASE,
                 )
-                if re.search(
-                    r"\b(?:" + "|".join(map(re.escape, feline_terms)) + r")\b",
-                    candidate_lower,
-                ):
-                    print(
-                        "Winner Hunter weak-family rejection "
-                        f"(felids): {candidate}"
-                    )
+                if score_match:
+                    candidate_score = max(0, min(100, int(score_match.group(1))))
+                    candidate = score_match.group(2).strip()
+                else:
+                    candidate_score = 0
+                    candidate = candidate_line.strip()
+
+                if not candidate:
                     continue
 
-            if _looks_like_duplicate_topic(candidate, comparison_set):
-                print(f"Winner Hunter duplicate rejected: {candidate}")
-                continue
+                if _looks_like_duplicate_topic(candidate, comparison_set):
+                    print(f"Winner Hunter duplicate rejected: {candidate}")
+                    continue
 
-            candidates.append((candidate_score, candidate))
-            comparison_set.add(candidate)
+                generated.append((candidate_score, candidate))
+                comparison_set.add(candidate)
 
-        if not candidates:
-            print("Winner Hunter returned no fresh candidates.")
+            generated.sort(key=lambda item: item[0], reverse=True)
+            candidates = generated[:WINNER_HUNTER_MAX_CANDIDATES]
+
+            if not candidates:
+                print("Winner Hunter returned no fresh Analytics-based candidates.")
+                return None
+
+            _save_winner_hunter_queue(channel_id, candidates)
+            print(
+                f"Winner Hunter generated and ranked {len(candidates)} "
+                f"Analytics-based topics (daily maximum "
+                f"{WINNER_HUNTER_MAX_CANDIDATES})."
+            )
+
+        except Exception as e:
+            print(f"WARNING: Winner Hunter generation failed ({e}).")
             return None
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        selected_score, selected = candidates[0]
+    used_topics = get_used_topics(channel_id)
+    while candidates:
+        selected_score, selected = candidates.pop(0)
+        if _looks_like_duplicate_topic(selected, used_topics):
+            print(f"Winner Hunter cached duplicate rejected: {selected}")
+            continue
+
+        # Persist the remaining ranked batch before returning the topic.
+        _save_winner_hunter_queue(channel_id, candidates)
         print(
-            f"Winner Hunter selected highest-ranked topic "
-            f"({selected_score}/100) from {len(candidates)} fresh candidates: "
+            f"Winner Hunter selected topic ({selected_score}/100); "
+            f"{len(candidates)} Analytics-based topics remain today: "
             f"{selected}"
         )
         return selected
 
-    except Exception as e:
-        print(f"WARNING: Winner Hunter generation failed ({e}).")
-        return None
-
+    _save_winner_hunter_queue(channel_id, [])
+    print(
+        "Winner Hunter: today's Analytics-based batch is exhausted "
+        f"({WINNER_HUNTER_MAX_CANDIDATES} topics maximum)."
+    )
+    return None
 
 def pick_next_topic(channel_id: str, config: dict) -> str:
     topics_file = ROOT / config["topics_seed_file"]
@@ -771,10 +827,8 @@ def generate_script(
     Topic priority:
     1. Explicit forced topic.
     2. One eligible same-day longform recap for a Short.
-    3. Winner Hunter.
-    4. Daily Brain.
-    5. Trend Scout.
-    6. An unused seed topic or newly generated topic.
+    3. Winner Hunter's daily batch of up to 10 Analytics-based topics.
+    4. Other topic sources are retained for non-Cosmic channels only.
     """
     config = load_channel_config(channel_id)
 
@@ -806,7 +860,7 @@ def generate_script(
         except Exception as e:
             print(f"WARNING: Winner Hunter selection failed ({e}).")
 
-    if not topic:
+    if not topic and channel_id != "cosmic_curious":
         try:
             candidate = get_daily_brain_topic(
                 channel_id, config, is_short
@@ -817,7 +871,7 @@ def generate_script(
         except Exception as e:
             print(f"WARNING: Daily Brain selection failed ({e}).")
 
-    if not topic:
+    if not topic and channel_id != "cosmic_curious":
         try:
             candidate = get_trending_topic(channel_id, config)
             topic = _fresh_candidate(
@@ -826,8 +880,15 @@ def generate_script(
         except Exception as e:
             print(f"WARNING: Trend Scout selection failed ({e}).")
 
-    if not topic:
+    if not topic and channel_id != "cosmic_curious":
         topic = pick_next_topic(channel_id, config)
+
+    if not topic and channel_id == "cosmic_curious":
+        raise RuntimeError(
+            "Winner Hunter could not provide a fresh topic from today's "
+            "Analytics-based batch. Cosmic Curious will not use unrelated "
+            "Daily Brain, Trend Scout, or static fallback topics."
+        )
 
     if not forced_topic and not recap_topic:
         mark_topic_used(channel_id, topic)
