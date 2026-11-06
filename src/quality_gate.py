@@ -42,7 +42,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from src.GLM_client import get_client, is_available
+from src.gemini_client import get_client, is_available
 
 
 # Keep this synchronized with the rest of the project.
@@ -55,7 +55,7 @@ MAX_REPAIR_ATTEMPTS = 2
 MIN_APPROVAL_SCORE = 8.0
 
 
-class GLM-4.7-FlashUnavailableError(RuntimeError):
+class GLMUnavailableError(RuntimeError):
     """GLM-4.7-Flash remained unavailable after retrying transient API failures."""
 
 
@@ -134,7 +134,7 @@ def _send_message_with_retry(
                 raise
 
             if attempt == max_attempts - 1:
-                raise GLM-4.7-FlashUnavailableError(
+                raise GLMUnavailableError(
                     f"GLM-4.7-Flash remained unavailable after {max_attempts} attempts: {exc}"
                 ) from exc
 
@@ -1114,7 +1114,7 @@ def validate_and_repair(
                 config,
                 target_words,
             )
-        except GLM-4.7-FlashUnavailableError:
+        except GLMUnavailableError:
             # Infrastructure failure is not a scientific score. Stop safely
             # and let the next scheduled run retry the review.
             raise
@@ -1190,7 +1190,7 @@ def validate_and_repair(
                 target_words=target_words,
             )
 
-        except GLM-4.7-FlashUnavailableError:
+        except GLMUnavailableError:
             # Do not mislabel a GLM-4.7-Flash outage as a failed script repair.
             raise
 
