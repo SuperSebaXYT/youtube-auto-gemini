@@ -159,8 +159,7 @@ def _client():
     """
 
     if not is_available():
-        provider = os.environ.get("AI_PROVIDER", "GLM").upper()
-        raise RuntimeError(f"{provider} API key is missing.")
+        raise RuntimeError("ZAI_TEXT_API_KEY is missing; GLM-4.7-Flash cannot run the Quality Gate.")
 
     return get_client()
 
