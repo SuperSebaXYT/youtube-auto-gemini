@@ -128,7 +128,8 @@ def generate_kids_video(
             ass_path = tmp / "captions.ass"
             _write_ass_subtitles(chunks, ass_path, width, height, font_size, portrait)
             escaped_ass_path = str(ass_path).replace("\\", "\\\\").replace(":", "\\:")
-            vf_chain = f"subtitles='{escaped_ass_path}'"
+            font_dir = str(Path.home() / ".local" / "share" / "fonts").replace(":", r"\:")
+            vf_chain = f"subtitles='{escaped_ass_path}':fontsdir='{font_dir}'"
 
         # 4. Burn captions on top (if any) and mux the narration audio in.
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
