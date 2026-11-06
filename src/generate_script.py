@@ -414,6 +414,15 @@ Score each candidate from 0-100 using this rubric:
 Subtract points for generic facts, slow setup, weak visuals, narrow appeal,
 or a premise similar to underperforming videos. Accuracy is mandatory.
 Do not invent species, behavior, abilities, statistics, or discoveries.
+Every topic must describe a real, well-documented animal behavior or
+adaptation that you are highly confident exists. Prefer familiar facts
+supported by standard zoology references over a novel mechanism you cannot
+verify from reliable knowledge. Do not use fabricated technical labels,
+guaranteed predator escapes, or claims of being invisible, invincible, or
+"impregnable." If uncertain about a candidate's mechanism, omit it and
+choose a simpler established fact. Analytics may guide the storytelling
+pattern, but never use performance patterns as evidence that a biological
+claim is true.
 No astronomy, space, NASA, or unrelated science.
 
 Treat every "AVOID" instruction in the performance data as a HARD BAN.
