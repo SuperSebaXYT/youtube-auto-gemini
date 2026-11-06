@@ -892,7 +892,9 @@ def _extract_audit_frames(clip_path: Path, frame_dir: Path) -> list[Path]:
         raise RuntimeError("Downloaded clip has an invalid duration.")
 
     frames = []
-    for index, fraction in enumerate((0.10, 0.30, 0.50, 0.70, 0.90)):
+    # Three evenly spaced frames are enough for a first-pass audit.
+    # This cuts image upload and vision inference cost by 40%.
+    for index, fraction in enumerate((0.15, 0.50, 0.85)):
         timestamp = min(max(0.05, duration * fraction), max(0.05, duration - 0.05))
         frame_path = frame_dir / f"frame_{index}.jpg"
 
@@ -996,7 +998,7 @@ Return ONLY valid JSON:
         audit_results = []
         for image_batch in image_batches:
             response = None
-            max_vision_attempts = 5
+            max_vision_attempts = 3
             for attempt in range(1, max_vision_attempts + 1):
                 try:
                     response = generate_vision(prompt, image_batch)
@@ -1015,7 +1017,7 @@ Return ONLY valid JSON:
                     )
                     if not retryable or attempt >= max_vision_attempts:
                         raise
-                    delay = min(4 * (2 ** (attempt - 1)), 30)
+                    delay = min(3 * (2 ** (attempt - 1)), 8)
                     print(
                         f"WARNING: GLM-4.6V-Flash temporary API error "
                         f"(attempt {attempt}/{max_vision_attempts}); "
@@ -1103,11 +1105,12 @@ def fetch_clips_for_shots(
     downloaded = []
     used_video_ids = set()
 
-    # Pexels allows up to 80 results per page. Fetch every page reported
-    # by the API for each species-specific query; do not impose a local
-    # candidate/page limit. Vision QA will inspect candidates until a valid
-    # clip is found, or until the complete returned result pool is exhausted.
+    # Bound search work per shot. One action-specific page and one
+    # exact-species fallback page provide up to 160 candidates without
+    # crawling every Pexels page (which previously caused very long runs).
+    # QA still checks candidates in order and only replaces rejected shots.
     pexels_per_page = 80
+    max_search_modes = 2
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1167,8 +1170,10 @@ def fetch_clips_for_shots(
             for candidate_query in aliases
             if candidate_query.strip().lower() != query.lower()
         )
-        # Bound API usage while still searching several alternate phrasings.
-        search_modes = search_modes[:5]
+        # Keep the highest-value searches: exact narrated action first,
+        # then exact species fallback. Avoid spending minutes paging through
+        # near-duplicate stock search results.
+        search_modes = search_modes[:max_search_modes]
 
         candidates_by_id = {}
         search_result_counts = {}
