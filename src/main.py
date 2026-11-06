@@ -227,11 +227,6 @@ def run(
             f"Voice: {voice}"
         )
 
-        print(
-            f"Script ({len(script_text.split())} words):\n"
-            f"{script_text}\n"
-        )
-
         # -----------------------------------------------------
         # EDITORIAL PASS
         # -----------------------------------------------------
@@ -291,6 +286,11 @@ def run(
                     "Final Quality Gate rejected the edited script. "
                     "TTS and publishing are blocked."
                 )
+
+        print(
+            f"Final script ({len(script_text.split())} words):\n"
+            f"{script_text}\n"
+        )
 
         # -----------------------------------------------------
         # 2. TTS
