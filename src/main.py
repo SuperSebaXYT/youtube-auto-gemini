@@ -214,41 +214,6 @@ def run(
         language = result["language"]
         voice = result["voice"]
 
-        # -----------------------------------------------------
-        # QUALITY GATE
-        # -----------------------------------------------------
-
-        if not is_kids_channel:
-
-            target_words = int(
-                (
-                    config["short_length_seconds"]
-                    if is_short
-                    else config["video_length_seconds"]
-                )
-                * 2.2
-            )
-
-            script_text, quality_review = validate_and_repair(
-                topic=topic,
-                script=script_text,
-                config=config,
-                target_words=target_words,
-            )
-
-            result["script"] = script_text
-
-            print(
-                f"Quality score: "
-                f"{quality_review.get('score', 0):.1f}/10"
-            )
-
-            if not quality_review.get("approved"):
-                raise RuntimeError(
-                    "Quality Gate rejected the script "
-                    "after all repair attempts."
-                )
-
         print(f"Topic: {topic}")
 
         if is_kids_channel:
@@ -293,6 +258,39 @@ def run(
             extra_tags = edit_result["extra_tags"]
             extra_hashtags = edit_result["extra_hashtags"]
             thumbnail_override_text = edit_result["thumbnail_text"]
+
+        # -----------------------------------------------------
+        # FINAL QUALITY GATE
+        # -----------------------------------------------------
+        # Run after the editorial agents because they can rewrite the
+        # opening sentence and body. Nothing may reach TTS unless the
+        # exact final narration has passed the scientific review.
+
+        if not is_kids_channel:
+
+            target_words = int(
+                config["short_length_seconds"] * 2.2
+            )
+
+            script_text, quality_review = validate_and_repair(
+                topic=topic,
+                script=script_text,
+                config=config,
+                target_words=target_words,
+            )
+
+            result["script"] = script_text
+
+            print(
+                f"Final Quality score: "
+                f"{quality_review.get('score', 0):.1f}/10"
+            )
+
+            if not quality_review.get("approved"):
+                raise RuntimeError(
+                    "Final Quality Gate rejected the edited script. "
+                    "TTS and publishing are blocked."
+                )
 
         # -----------------------------------------------------
         # 2. TTS
