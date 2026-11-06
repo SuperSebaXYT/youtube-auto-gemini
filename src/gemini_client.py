@@ -7,6 +7,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,8 +17,44 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
-GROQ_MODEL = "qwen/qwen3.8-27b"
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_OUTPUT_WINDOW_SECONDS = 60.0
+GROQ_OUTPUT_BUDGET_PER_MINUTE = 900
+GROQ_TEXT_OUTPUT_CAP = 450
+GROQ_VISION_OUTPUT_CAP = 180
+
+# Reserve completion capacity across every Groq call in this process. Groq
+# accounts for the requested completion budget against its output-token rate.
+_GROQ_OUTPUT_EVENTS = deque()
+_GROQ_OUTPUT_LOCK = threading.Lock()
+
+
+def _reserve_groq_output_budget(token_budget: int) -> None:
+    token_budget = max(1, min(int(token_budget), GROQ_TEXT_OUTPUT_CAP))
+    while True:
+        with _GROQ_OUTPUT_LOCK:
+            now = time.monotonic()
+            while (
+                _GROQ_OUTPUT_EVENTS
+                and now - _GROQ_OUTPUT_EVENTS[0][0] >= GROQ_OUTPUT_WINDOW_SECONDS
+            ):
+                _GROQ_OUTPUT_EVENTS.popleft()
+
+            used = sum(tokens for _, tokens in _GROQ_OUTPUT_EVENTS)
+            if used + token_budget <= GROQ_OUTPUT_BUDGET_PER_MINUTE:
+                _GROQ_OUTPUT_EVENTS.append((now, token_budget))
+                return
+
+            oldest_at = _GROQ_OUTPUT_EVENTS[0][0]
+            delay = max(0.1, GROQ_OUTPUT_WINDOW_SECONDS - (now - oldest_at) + 0.1)
+
+        print(
+            f"Groq output-token budget reached; waiting {delay:.1f}s "
+                       "before the next request."
+        )
+        time.sleep(delay)
 GROQ_USER_AGENT = (
     "CosmicCurious/1.0 "
     "(GitHub Actions; https://github.com/SuperSebaXYT/youtube-auto-gemini)"
@@ -28,7 +67,7 @@ def _provider() -> str:
 
 def _model(model: str | None = None) -> str:
     if _provider() in {"groq"}:
-        return os.environ.get("GROQ_MODEL") or os.environ.get("AI_MODEL") or model or GROQ_MODEL
+        return os.environ.get("GROQ_TEXT_MODEL") or os.environ.get("GROQ_MODEL") or os.environ.get("AI_MODEL") or model or GROQ_MODEL
     return model or GEMINI_MODEL
 
 
@@ -199,8 +238,12 @@ def generate_vision(
             })
         return _groq_request(
             [{"role": "user", "content": content}],
-            max_output_tokens=1200,
-            model=model,
+            max_output_tokens=GROQ_VISION_OUTPUT_CAP,
+            model=(
+                model
+                or os.environ.get("GROQ_VISION_MODEL")
+                or GROQ_VISION_MODEL
+            ),
         )
 
     client = get_client()
