@@ -1,7 +1,7 @@
 """
-OpenCode Zen text client adapter for Cosmic Curious.
+OpenCode CLI text adapter for Cosmic Curious.
 
-Text generation uses a free-model fallback chain:
+Text generation uses the official OpenCode CLI with a free-model fallback chain.
 1. DeepSeek V4.1 Flash Free
 2. GLM-5.3-Flash Free
 3. Nemotron 3.5 Super VL Free
@@ -16,7 +16,6 @@ import json
 import subprocess
 from types import SimpleNamespace
 
-OPENCODE_BASE_URL = "https://opencode.ai/inference/openai/v1"
 TEXT_MODELS = (
     "deepseek-v4.1-flash-free",
     "glm-5.3-flash-free",
@@ -35,7 +34,7 @@ def is_vision_available() -> bool:
     return bool(os.environ.get("ZAI_VISION_API_KEY"))
 
 
-def _openai_client(api_key: str, base_url: str = OPENCODE_BASE_URL):
+def _openai_client(api_key: str, base_url: str):
     try:
         from openai import OpenAI
     except ImportError as exc:
