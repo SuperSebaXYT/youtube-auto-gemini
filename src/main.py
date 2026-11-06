@@ -138,6 +138,9 @@ def run(
     groq_model = config.get("groq_model")
     if groq_model:
         os.environ["GROQ_MODEL"] = str(groq_model)
+    groq_vision_model = config.get("groq_vision_model")
+    if groq_vision_model:
+        os.environ["GROQ_VISION_MODEL"] = str(groq_vision_model)
 
 
     # Long-form is globally disabled. Reject manual/default invocations
