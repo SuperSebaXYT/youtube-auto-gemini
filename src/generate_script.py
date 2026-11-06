@@ -239,7 +239,7 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
-    if os.environ.get("AI_PROVIDER", "gemini").lower() == "openrouter":
+    if os.environ.get("AI_PROVIDER", "gemini").lower() in {"openrouter", "grok", "xai"}:
         return client.chats.create(
             max_output_tokens=max_output_tokens
         ).send_message(prompt)
