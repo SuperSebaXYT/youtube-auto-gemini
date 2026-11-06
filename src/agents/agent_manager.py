@@ -314,7 +314,7 @@ def run_daily_brain(channel_id: str) -> dict:
     print("\n" + "=" * 70)
     print(f"WINNER: {winner}")
     print(f"BRAIN REPORT SAVED: {report_path}")
-    print("AI DAILY BRAIN COMPLETE — 5 Gemini batch calls maximum")
+    print("AI DAILY BRAIN COMPLETE — 5 OpenCode batch calls maximum")
     print("=" * 70)
 
     return report
