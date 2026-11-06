@@ -37,7 +37,7 @@ except ImportError:
 from src.gemini_client import get_client, is_available
 
 
-TEXT_MODEL = "glm-4.7-flash"
+TEXT_MODEL = "deepseek-v4.1-flash-free"
 TOKENS_PER_WORD = 2.2
 MIN_OUTPUT_TOKENS = 512
 TOKEN_SAFETY_MARGIN = 200
