@@ -12,9 +12,8 @@ Ordering matters:
    but as a cheap extra safeguard we reject a rewrite whose word count
    swings wildly from the original (a garbled/degenerate rewrite is far
    more likely to have a wrong word count than a genuine pacing fix).
-   We deliberately do NOT re-run the full quality_gate science audit on
-   the rewrite (that's a second expensive Gemini call per video) --
-   this is a documented tradeoff, not an oversight.
+   The main pipeline runs a final quality_gate audit after this entire
+   editorial pass, so any rewritten hook/body is checked before TTS.
 2. Hook pass runs second, on the (possibly retention-updated) script --
    replaces just the opening sentence with the highest-scored hook,
    leaving the rest of the script body untouched.
