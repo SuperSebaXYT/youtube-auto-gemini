@@ -24,11 +24,9 @@ GROQ_OUTPUT_WINDOW_SECONDS = 60.0
 GROQ_OUTPUT_BUDGET_PER_MINUTE = 900
 GROQ_INPUT_BUDGET_PER_MINUTE = 6500
 GROQ_COMBINED_BUDGET_PER_MINUTE = 7500
-GROQ_TEXT_OUTPUT_CAP = 450
+GROQ_TEXT_OUTPUT_CAP = 900
 GROQ_VISION_OUTPUT_CAP = 180
 
-# Approximate Groq's rolling per-minute input/output budgets. Reserve before
-# each call so the pipeline spaces requests instead of repeatedly receiving 429.
 _GROQ_TOKEN_EVENTS = deque()
 _GROQ_OUTPUT_LOCK = threading.Lock()
 
@@ -40,8 +38,7 @@ def _estimate_groq_input_tokens(messages) -> int:
         content = message.get("content", "")
         if isinstance(content, str):
             text_characters += len(content)
-            continue
-        if isinstance(content, list):
+        elif isinstance(content, list):
             for part in content:
                 if not isinstance(part, dict):
                     continue
@@ -49,13 +46,13 @@ def _estimate_groq_input_tokens(messages) -> int:
                     text_characters += len(str(part.get("text", "")))
                 elif part.get("type") == "image_url":
                     image_count += 1
-    # Base64 image data is deliberately not counted as text.
     return max(1, (text_characters + 3) // 4 + image_count * 1024)
 
 
-def _reserve_groq_budget(messages, output_tokens: int) -> None:
+def _reserve_groq_budget(messages, output_tokens: int, model: str) -> None:
     input_tokens = _estimate_groq_input_tokens(messages)
     output_tokens = max(1, int(output_tokens))
+    is_gpt_oss = model.startswith("openai/gpt-oss")
     while True:
         with _GROQ_OUTPUT_LOCK:
             now = time.monotonic()
@@ -65,25 +62,39 @@ def _reserve_groq_budget(messages, output_tokens: int) -> None:
             ):
                 _GROQ_TOKEN_EVENTS.popleft()
 
-            input_used = sum(event[1] for event in _GROQ_TOKEN_EVENTS)
-            output_used = sum(event[2] for event in _GROQ_TOKEN_EVENTS)
+            model_events = [
+                event for event in _GROQ_TOKEN_EVENTS
+                if event[1] == model
+            ]
+            input_used = sum(event[2] for event in model_events)
+            output_used = sum(event[3] for event in model_events)
             combined_used = input_used + output_used
-            fits = (
-                input_used + input_tokens <= GROQ_INPUT_BUDGET_PER_MINUTE
-                and output_used + output_tokens <= GROQ_OUTPUT_BUDGET_PER_MINUTE
-                and combined_used + input_tokens + output_tokens
+
+            if is_gpt_oss:
+                fits = (
+                    combined_used + input_tokens + output_tokens
                     <= GROQ_COMBINED_BUDGET_PER_MINUTE
-            )
+                )
+            else:
+                fits = (
+                    input_used + input_tokens <= GROQ_INPUT_BUDGET_PER_MINUTE
+                    and output_used + output_tokens <= GROQ_OUTPUT_BUDGET_PER_MINUTE
+                    and combined_used + input_tokens + output_tokens
+                    <= GROQ_COMBINED_BUDGET_PER_MINUTE
+                )
+
             if fits:
-                _GROQ_TOKEN_EVENTS.append((now, input_tokens, output_tokens))
+                _GROQ_TOKEN_EVENTS.append(
+                    (now, model, input_tokens, output_tokens)
+                )
                 return
 
-            oldest_at = _GROQ_TOKEN_EVENTS[0][0]
+            oldest_at = model_events[0][0]
             delay = max(0.1, GROQ_OUTPUT_WINDOW_SECONDS - (now - oldest_at) + 0.1)
 
         print(
-            f"Groq token budget reached; waiting {delay:.1f}s "
-            "before the next request."
+            f"Groq token budget reached for {model}; "
+            f"waiting {delay:.1f}s before the next request."
         )
         time.sleep(delay)
 GROQ_USER_AGENT = (
@@ -108,7 +119,12 @@ def is_available() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
-def _groq_request(messages, max_output_tokens: int | None, model: str | None = None):
+def _groq_request(
+    messages,
+    max_output_tokens: int | None,
+    model: str | None = None,
+    json_mode: bool = False,
+):
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not set")
@@ -136,8 +152,10 @@ def _groq_request(messages, max_output_tokens: int | None, model: str | None = N
         body["include_reasoning"] = False
     elif selected_model.startswith("qwen/qwen3.8"):
         body["reasoning_effort"] = "none"
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
 
-    _reserve_groq_budget(messages, completion_budget)
+    _reserve_groq_budget(messages, completion_budget, selected_model)
 
     request = Request(
         GROQ_URL,
@@ -192,18 +210,33 @@ def _groq_request(messages, max_output_tokens: int | None, model: str | None = N
 
 
 class _GroqChat:
-    def __init__(self, model: str | None = None, max_output_tokens: int | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+        response_format=None,
+    ):
         self.model = model
         self.max_output_tokens = max_output_tokens
+        self.response_format = response_format
         self.messages = []
 
     def send_message(self, prompt):
         self.messages.append({"role": "user", "content": prompt})
         try:
+            json_mode = bool(self.response_format) or any(
+                marker in str(prompt).lower()
+                for marker in (
+                    "return only valid json",
+                    "return only this json shape",
+                    "return only json",
+                )
+            )
             response = _groq_request(
                 self.messages,
                 self.max_output_tokens,
                 self.model,
+                json_mode=json_mode,
             )
         except Exception:
             self.messages.pop()
@@ -215,10 +248,22 @@ class _GroqChat:
 
 
 class _GroqChats:
-    def create(self, model: str | None = None, config=None, max_output_tokens=None):
+    def create(
+        self,
+        model: str | None = None,
+        config=None,
+        max_output_tokens=None,
+        response_format=None,
+    ):
         if max_output_tokens is None and config is not None:
             max_output_tokens = getattr(config, "max_output_tokens", None)
-        return _GroqChat(model=model, max_output_tokens=max_output_tokens)
+        if response_format is None and config is not None:
+            response_format = getattr(config, "response_format", None)
+        return _GroqChat(
+            model=model,
+            max_output_tokens=max_output_tokens,
+            response_format=response_format,
+        )
 
 
 class _GroqClient:
@@ -243,6 +288,7 @@ def generate(
     prompt: str,
     max_output_tokens: int | None = None,
     model: str = GEMINI_MODEL,
+    json_mode: bool = False,
 ) -> str:
     """Generate text using the provider selected by AI_PROVIDER."""
     client = get_client()
@@ -250,12 +296,16 @@ def generate(
         response = client.chats.create(
             model=_model(model),
             max_output_tokens=max_output_tokens,
+            response_format=(
+                {"type": "json_object"} if json_mode else None
+            ),
         ).send_message(prompt)
     else:
         from google.genai import types
         if max_output_tokens:
             config = types.GenerateContentConfig(
-                max_output_tokens=max_output_tokens
+                max_output_tokens=max_output_tokens,
+                response_mime_type="application/json" if json_mode else None,
             )
             chat = client.chats.create(model=model, config=config)
         else:
