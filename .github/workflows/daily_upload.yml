@@ -48,6 +48,11 @@ jobs:
             -o ~/.local/share/fonts/Chewy-Regular.ttf \
             https://github.com/google/fonts/raw/main/apache/chewy/Chewy-Regular.ttf
 
+      - name: Install OpenCode CLI
+        run: |
+          npm install --global @opencode/cli
+          opencode --version
+
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
