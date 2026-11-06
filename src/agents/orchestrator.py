@@ -9,14 +9,13 @@ scale later.
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from typing import Any
 
 from dotenv import load_dotenv
 
-from src.gemini_client import GROQ_TEXT_OUTPUT_CAP, generate
+from src.gemini_client import generate
 
 load_dotenv()
 
@@ -169,14 +168,9 @@ def generate_json(
 ) -> Any:
     """Generate and parse JSON through the shared gateway."""
 
-    is_groq = os.environ.get("AI_PROVIDER", "gemini").strip().lower() == "groq"
-    budget = (
-        min(int(max_output_tokens), GROQ_TEXT_OUTPUT_CAP)
-        if is_groq
-        else max_output_tokens
-    )
+    budget = max_output_tokens
     last_error = None
-    max_attempts = 2 if is_groq else 3
+    max_attempts = 3
 
     for attempt in range(max_attempts):
         try:
@@ -194,8 +188,7 @@ def generate_json(
             if attempt >= max_attempts - 1:
                 break
 
-            if not is_groq:
-                budget = int(budget * 1.6)
+            budget = int(budget * 1.6)
 
             print(
                 "AI Gateway: JSON parse failed; retrying "
