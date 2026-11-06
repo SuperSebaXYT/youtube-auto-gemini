@@ -18,7 +18,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -35,6 +35,10 @@ STATE_DIR = ROOT / "state"
 ENABLE_SHORTS = True
 
 ENABLE_LONGFORM = False
+
+MAX_SLOT_ATTEMPTS_PER_DAY = 2
+SLOT_RETRY_COOLDOWN = timedelta(hours=1)
+OPENROUTER_RATE_LIMIT_PATH = STATE_DIR / "openrouter_rate_limit.json"
 
 
 def _time_to_minutes(time_str: str) -> int:
@@ -69,6 +73,57 @@ def _load_schedule_state(channel_id: str, today: str) -> dict:
         "date": today,
         "done_slots": [],
     }
+
+
+def _slot_attempt_allowed(state: dict, slot_id: str, now: datetime) -> bool:
+    attempts = state.get("slot_attempts", {}).get(slot_id, {})
+    count = int(attempts.get("count", 0)) if isinstance(attempts, dict) else 0
+    if count >= MAX_SLOT_ATTEMPTS_PER_DAY:
+        print(
+            f"Skipping {slot_id}: maximum daily attempt count "
+            f"({MAX_SLOT_ATTEMPTS_PER_DAY}) reached."
+        )
+        return False
+
+    last_attempt = attempts.get("last_attempt_utc") if isinstance(attempts, dict) else None
+    if last_attempt:
+        try:
+            last_at = datetime.fromisoformat(last_attempt)
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=timezone.utc)
+            if now - last_at < SLOT_RETRY_COOLDOWN:
+                retry_at = last_at + SLOT_RETRY_COOLDOWN
+                print(
+                    f"Skipping {slot_id}: retry cooldown active until "
+                    f"{retry_at.strftime('%H:%M')} UTC."
+                )
+                return False
+        except (TypeError, ValueError):
+            pass
+    return True
+
+
+def _record_slot_attempt(channel_id: str, state: dict, slot_id: str, now: datetime) -> None:
+    attempts = state.setdefault("slot_attempts", {})
+    entry = attempts.setdefault(slot_id, {"count": 0})
+    entry["count"] = int(entry.get("count", 0)) + 1
+    entry["last_attempt_utc"] = now.isoformat()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _state_path(channel_id).write_text(json.dumps(state, indent=2))
+
+
+def _openrouter_cooldown(now: datetime):
+    try:
+        reset_at = datetime.fromisoformat(
+            json.loads(OPENROUTER_RATE_LIMIT_PATH.read_text(encoding="utf-8"))["reset_at"]
+        )
+        if reset_at.tzinfo is None:
+            reset_at = reset_at.replace(tzinfo=timezone.utc)
+        if now < reset_at:
+            return reset_at
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
 
 
 def _mark_slot_done(
@@ -206,6 +261,7 @@ def main():
     enabled = _enabled_channel_ids()
 
     ran_any = False
+    failed_any = False
 
     for config_path in sorted(
         channels_dir.glob("*.yaml")
@@ -239,6 +295,15 @@ def main():
             # ------------------------------------------------
             # LOAD STATE
             # ------------------------------------------------
+
+            if config.get("ai_provider") == "openrouter":
+                reset_at = _openrouter_cooldown(now)
+                if reset_at:
+                    print(
+                        "OpenRouter free daily limit is active until "
+                        f"{reset_at.isoformat()}; skipping {channel_id}."
+                    )
+                    continue
 
             state = _load_schedule_state(
                 channel_id,
@@ -324,6 +389,11 @@ def main():
                             )
                         )
 
+            jobs_due = [
+                job for job in jobs_due
+                if _slot_attempt_allowed(state, job[0], now)
+            ]
+
             # =================================================
             # RUN ONLY ONE DUE JOB
             # =================================================
@@ -367,6 +437,13 @@ def main():
                 if is_short:
                     cmd.append("--short")
 
+                _record_slot_attempt(
+                    channel_id,
+                    state,
+                    slot_id,
+                    now,
+                )
+
                 result = subprocess.run(
                     cmd
                 )
@@ -376,6 +453,7 @@ def main():
                 # ------------------------------------------------
 
                 if result.returncode != 0:
+                    failed_any = True
 
                     print(
                         f"WARNING: {channel_id} "
@@ -426,6 +504,9 @@ def main():
             f"{now.strftime('%H:%M')} UTC. "
             f"Nothing to do."
         )
+
+    if failed_any:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
