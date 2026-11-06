@@ -36,6 +36,84 @@ def is_available() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
+def _gemini_fallback_request(messages, max_output_tokens: int | None):
+    """Replay an OpenRouter request through Gemini when OpenRouter is unavailable."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set; no AI fallback is available")
+
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    contents = []
+
+    for message in messages:
+        role = "model" if message.get("role") == "assistant" else "user"
+        raw_content = message.get("content", "")
+        parts = []
+
+        if isinstance(raw_content, str):
+            if raw_content:
+                parts.append(types.Part.from_text(text=raw_content))
+        elif isinstance(raw_content, list):
+            for item in raw_content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
+                    text = item.get("text", "")
+                    if text:
+                        parts.append(types.Part.from_text(text=text))
+                elif item.get("type") == "image_url":
+                    image_url = item.get("image_url", {}).get("url", "")
+                    if image_url.startswith("data:") and "," in image_url:
+                        header, encoded = image_url.split(",", 1)
+                        mime_type = header[5:].split(";", 1)[0]
+                        parts.append(types.Part.from_bytes(
+                            data=base64.b64decode(encoded),
+                            mime_type=mime_type,
+                        ))
+
+        if parts:
+            contents.append(types.Content(role=role, parts=parts))
+
+    if not contents:
+        raise RuntimeError("No usable prompt content for Gemini fallback")
+
+    config = None
+    if max_output_tokens:
+        config = types.GenerateContentConfig(max_output_tokens=max_output_tokens)
+
+    return client.models.generate_content(
+        model=os.environ.get("GEMINI_FALLBACK_MODEL", GEMINI_MODEL),
+        contents=contents,
+        config=config,
+    )
+
+
+def _openrouter_request_with_fallback(messages, max_output_tokens: int | None, model: str | None = None):
+    try:
+        return _openrouter_request(messages, max_output_tokens, model)
+    except RuntimeError as openrouter_error:
+        if not os.environ.get("GEMINI_API_KEY"):
+            raise
+
+        print("[AI] OpenRouter failed; retrying the request through Gemini fallback.")
+        try:
+            response = _gemini_fallback_request(messages, max_output_tokens)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "OpenRouter failed and Gemini fallback also failed: "
+                f"{fallback_error}"
+            ) from fallback_error
+
+        if not getattr(response, "text", None):
+            raise RuntimeError(
+                "OpenRouter failed and Gemini fallback returned an empty response."
+            ) from openrouter_error
+        return response
+
+
 def _openrouter_request(messages, max_output_tokens: int | None, model: str | None = None):
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -105,7 +183,7 @@ class _OpenRouterChat:
     def send_message(self, prompt):
         self.messages.append({"role": "user", "content": prompt})
         try:
-            response = _openrouter_request(
+            response = _openrouter_request_with_fallback(
                 self.messages,
                 self.max_output_tokens,
                 self.model,
@@ -189,7 +267,7 @@ def generate_vision(
                     "url": f"data:{mime_type};base64,{encoded}"
                 },
             })
-        return _openrouter_request(
+        return _openrouter_request_with_fallback(
             [{"role": "user", "content": content}],
             max_output_tokens=1200,
             model=model,
