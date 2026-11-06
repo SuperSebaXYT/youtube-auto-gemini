@@ -53,6 +53,19 @@ def _reserve_groq_budget(messages, output_tokens: int, model: str) -> None:
     input_tokens = _estimate_groq_input_tokens(messages)
     output_tokens = max(1, int(output_tokens))
     is_gpt_oss = model.startswith("openai/gpt-oss")
+    single_request_limit = (
+        GROQ_COMBINED_BUDGET_PER_MINUTE
+        if is_gpt_oss
+        else min(
+            GROQ_INPUT_BUDGET_PER_MINUTE,
+            GROQ_COMBINED_BUDGET_PER_MINUTE - output_tokens,
+        )
+    )
+    if input_tokens > single_request_limit:
+        raise RuntimeError(
+            f"Groq prompt is too large for the configured per-minute budget "
+            f"({input_tokens} estimated input tokens)."
+        )
     while True:
         with _GROQ_OUTPUT_LOCK:
             now = time.monotonic()
@@ -89,6 +102,10 @@ def _reserve_groq_budget(messages, output_tokens: int, model: str) -> None:
                 )
                 return
 
+            if not model_events:
+                raise RuntimeError(
+                    "Groq request exceeds the configured per-minute token budget."
+                )
             oldest_at = model_events[0][0]
             delay = max(0.1, GROQ_OUTPUT_WINDOW_SECONDS - (now - oldest_at) + 0.1)
 
