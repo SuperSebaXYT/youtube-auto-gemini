@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import os
+import json
+import subprocess
 from types import SimpleNamespace
 
 OPENCODE_BASE_URL = "https://opencode.ai/inference/openai/v1"
@@ -44,32 +46,84 @@ def _openai_client(api_key: str, base_url: str = OPENCODE_BASE_URL):
 
 
 def _request_with_fallback(kwargs: dict):
+    """Run free OpenCode models through the official OpenCode CLI.
+
+    OpenCode intentionally blocks free-tier model requests from external
+    API clients. The CLI is the supported route for these free models.
+    """
     api_key = os.environ.get("OPENCODE_API_KEY")
     if not api_key:
         raise RuntimeError("OPENCODE_API_KEY is not set.")
 
+    messages = kwargs.get("messages") or []
+    prompt_parts = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("content") is not None:
+            prompt_parts.append(str(message["content"]))
+    prompt = "\n\n".join(prompt_parts).strip()
+    if not prompt:
+        raise RuntimeError("OpenCode request has no text prompt.")
+
     last_error = None
     for model in TEXT_MODELS:
+        command = [
+            "opencode", "run", "--standalone", "--format", "json",
+            "--model", f"opencode/{model}",
+            "--title", "Cosmic Curious AI generation",
+            prompt,
+        ]
         try:
-            request = dict(kwargs)
-            request["model"] = model
-            response = _openai_client(api_key).chat.completions.create(**request)
-            content = (response.choices[0].message.content or "").strip()
-            if not content:
-                raise RuntimeError(f"{model} returned an empty response.")
-            print(f"Text generation succeeded with OpenCode model: {model}")
-            return response
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=240,
+                check=False,
+            )
+            text_parts = []
+            event_errors = []
+            for line in result.stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "text":
+                    part = event.get("part") or {}
+                    value = part.get("text")
+                    if value:
+                        text_parts.append(str(value))
+                elif event.get("type") == "error":
+                    error = event.get("error") or {}
+                    data = error.get("data") or {}
+                    event_errors.append(data.get("message") or error.get("name") or str(error))
+
+            content = "\n".join(text_parts).strip()
+            if result.returncode != 0 or not content:
+                detail = "; ".join(event_errors) or result.stderr.strip() or result.stdout.strip()
+                raise RuntimeError(
+                    f"OpenCode CLI failed for {model} (exit {result.returncode}): "
+                    f"{detail[:1200] or 'no text event returned'}"
+                )
+
+            print(f"Text generation succeeded with OpenCode CLI model: {model}")
+            choice = SimpleNamespace(
+                message=SimpleNamespace(content=content),
+                finish_reason="stop",
+            )
+            return SimpleNamespace(choices=[choice])
+
         except Exception as exc:
             last_error = exc
             message = str(exc).lower()
-            # Authentication and permission failures affect the key, not a model.
-            if any(code in message for code in ("401", "403", "unauthorized", "invalid api key")):
+            if any(code in message for code in ("401", "403", "unauthorized", "invalid api key", "account is not activated")):
                 raise
-            print(f"WARNING: OpenCode model {model} failed; trying next fallback: {exc}")
+            print(f"WARNING: OpenCode CLI model {model} failed; trying next fallback: {exc}")
 
-    raise RuntimeError(
-        "All OpenCode free models failed: " + str(last_error)
-    ) from last_error
+    raise RuntimeError("All OpenCode CLI free models failed: " + str(last_error)) from last_error
 
 
 class _ChatSession:
