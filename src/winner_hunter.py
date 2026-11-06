@@ -578,9 +578,12 @@ def build_winner_context(channel_id: str) -> str | None:
         "TOP PERFORMERS — STUDY THEIR TOPIC ANGLE AND VIEWER PROMISE:",
     ]
 
-    for item in scored[:8]:
+    # Show the highest raw-view performers first so topic generation
+    # can directly favor subjects with demonstrated reach.
+    top_by_views = sorted(scored, key=lambda item: item["views"], reverse=True)[:8]
+    for item in top_by_views:
         lines.append(
-            f'- "{item["topic"]}" | score {item["performance_score"]:.0f}/100'
+            f'- "{item["topic"]}" | performance score {item["performance_score"]:.0f}/100'
             f" | {int(item['views']):,} views in reporting window"
             f" | {item['views_per_day']:.1f} views/day"
             f" | engaged rate {item['engaged_rate']:.1f}%"
@@ -654,7 +657,8 @@ def build_winner_context(channel_id: str) -> str | None:
         "",
         "STRATEGY RULES FOR THE NEXT TOPIC:",
         "- Choose topics from the full channel evidence; do not impose arbitrary animal-family bans.",
-        "- Find a NEW animal and a NEW specific behavior or ability.",
+        "- Reuse species, animal families, and subject areas when their videos have high views or strong view velocity.",
+        "- Prefer a proven popular subject with a distinct factual angle over an untested subject chosen only for novelty.",
         "- Prefer a clear, instantly understandable visual event.",
         "- Prefer a strong curiosity gap: an unusual action, surprising",
         "  consequence, hidden mechanism, or unexpected survival trick.",
@@ -674,7 +678,9 @@ def build_winner_context(channel_id: str) -> str | None:
         "- Avoid generic 'amazing facts' and topics needing long setup.",
         "- Favor subjects that can be explained accurately in 35-55 seconds.",
         "- Never sacrifice factual accuracy for a more clickable claim.",
-        "- Never copy an existing title or near-duplicate a used topic.",
+        "- Do not copy an exact title or repeat the same video premise.",
+        "- Reusing a species or proven popular subject is allowed and encouraged when Analytics supports it.",
+        "- Popularity and demonstrated view performance outrank novelty.",
         "",
         "A topic is promising only when it has: a 1-second visual hook,",
         "a specific factual payoff, visual footage potential, broad curiosity,",
