@@ -22,37 +22,68 @@ GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_OUTPUT_WINDOW_SECONDS = 60.0
 GROQ_OUTPUT_BUDGET_PER_MINUTE = 900
+GROQ_INPUT_BUDGET_PER_MINUTE = 6500
+GROQ_COMBINED_BUDGET_PER_MINUTE = 7500
 GROQ_TEXT_OUTPUT_CAP = 450
 GROQ_VISION_OUTPUT_CAP = 180
 
-# Reserve completion capacity across every Groq call in this process. Groq
-# accounts for the requested completion budget against its output-token rate.
-_GROQ_OUTPUT_EVENTS = deque()
+# Approximate Groq's rolling per-minute input/output budgets. Reserve before
+# each call so the pipeline spaces requests instead of repeatedly receiving 429.
+_GROQ_TOKEN_EVENTS = deque()
 _GROQ_OUTPUT_LOCK = threading.Lock()
 
 
-def _reserve_groq_output_budget(token_budget: int) -> None:
-    token_budget = max(1, min(int(token_budget), GROQ_TEXT_OUTPUT_CAP))
+def _estimate_groq_input_tokens(messages) -> int:
+    text_characters = 0
+    image_count = 0
+    for message in messages:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            text_characters += len(content)
+            continue
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text_characters += len(str(part.get("text", "")))
+                elif part.get("type") == "image_url":
+                    image_count += 1
+    # Base64 image data is deliberately not counted as text.
+    return max(1, (text_characters + 3) // 4 + image_count * 1024)
+
+
+def _reserve_groq_budget(messages, output_tokens: int) -> None:
+    input_tokens = _estimate_groq_input_tokens(messages)
+    output_tokens = max(1, int(output_tokens))
     while True:
         with _GROQ_OUTPUT_LOCK:
             now = time.monotonic()
             while (
-                _GROQ_OUTPUT_EVENTS
-                and now - _GROQ_OUTPUT_EVENTS[0][0] >= GROQ_OUTPUT_WINDOW_SECONDS
+                _GROQ_TOKEN_EVENTS
+                and now - _GROQ_TOKEN_EVENTS[0][0] >= GROQ_OUTPUT_WINDOW_SECONDS
             ):
-                _GROQ_OUTPUT_EVENTS.popleft()
+                _GROQ_TOKEN_EVENTS.popleft()
 
-            used = sum(tokens for _, tokens in _GROQ_OUTPUT_EVENTS)
-            if used + token_budget <= GROQ_OUTPUT_BUDGET_PER_MINUTE:
-                _GROQ_OUTPUT_EVENTS.append((now, token_budget))
+            input_used = sum(event[1] for event in _GROQ_TOKEN_EVENTS)
+            output_used = sum(event[2] for event in _GROQ_TOKEN_EVENTS)
+            combined_used = input_used + output_used
+            fits = (
+                input_used + input_tokens <= GROQ_INPUT_BUDGET_PER_MINUTE
+                and output_used + output_tokens <= GROQ_OUTPUT_BUDGET_PER_MINUTE
+                and combined_used + input_tokens + output_tokens
+                    <= GROQ_COMBINED_BUDGET_PER_MINUTE
+            )
+            if fits:
+                _GROQ_TOKEN_EVENTS.append((now, input_tokens, output_tokens))
                 return
 
-            oldest_at = _GROQ_OUTPUT_EVENTS[0][0]
+            oldest_at = _GROQ_TOKEN_EVENTS[0][0]
             delay = max(0.1, GROQ_OUTPUT_WINDOW_SECONDS - (now - oldest_at) + 0.1)
 
         print(
-            f"Groq output-token budget reached; waiting {delay:.1f}s "
-                       "before the next request."
+            f"Groq token budget reached; waiting {delay:.1f}s "
+            "before the next request."
         )
         time.sleep(delay)
 GROQ_USER_AGENT = (
@@ -82,14 +113,31 @@ def _groq_request(messages, max_output_tokens: int | None, model: str | None = N
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not set")
 
+    selected_model = _model(model)
     body = {
-        "model": _model(model),
+        "model": selected_model,
         "messages": messages,
     }
-    # Groq's free tier has a low per-minute output-token budget. Keep
-    # individual generations bounded and leave room for subsequent QA calls.
-    requested_tokens = max_output_tokens if max_output_tokens else 700
-    body["max_completion_tokens"] = min(int(requested_tokens), 900)
+    is_vision = any(
+        isinstance(message.get("content"), list)
+        and any(
+            isinstance(part, dict) and part.get("type") == "image_url"
+            for part in message["content"]
+        )
+        for message in messages
+    )
+    output_cap = GROQ_VISION_OUTPUT_CAP if is_vision else GROQ_TEXT_OUTPUT_CAP
+    requested_tokens = max_output_tokens if max_output_tokens else output_cap
+    completion_budget = min(int(requested_tokens), output_cap)
+    body["max_completion_tokens"] = completion_budget
+
+    if selected_model.startswith("openai/gpt-oss"):
+        body["reasoning_effort"] = "low"
+        body["include_reasoning"] = False
+    elif selected_model.startswith("qwen/qwen3.8"):
+        body["reasoning_effort"] = "none"
+
+    _reserve_groq_budget(messages, completion_budget)
 
     request = Request(
         GROQ_URL,
