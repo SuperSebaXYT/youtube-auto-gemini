@@ -1081,7 +1081,6 @@ def fetch_clips_for_shots(
     shots: list,
     out_dir: str,
     orientation: str = "portrait",
-    max_candidates_per_shot: int = 20,
 ) -> list:
     """
     Fetch one verified clip per narration shot.
@@ -1105,11 +1104,11 @@ def fetch_clips_for_shots(
     downloaded = []
     used_video_ids = set()
 
-    # Pexels allows up to 80 results per page. Two pages across a small,
-    # species-specific query set gives us a much larger pool without resorting
-    # to unrelated wildlife searches.
+    # Pexels allows up to 80 results per page. Fetch every page reported
+    # by the API for each species-specific query; do not impose a local
+    # candidate/page limit. Vision QA will inspect candidates until a valid
+    # clip is found, or until the complete returned result pool is exhausted.
     pexels_per_page = 80
-    search_pages = (1, 2)
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1173,8 +1172,11 @@ def fetch_clips_for_shots(
         search_modes = search_modes[:5]
 
         candidates_by_id = {}
+        search_result_counts = {}
         for mode_index, (search_query, require_action) in enumerate(search_modes):
-            for page in search_pages:
+            page = 1
+            query_result_count = 0
+            while True:
                 try:
                     results = _search_pexels(
                         search_query,
@@ -1188,8 +1190,12 @@ def fetch_clips_for_shots(
                         f"WARNING: Pexels search failed for shot {index + 1} "
                         f"query={search_query!r} page={page}: {exc}"
                     )
-                    continue
+                    break
 
+                if not results:
+                    break
+
+                query_result_count += len(results)
                 for video in results:
                     video_id = video.get("id")
                     if not video_id or video_id in used_video_ids:
@@ -1206,6 +1212,13 @@ def fetch_clips_for_shots(
                     # searches, retain the stricter action requirement.
                     if existing is None or (require_action and not existing["require_action"]):
                         candidates_by_id[video_id] = candidate
+
+                # A short page means Pexels has no further results for this query.
+                if len(results) < pexels_per_page:
+                    break
+                page += 1
+
+            search_result_counts[search_query] = query_result_count
 
         # Do not let one noisy Pexels query monopolize the verification
         # budget. Action-specific searches often return semantically
@@ -1241,15 +1254,15 @@ def fetch_clips_for_shots(
 
         print(
             f"Visual shot {index + 1}: Pexels returned "
-            f"{len(candidates_by_id)} unique candidates across "
-            f"{len(search_modes)} species-specific queries."
+            f"{sum(search_result_counts.values())} results "
+            f"({len(candidates_by_id)} unique videos) across "
+            f"{len(search_modes)} species-specific queries. "
+            f"Per-query counts: {search_result_counts}"
         )
 
         accepted_path = None
         checked = 0
         for video_id, candidate in ranked:
-            if checked >= max_candidates_per_shot:
-                break
             checked += 1
 
             candidate_path = out_path / (
@@ -1294,9 +1307,9 @@ def fetch_clips_for_shots(
         if accepted_path is None:
             raise RuntimeError(
                 f"No verified footage of the required animal for shot "
-                f"{index + 1}: {animal}. Checked {checked} candidates from "
-                f"{len(search_modes)} species-specific Pexels queries "
-                f"(up to {pexels_per_page} results per page); upload blocked."
+                f"{index + 1}: {animal}. Checked all {checked} unique "
+                f"candidates returned by {len(search_modes)} species-specific "
+                f"Pexels queries; upload blocked."
             )
 
         downloaded.append(str(accepted_path))
