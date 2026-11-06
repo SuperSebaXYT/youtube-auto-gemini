@@ -120,8 +120,8 @@ class _Models:
                 if data:
                     images.append((data, mime))
         if images:
-            return generate_vision("\\n".join(prompt_parts), images)
-        return generate_response("\\n".join(prompt_parts))
+            return generate_vision("\n".join(prompt_parts), images)
+        return generate_response("\n".join(prompt_parts))
 
 
 class OpenCodeTextClient:
