@@ -177,7 +177,18 @@ def _fresh_candidate(
     if "\n" in topic:
         topic = topic.splitlines()[0].strip()
 
-    if _looks_like_duplicate_topic(topic, get_used_topics(channel_id)):
+    used_topics = get_used_topics(channel_id)
+    if source == "Winner Hunter":
+        normalized = _normalize_topic(topic)
+        duplicate = any(
+            normalized == _normalize_topic(old)
+            or SequenceMatcher(None, normalized, _normalize_topic(old)).ratio() >= 0.94
+            for old in used_topics
+        )
+    else:
+        duplicate = _looks_like_duplicate_topic(topic, used_topics)
+
+    if duplicate:
         print(f"{source} generated a duplicate topic; rejecting: {topic}")
         return None
 
@@ -471,12 +482,13 @@ Generate exactly {WINNER_HUNTER_MAX_CANDIDATES} distinct candidate topics for {c
 CHANNEL PERFORMANCE DATA:
 {winner_context}
 
-PREVIOUSLY USED TOPICS. Do not repeat these or their underlying subjects:
+PREVIOUSLY USED TOPICS. Avoid exact repeats and near-identical video premises,
+but DO NOT reject a topic just because the same animal or subject appeared before:
 {used_sample}
 
-Generate topics ONLY by applying patterns found in the channel's actual
-YouTube Analytics. Analytics determines which storytelling patterns,
-animal subjects, hooks, and topic angles deserve another attempt.
+Use the channel's actual YouTube Analytics as the main evidence for topic choice.
+PRIORITY: topics, animals, hooks, and storytelling angles associated with the
+highest view counts and strongest view velocity on this channel.
 Do not invent performance evidence or claim that an unmeasured topic won.
 
 MISSION: choose topics with the best realistic chance of reaching
@@ -484,17 +496,20 @@ MISSION: choose topics with the best realistic chance of reaching
 Optimize for global reach, first-second hook, retention, shareability,
 and broad worldwide appeal. Do not target or exclude any country.
 
-Reuse successful CONTENT PATTERNS, not the same subjects. Find different
-animals, species, behaviors, abilities, adaptations, and survival methods.
-Avoid the promise, pacing, and subject types behind weak performers.
+REUSE WHAT WORKS. You MAY reuse popular species, animal families, subject
+areas, and proven topic formats when Analytics supports them. A proven subject
+is an advantage, not a reason for rejection. Create a distinct specific angle
+or factual hook rather than copying an existing title or exact premise.
+Do not favor novelty over demonstrated popularity. Avoid only the core
+promises and formats that consistently underperform.
 
 Score each candidate from 0-100 using this rubric:
-- 25 points: immediate visual hook understandable in the first second
-- 20 points: curiosity gap and surprising but clear premise
-- 20 points: broad worldwide appeal and cross-cultural clarity
-- 15 points: strong factual payoff for a 35-55 second Short
-- 10 points: visual footage potential for a faceless animal Short
-- 10 points: novelty and distance from previous channel topics
+- 35 points: evidence that this subject/angle matches high-view channel winners
+- 20 points: immediate visual hook understandable in the first second
+- 15 points: strong retention and engaged-view patterns in related winners
+- 15 points: broad worldwide appeal and cross-cultural clarity
+- 10 points: strong factual payoff and visual footage potential
+- 5 points: distinctness from exact previously used video premises
 
 Accuracy is mandatory. Do not invent species, behavior, abilities,
 statistics, or discoveries. Every topic must describe a real,
@@ -530,8 +545,19 @@ Sort from highest score to lowest score. No explanations.
                 if not candidate:
                     continue
 
-                if _looks_like_duplicate_topic(candidate, comparison_set):
-                    print(f"Winner Hunter duplicate rejected: {candidate}")
+                # Reusing a proven animal or subject is allowed. Reject only
+                # exact/near-identical wording, not a different angle on a
+                # species that has already performed well.
+                normalized_candidate = _normalize_topic(candidate)
+                is_near_exact_duplicate = any(
+                    normalized_candidate == _normalize_topic(old)
+                    or SequenceMatcher(
+                        None, normalized_candidate, _normalize_topic(old)
+                    ).ratio() >= 0.94
+                    for old in comparison_set
+                )
+                if is_near_exact_duplicate:
+                    print(f"Winner Hunter exact/near-exact duplicate rejected: {candidate}")
                     continue
 
                 generated.append((candidate_score, candidate))
