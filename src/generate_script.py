@@ -584,8 +584,16 @@ Sort from highest score to lowest score. No explanations.
     used_topics = get_used_topics(channel_id)
     while candidates:
         selected_score, selected = candidates.pop(0)
-        if _looks_like_duplicate_topic(selected, used_topics):
-            print(f"Winner Hunter cached duplicate rejected: {selected}")
+        normalized_selected = _normalize_topic(selected)
+        is_near_exact_duplicate = any(
+            normalized_selected == _normalize_topic(old)
+            or SequenceMatcher(
+                None, normalized_selected, _normalize_topic(old)
+            ).ratio() >= 0.94
+            for old in used_topics
+        )
+        if is_near_exact_duplicate:
+            print(f"Winner Hunter cached exact/near-exact duplicate rejected: {selected}")
             continue
 
         # Persist the remaining ranked batch before returning the topic.
