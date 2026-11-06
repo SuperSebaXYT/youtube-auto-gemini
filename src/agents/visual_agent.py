@@ -182,9 +182,21 @@ Return only:
         candidate_by_id = {item["candidate_id"]: item for item in candidates}
         if len(set(ids)) != shot_count or any(cid not in candidate_by_id for cid in ids):
             return False
+        required_fields = (
+            "slot",
+            "sentence",
+            "animal",
+            "action",
+            "visual",
+            "search_query",
+        )
         for shot in items:
             source = candidate_by_id[shot["selected_candidate_id"]]
             if source["slot"] != shot["slot"]:
+                return False
+            # The selector may choose a candidate, but it must not silently
+            # rewrite its species, action, narration segment or search query.
+            if any(shot.get(key) != source.get(key) for key in required_fields):
                 return False
         return True
 
