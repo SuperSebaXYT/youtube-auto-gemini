@@ -132,12 +132,12 @@ def run(
 
     config = load_channel_config(channel_id)
 
-    # Select the model provider per channel. Cosmic Curious uses OpenRouter;
+    # Select the model provider per channel. Cosmic Curious uses xAI Grok;
     # other channels keep Gemini unless their own config says otherwise.
     os.environ["AI_PROVIDER"] = str(config.get("ai_provider", "gemini")).lower()
-    openrouter_model = config.get("openrouter_model")
-    if openrouter_model:
-        os.environ["OPENROUTER_MODEL"] = str(openrouter_model)
+    xai_model = config.get("xai_model")
+    if xai_model:
+        os.environ["XAI_MODEL"] = str(xai_model)
 
 
     # Long-form is globally disabled. Reject manual/default invocations
