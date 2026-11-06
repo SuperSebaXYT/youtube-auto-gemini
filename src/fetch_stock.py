@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import requests
@@ -995,7 +996,37 @@ Return ONLY valid JSON:
 
         audit_results = []
         for image_batch in image_batches:
-            response = generate_vision(prompt, image_batch)
+            response = None
+            max_vision_attempts = 5
+            for attempt in range(1, max_vision_attempts + 1):
+                try:
+                    response = generate_vision(prompt, image_batch)
+                    break
+                except Exception as exc:
+                    error_text = str(exc)
+                    retryable = any(
+                        marker in error_text
+                        for marker in (
+                            "503", "UNAVAILABLE",
+                            "429", "RESOURCE_EXHAUSTED",
+                            "500", "INTERNAL",
+                            "502", "504",
+                            "temporarily unavailable",
+                        )
+                    )
+                    if not retryable or attempt >= max_vision_attempts:
+                        raise
+                    delay = min(4 * (2 ** (attempt - 1)), 30)
+                    print(
+                        f"WARNING: Gemini Vision temporary API error "
+                        f"(attempt {attempt}/{max_vision_attempts}); "
+                        f"retrying in {delay}s: {error_text[:250]}"
+                    )
+                    time.sleep(delay)
+
+            if response is None:
+                raise RuntimeError("Gemini Vision returned no response after retries.")
+
             raw = (getattr(response, "text", None) or "").strip()
             match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
             if not match:
