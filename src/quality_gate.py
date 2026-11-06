@@ -83,6 +83,11 @@ def _retry_after_seconds(exc) -> float | None:
 
 def _is_retryable_GLM_error(exc) -> bool:
     """Recognize transient GLM-4.7-Flash/API failures using status fields and message."""
+    if isinstance(exc, TimeoutError) or type(exc).__name__ in {
+        "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"
+    }:
+        return True
+
     retryable_codes = {408, 409, 429, 500, 502, 503, 504}
 
     for attribute in ("code", "status_code", "http_status"):
@@ -116,6 +121,10 @@ def _is_retryable_GLM_error(exc) -> bool:
             "DEADLINE_EXCEEDED",
             "SERVICE_UNAVAILABLE",
             "TOO_MANY_REQUESTS",
+            "TEMPORARILY OVERLOADED",
+            "REQUEST TIMED OUT",
+            "TIMED OUT",
+            "TIMEOUT",
         )
     )
 
