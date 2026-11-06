@@ -929,11 +929,10 @@ def _verify_clip_matches_shot(
     require_action: bool = True,
 ) -> tuple[bool, str]:
     """Use the configured vision model to verify downloaded video frames."""
-    from src.gemini_client import generate_vision, is_available
+    from src.gemini_client import generate_vision, is_vision_available
 
-    if not is_available():
-        provider = os.environ.get("AI_PROVIDER", "gemini").upper()
-        raise RuntimeError(f"{provider} API key is required for Cosmic Curious visual verification.")
+    if not is_vision_available():
+        raise RuntimeError("ZAI_VISION_API_KEY is required for Cosmic Curious visual verification.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
@@ -983,7 +982,7 @@ Return ONLY valid JSON:
             (frame_path.read_bytes(), "image/jpeg")
             for frame_path in frames
         ]
-        provider = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+        provider = "zai"
         if provider == "groq":
             # Groq's Qwen 3.8 vision endpoint accepts at most 3 images
             # per request. Audit all five sampled frames in two batches.
@@ -1018,14 +1017,14 @@ Return ONLY valid JSON:
                         raise
                     delay = min(4 * (2 ** (attempt - 1)), 30)
                     print(
-                        f"WARNING: Gemini Vision temporary API error "
+                        f"WARNING: GLM-4.6V-Flash temporary API error "
                         f"(attempt {attempt}/{max_vision_attempts}); "
                         f"retrying in {delay}s: {error_text[:250]}"
                     )
                     time.sleep(delay)
 
             if response is None:
-                raise RuntimeError("Gemini Vision returned no response after retries.")
+                raise RuntimeError("GLM-4.6V-Flash returned no response after retries.")
 
             raw = (getattr(response, "text", None) or "").strip()
             match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
