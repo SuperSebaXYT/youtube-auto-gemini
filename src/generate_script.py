@@ -809,12 +809,12 @@ def generate_script(
 
     if is_available():
         try:
-            generated = generate_with_gemini(
+            generated = generate_with_glm(
                 topic, config, length, language
             )
         except Exception as e:
             print(
-                f"WARNING: Gemini script generation failed ({e}); "
+                f"WARNING: GLM script generation failed ({e}); "
                 "using template fallback."
             )
 
@@ -1112,7 +1112,7 @@ def generate_kids_script(
 
     try:
         if is_available():
-            generated = generate_kids_script_with_gemini(
+            generated = generate_kids_script_with_glm(
                 topic,
                 config,
                 content_type,
