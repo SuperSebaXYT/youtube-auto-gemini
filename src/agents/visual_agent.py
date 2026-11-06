@@ -99,6 +99,12 @@ Return only:
             return False
         if set(ids) != set(range(1, candidate_count + 1)):
             return False
+        if not all(
+            isinstance(item.get(field), str) and item[field].strip()
+            for item in items
+            for field in ("sentence", "animal", "action", "visual", "search_query")
+        ):
+            return False
         return all(slots.count(slot) == 3 for slot in range(1, shot_count + 1))
 
     if not candidates_are_valid(candidates):
