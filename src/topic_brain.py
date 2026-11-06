@@ -20,7 +20,7 @@ V2 improvements:
 - Penalizes outdated or superseded scientific claims
 - Penalizes topics whose hook depends on a misleading premise
 
-GLM-4.7-Flash calls are routed through the centralized GLM_client.py
+GLM-4.7-Flash calls are routed through the centralized gemini_client.py
 so the project consistently uses the current Chat.send_message()
 flow instead of direct client.models.generate_content().
 """
@@ -30,7 +30,7 @@ import os
 import re
 from pathlib import Path
 
-from src.GLM_client import generate, is_available
+from src.gemini_client import generate, is_available
 
 TEXT_MODEL = "glm-4.7-flash"
 
