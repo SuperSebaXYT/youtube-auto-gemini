@@ -36,7 +36,7 @@ except ImportError:
 from src.gemini_client import get_client, is_available
 
 
-GEMINI_MODEL = "gemini-3.5-flash-lite"
+TEXT_MODEL = "glm-4.7-flash"
 TOKENS_PER_WORD = 2.2
 MIN_OUTPUT_TOKENS = 512
 TOKEN_SAFETY_MARGIN = 200
@@ -239,31 +239,23 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
-    try:
-        from google.genai import types
+    """Generate once through the shared GLM text client with an output budget."""
+    from types import SimpleNamespace
 
-        generation_config = types.GenerateContentConfig(
-            max_output_tokens=max_output_tokens
-        )
-        chat = client.chats.create(
-            model=GEMINI_MODEL,
-            config=generation_config,
-        )
-        response = chat.send_message(prompt)
-
-    except Exception as first_error:
-        print(
-            "WARNING: Gemini configured call failed "
-            f"({first_error}); retrying without explicit config."
-        )
-        chat = client.chats.create(model=GEMINI_MODEL)
-        response = chat.send_message(prompt)
+    generation_config = SimpleNamespace(
+        max_output_tokens=max_output_tokens
+    )
+    chat = client.chats.create(
+        model=TEXT_MODEL,
+        config=generation_config,
+    )
+    response = chat.send_message(prompt)
 
     try:
         finish_reason = response.candidates[0].finish_reason
         if finish_reason and "MAX_TOKENS" in str(finish_reason).upper():
             print(
-                "WARNING: Gemini response hit "
+                "WARNING: GLM-4.7-Flash response hit "
                 f"max_output_tokens={max_output_tokens}."
             )
     except Exception:
@@ -353,7 +345,7 @@ def _generate_winner_inspired_topic(
         return None
 
     if not is_available():
-        print("Gemini unavailable; Winner Hunter cannot generate candidates.")
+        print("GLM text API unavailable; Winner Hunter cannot generate candidates.")
         return None
 
     try:
@@ -533,7 +525,7 @@ def pick_next_topic(channel_id: str, config: dict) -> str:
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for channel '{channel_id}'. "
-            "Add seed topics or enable Gemini topic generation."
+            "Add seed topics or enable GLM topic generation."
         )
 
     topic = random.choice(unused)
@@ -583,7 +575,7 @@ def _parse_titled_response(text: str, fallback_topic: str) -> dict:
     }
 
 
-def generate_with_gemini(
+def generate_with_glm(
     topic: str,
     config: dict,
     length_seconds: int,
@@ -698,7 +690,7 @@ SCRIPT:
         )
 
     if not result["script"]:
-        raise ValueError("Gemini returned an empty script.")
+        raise ValueError("GLM returned an empty script.")
 
     return result
 
@@ -976,7 +968,7 @@ def pick_next_kids_topic(
     return topic
 
 
-def generate_kids_script_with_gemini(
+def generate_kids_script_with_glm(
     topic: str,
     config: dict,
     content_type: str,
@@ -1134,7 +1126,7 @@ def generate_kids_script(
             )
     except Exception as e:
         print(
-            f"WARNING: kids Gemini generation failed ({e}); "
+            f"WARNING: kids GLM text generation failed ({e}); "
             "using template fallback."
         )
         generated = generate_kids_template(
