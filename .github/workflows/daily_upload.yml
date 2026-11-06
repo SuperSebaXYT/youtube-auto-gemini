@@ -29,11 +29,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Set up FFmpeg
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        with:
-          ffmpeg-version: release
-          linking-type: static
+      - name: Install static FFmpeg
+        run: |
+          archive="$RUNNER_TEMP/ffmpeg-static.tar.xz"
+          install_dir="$RUNNER_TEMP/ffmpeg-static"
+          mkdir -p "$install_dir"
+
+          curl --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 15 --max-time 180 \
+            -o "$archive" \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+
+          tar -xJf "$archive" -C "$install_dir"
+          ffmpeg_bin="$(find "$install_dir" -type f -name ffmpeg -print -quit)"
+          ffprobe_bin="$(find "$install_dir" -type f -name ffprobe -print -quit)"
+          test -n "$ffmpeg_bin"
+          test -n "$ffprobe_bin"
+          sudo install -m 0755 "$ffmpeg_bin" /usr/local/bin/ffmpeg
+          sudo install -m 0755 "$ffprobe_bin" /usr/local/bin/ffprobe
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
 
       - name: Download Chewy font
         run: |
