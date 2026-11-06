@@ -919,7 +919,7 @@ def repair_script(
     # to independently fix the listed problems without inventing science.
     if not corrections:
         corrections = (
-            "- Correct every factual problem identified by the fact-check.\\n"
+            "- Correct every factual problem identified by the fact-check.\n"
             "- If a claim depends on conditions, use scientifically "
             "appropriate conditional wording."
         )
