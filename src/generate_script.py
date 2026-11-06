@@ -18,6 +18,7 @@ import os
 import json
 import random
 import re
+import time
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,7 +250,36 @@ def _generate_with_token_budget(
         model=TEXT_MODEL,
         config=generation_config,
     )
-    response = chat.send_message(prompt)
+    response = None
+    for attempt in range(3):
+        try:
+            response = chat.send_message(prompt)
+            break
+        except Exception as exc:
+            message = str(exc).upper()
+            retryable = any(
+                marker in message
+                for marker in (
+                    "429", "500", "502", "503", "504",
+                    "TOO MANY REQUESTS", "TEMPORARILY OVERLOADED",
+                    "SERVICE UNAVAILABLE", "TIMED OUT", "TIMEOUT",
+                    "DEADLINE EXCEEDED",
+                )
+            ) or isinstance(exc, TimeoutError)
+
+            if not retryable or attempt == 2:
+                raise
+
+            delay = (2 ** (attempt + 1)) + random.uniform(0.2, 0.9)
+            print(
+                "WARNING: GLM script/topic request temporarily failed; "
+                f"retrying in {delay:.1f}s "
+                f"(attempt {attempt + 2}/3): {exc}"
+            )
+            time.sleep(delay)
+
+    if response is None:
+        raise RuntimeError("GLM returned no response after retrying.")
 
     try:
         finish_reason = response.candidates[0].finish_reason
@@ -814,9 +844,13 @@ def generate_script(
             )
         except Exception as e:
             print(
-                f"WARNING: GLM script generation failed ({e}); "
-                "using template fallback."
+                f"ERROR: GLM script generation failed after retries ({e}). "
+                "Refusing to send a generic template to the Quality Gate."
             )
+            raise RuntimeError(
+                "GLM script generation failed; this run is stopped before "
+                "quality review and video rendering."
+            ) from e
 
     if not generated:
         generated = generate_with_template(
