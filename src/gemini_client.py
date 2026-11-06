@@ -146,7 +146,7 @@ def _groq_request(
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not set")
 
-    selected_model = _model(model)
+    selected_model = model or _model()
     body = {
         "model": selected_model,
         "messages": messages,
