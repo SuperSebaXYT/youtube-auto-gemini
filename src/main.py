@@ -132,8 +132,8 @@ def run(
 
     config = load_channel_config(channel_id)
 
-    # Cosmic Curious uses Gemini for every AI stage.
-    os.environ["AI_PROVIDER"] = "gemini"
+    # Cosmic Curious text generation uses the OpenCode adapter.
+    os.environ["AI_PROVIDER"] = "opencode"
 
 
     # Long-form is globally disabled. Reject manual/default invocations
