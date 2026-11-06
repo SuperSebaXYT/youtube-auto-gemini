@@ -132,8 +132,7 @@ def run(
 
     config = load_channel_config(channel_id)
 
-    # Cosmic Curious runs on Gemini. Keep provider selection explicit so
-    # leftover Groq environment variables cannot switch this pipeline.
+    # Cosmic Curious uses Gemini for every AI stage.
     os.environ["AI_PROVIDER"] = "gemini"
 
 
