@@ -31,7 +31,7 @@ V3 improvements:
 - Outdated terminology and scientific interpretations are checked
 - Misleading hooks are checked
 - Repair instructions explicitly address each failed claim
-- Uses Chat.send_message() for Gemini text generation
+- Uses Chat.send_message() for GLM-4.7-Flash text generation
 """
 
 import json
@@ -42,11 +42,11 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from src.gemini_client import get_client, is_available
+from src.GLM_client import get_client, is_available
 
 
 # Keep this synchronized with the rest of the project.
-GEMINI_MODEL = "gemini-3.5-flash-lite"
+TEXT_MODEL = "glm-4.7-flash"
 
 # Initial check + 2 repairs = maximum 3 checks.
 MAX_REPAIR_ATTEMPTS = 2
@@ -55,8 +55,8 @@ MAX_REPAIR_ATTEMPTS = 2
 MIN_APPROVAL_SCORE = 8.0
 
 
-class GeminiUnavailableError(RuntimeError):
-    """Gemini remained unavailable after retrying transient API failures."""
+class GLM-4.7-FlashUnavailableError(RuntimeError):
+    """GLM-4.7-Flash remained unavailable after retrying transient API failures."""
 
 
 def _retry_after_seconds(exc) -> float | None:
@@ -81,8 +81,8 @@ def _retry_after_seconds(exc) -> float | None:
             return None
 
 
-def _is_retryable_gemini_error(exc) -> bool:
-    """Recognize transient Gemini/API failures using status fields and message."""
+def _is_retryable_GLM_error(exc) -> bool:
+    """Recognize transient GLM-4.7-Flash/API failures using status fields and message."""
     retryable_codes = {408, 409, 429, 500, 502, 503, 504}
 
     for attribute in ("code", "status_code", "http_status"):
@@ -125,17 +125,17 @@ def _send_message_with_retry(
     prompt: str,
     max_attempts: int = 5,
 ):
-    """Retry transient Gemini failures with backoff, jitter and Retry-After."""
+    """Retry transient GLM-4.7-Flash failures with backoff, jitter and Retry-After."""
     for attempt in range(max_attempts):
         try:
             return chat.send_message(prompt)
         except Exception as exc:
-            if not _is_retryable_gemini_error(exc):
+            if not _is_retryable_GLM_error(exc):
                 raise
 
             if attempt == max_attempts - 1:
-                raise GeminiUnavailableError(
-                    f"Gemini remained unavailable after {max_attempts} attempts: {exc}"
+                raise GLM-4.7-FlashUnavailableError(
+                    f"GLM-4.7-Flash remained unavailable after {max_attempts} attempts: {exc}"
                 ) from exc
 
             backoff = min(30.0, 2.0 * (2 ** attempt))
@@ -146,7 +146,7 @@ def _send_message_with_retry(
                 delay = max(delay, backoff)
 
             print(
-                "WARNING: Gemini transient API failure; "
+                "WARNING: GLM-4.7-Flash transient API failure; "
                 f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/{max_attempts}): {exc}"
             )
@@ -155,11 +155,11 @@ def _send_message_with_retry(
 
 def _client():
     """
-    Create a Gemini client.
+    Create a GLM-4.7-Flash client.
     """
 
     if not is_available():
-        provider = os.environ.get("AI_PROVIDER", "gemini").upper()
+        provider = os.environ.get("AI_PROVIDER", "GLM").upper()
         raise RuntimeError(f"{provider} API key is missing.")
 
     return get_client()
@@ -167,7 +167,7 @@ def _client():
 
 def _chat(client):
     """
-    Create a Gemini chat session.
+    Create a GLM-4.7-Flash chat session.
 
     IMPORTANT:
     Use Chat.send_message() rather than client.models.generate_content()
@@ -175,18 +175,18 @@ def _chat(client):
     """
 
     return client.chats.create(
-        model=GEMINI_MODEL
+        model=TEXT_MODEL
     )
 
 
 def _clean_json(text: str) -> dict:
     """
-    Extract JSON even if Gemini accidentally wraps it in markdown fences.
+    Extract JSON even if GLM-4.7-Flash accidentally wraps it in markdown fences.
     """
 
     if not text:
         raise ValueError(
-            "Gemini returned an empty response."
+            "GLM-4.7-Flash returned an empty response."
         )
 
     text = text.strip()
@@ -211,7 +211,7 @@ def _clean_json(text: str) -> dict:
 
     if start == -1 or end == -1:
         raise ValueError(
-            f"Gemini did not return JSON: {text[:500]}"
+            f"GLM-4.7-Flash did not return JSON: {text[:500]}"
         )
 
     try:
@@ -220,7 +220,7 @@ def _clean_json(text: str) -> dict:
         )
     except json.JSONDecodeError as e:
         raise ValueError(
-            f"Gemini returned invalid JSON: {e}. "
+            f"GLM-4.7-Flash returned invalid JSON: {e}. "
             f"Response: {text[:500]}"
         ) from e
 
@@ -240,7 +240,7 @@ def _word_count(text: str) -> int:
 
 def _basic_script_checks(script: str, target_words: int = 150) -> list:
     """
-    Cheap deterministic checks before spending another Gemini call.
+    Cheap deterministic checks before spending another GLM-4.7-Flash call.
 
     IMPORTANT:
     This function intentionally does NOT automatically reject normal
@@ -254,7 +254,7 @@ def _basic_script_checks(script: str, target_words: int = 150) -> list:
 
     Those words can be scientifically correct in the right context.
 
-    Gemini performs the actual scientific certainty audit.
+    GLM-4.7-Flash performs the actual scientific certainty audit.
 
     Deterministic checks are reserved for obvious formatting/template
     problems.
@@ -387,7 +387,7 @@ def _basic_script_checks(script: str, target_words: int = 150) -> list:
     #
     # can be perfectly valid.
     #
-    # Gemini's claim-by-claim scientific audit below is responsible
+    # GLM-4.7-Flash's claim-by-claim scientific audit below is responsible
     # for determining whether certainty wording is actually wrong.
     # ------------------------------------------------------------
 
@@ -401,7 +401,7 @@ def check_script(
     target_words: int = 150,
 ) -> dict:
     """
-    Ask Gemini to perform a strict scientific/editorial audit.
+    Ask GLM-4.7-Flash to perform a strict scientific/editorial audit.
     """
 
     basic_problems = _basic_script_checks(
@@ -808,7 +808,7 @@ Do NOT invent facts in order to justify a rejection.
     )
 
     # ------------------------------------------------------------
-    # Normalize Gemini output.
+    # Normalize GLM-4.7-Flash output.
     # ------------------------------------------------------------
 
     if not isinstance(result, dict):
@@ -835,7 +835,7 @@ Do NOT invent facts in order to justify a rejection.
     # Add deterministic problems.
     #
     # These are hard failures because they are structural or editorial
-    # issues that Gemini should not override.
+    # issues that GLM-4.7-Flash should not override.
     # ------------------------------------------------------------
 
     if basic_problems:
@@ -915,7 +915,7 @@ def repair_script(
         )
     )
 
-    # If Gemini returned no corrections, explicitly tell the repair model
+    # If GLM-4.7-Flash returned no corrections, explicitly tell the repair model
     # to independently fix the listed problems without inventing science.
     if not corrections:
         corrections = (
@@ -926,7 +926,7 @@ def repair_script(
 
     # Add an explicit, concrete correction when the reviewer flags the
     # recurring whip-spider / pistol-shrimp taxonomy confusion. The generic
-    # repair prompt was allowing Gemini to preserve the misleading hook.
+    # repair prompt was allowing GLM-4.7-Flash to preserve the misleading hook.
     taxonomy_repair = ""
     combined_review = " ".join(
         str(item) for item in review.get("problems", [])
@@ -1046,10 +1046,10 @@ Return ONLY the spoken script.
 
     if not text:
         raise RuntimeError(
-            "Gemini returned an empty repair response."
+            "GLM-4.7-Flash returned an empty repair response."
         )
 
-    # Remove accidental markdown fences if Gemini ignores the instruction.
+    # Remove accidental markdown fences if GLM-4.7-Flash ignores the instruction.
     text = re.sub(
         r"^```(?:text)?\s*",
         "",
@@ -1114,7 +1114,7 @@ def validate_and_repair(
                 config,
                 target_words,
             )
-        except GeminiUnavailableError:
+        except GLM-4.7-FlashUnavailableError:
             # Infrastructure failure is not a scientific score. Stop safely
             # and let the next scheduled run retry the review.
             raise
@@ -1190,8 +1190,8 @@ def validate_and_repair(
                 target_words=target_words,
             )
 
-        except GeminiUnavailableError:
-            # Do not mislabel a Gemini outage as a failed script repair.
+        except GLM-4.7-FlashUnavailableError:
+            # Do not mislabel a GLM-4.7-Flash outage as a failed script repair.
             raise
 
         except Exception as e:
