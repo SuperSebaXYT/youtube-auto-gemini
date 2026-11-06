@@ -251,7 +251,7 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
-    """Generate once through the shared GLM text client with an output budget."""
+    """Generate once through the shared OpenCode text client with an output budget."""
     from types import SimpleNamespace
 
     generation_config = SimpleNamespace(
@@ -452,11 +452,11 @@ def _generate_winner_inspired_topic(
 
     if candidates is None:
         if not is_available():
-            print("GLM text API unavailable; Winner Hunter cannot generate candidates.")
+            print("OpenCode text API unavailable; Winner Hunter cannot generate candidates.")
             return None
 
         # Generate one Analytics-based batch per UTC day, then consume its
-        # ranked topics across the day's Shorts instead of making a new GLM
+        # ranked topics across the day's Shorts instead of making a new OpenCode
         # request for every upload slot.
         try:
             winner_context = build_winner_context(channel_id)
@@ -647,7 +647,7 @@ def pick_next_topic(channel_id: str, config: dict) -> str:
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for channel '{channel_id}'. "
-            "Add seed topics or enable GLM topic generation."
+            "Add seed topics or enable OpenCode topic generation."
         )
 
     topic = random.choice(unused)
@@ -697,7 +697,7 @@ def _parse_titled_response(text: str, fallback_topic: str) -> dict:
     }
 
 
-def generate_with_glm(
+def generate_with_opencode(
     topic: str,
     config: dict,
     length_seconds: int,
@@ -936,16 +936,16 @@ def generate_script(
 
     if is_available():
         try:
-            generated = generate_with_glm(
+            generated = generate_with_opencode(
                 topic, config, length, language
             )
         except Exception as e:
             print(
-                f"ERROR: GLM script generation failed after retries ({e}). "
+                f"ERROR: OpenCode script generation failed after retries ({e}). "
                 "Refusing to send a generic template to the Quality Gate."
             )
             raise RuntimeError(
-                "GLM script generation failed; this run is stopped before "
+                "OpenCode script generation failed; this run is stopped before "
                 "quality review and video rendering."
             ) from e
 
@@ -1090,7 +1090,7 @@ def pick_next_kids_topic(
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for kids content type "
-            f"'{content_type}'. Add seed topics or enable Gemini "
+            f"'{content_type}'. Add seed topics or enable OpenCode "
             "topic generation; refusing to recycle topics."
         )
 
@@ -1099,7 +1099,7 @@ def pick_next_kids_topic(
     return topic
 
 
-def generate_kids_script_with_glm(
+def generate_kids_script_with_opencode(
     topic: str,
     config: dict,
     content_type: str,
@@ -1243,7 +1243,7 @@ def generate_kids_script(
 
     try:
         if is_available():
-            generated = generate_kids_script_with_glm(
+            generated = generate_kids_script_with_opencode(
                 topic,
                 config,
                 content_type,
@@ -1257,7 +1257,7 @@ def generate_kids_script(
             )
     except Exception as e:
         print(
-            f"WARNING: kids GLM text generation failed ({e}); "
+            f"WARNING: kids OpenCode text generation failed ({e}); "
             "using template fallback."
         )
         generated = generate_kids_template(
