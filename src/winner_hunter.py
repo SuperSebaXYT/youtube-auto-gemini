@@ -512,6 +512,7 @@ def build_winner_context(channel_id: str) -> str | None:
         return None
 
     metric_keys = (
+        "views",
         "views_per_day",
         "engaged_rate",
         "retention",
@@ -524,14 +525,16 @@ def build_winner_context(channel_id: str) -> str | None:
         for key in metric_keys
     }
 
-    # Opening engagement and retention matter more than raw views alone.
+    # Reward both proven reach (views) and current momentum (views/day),
+    # while retaining engagement and retention as quality signals.
     weights = {
+        "views": 0.25,
         "views_per_day": 0.25,
-        "engaged_rate": 0.25,
-        "retention": 0.25,
-        "subs_per_1000_engaged": 0.10,
-        "shares_per_1000_engaged": 0.10,
-        "likes_per_1000_engaged": 0.05,
+        "engaged_rate": 0.20,
+        "retention": 0.15,
+        "subs_per_1000_engaged": 0.05,
+        "shares_per_1000_engaged": 0.07,
+        "likes_per_1000_engaged": 0.03,
     }
 
     for item in scored:
