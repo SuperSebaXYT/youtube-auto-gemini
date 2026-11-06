@@ -34,10 +34,10 @@ try:
 except ImportError:
     WINNER_HUNTER_AVAILABLE = False
 
-from src.gemini_client import get_client, is_available
+from src.gemini_client import get_client, is_available, TEXT_MODEL as DEFAULT_TEXT_MODEL
 
 
-TEXT_MODEL = "deepseek-v4.1-flash-free"
+TEXT_MODEL = DEFAULT_TEXT_MODEL
 TOKENS_PER_WORD = 2.2
 MIN_OUTPUT_TOKENS = 512
 TOKEN_SAFETY_MARGIN = 200
@@ -283,20 +283,20 @@ def _generate_with_token_budget(
 
             delay = (2 ** (attempt + 1)) + random.uniform(0.2, 0.9)
             print(
-                "WARNING: GLM script/topic request temporarily failed; "
+                "WARNING: OpenCode script/topic request temporarily failed; "
                 f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/3): {exc}"
             )
             time.sleep(delay)
 
     if response is None:
-        raise RuntimeError("GLM returned no response after retrying.")
+        raise RuntimeError("OpenCode returned no response after retrying.")
 
     try:
         finish_reason = response.candidates[0].finish_reason
         if finish_reason and "MAX_TOKENS" in str(finish_reason).upper():
             print(
-                "WARNING: GLM-4.7-Flash response hit "
+                "WARNING: OpenCode text model response hit "
                 f"max_output_tokens={max_output_tokens}."
             )
     except Exception:
@@ -812,7 +812,7 @@ SCRIPT:
         )
 
     if not result["script"]:
-        raise ValueError("GLM returned an empty script.")
+        raise ValueError("OpenCode returned an empty script.")
 
     return result
 
@@ -824,7 +824,7 @@ def generate_with_template(
     language: str,
 ) -> dict:
     """
-    Minimal fallback used when Gemini is unavailable.
+    Minimal fallback used when OpenCode is unavailable.
 
     This avoids pretending to know specific animal facts that were not
     generated or verified. The fallback is intentionally short.
