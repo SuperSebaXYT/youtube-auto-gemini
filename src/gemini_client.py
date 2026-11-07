@@ -1,166 +1,149 @@
 """
-Unified text and vision model gateway for Cosmic Curious.
+FreeInference-backed text and vision gateway for Cosmic Curious.
 
-Shared fallback order:
-1. DeepSeek V4.1 Flash Free (OpenCode) - primary
-2. GLM-5.3 Flash Free (OpenCode) - fallback 1
-3. Nemotron 3.5 Super VL Free (OpenCode) - fallback 2
+Text generation: DeepSeek V4 Flash.
+Visual QA: Qwen3.6-35B (vision-capable).
 """
 from __future__ import annotations
 
-import os
+import base64
 import json
-import re
-import subprocess
-import tempfile
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-MODEL_CHAIN = (
-    ("opencode", "deepseek-v4.1-flash-free"),
-    ("opencode", "glm-5.3-flash-free"),
-    ("opencode", "nemotron-3.5-super-vl-free"),
-)
-TEXT_MODEL = "deepseek-v4.1-flash-free"
+BASE_URL = os.environ.get("FREEINFERENCE_BASE_URL", "https://freeinference.org/v1").rstrip("/")
+TEXT_MODEL = "deepseek-v4-flash"
+VISION_MODEL = "qwen3.6-35b"
+USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "freeinference_usage.json"
+
+
+def _api_key() -> str:
+    key = os.environ.get("FREEINFERENCE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("FREEINFERENCE_API_KEY is not set.")
+    return key
 
 
 def is_available() -> bool:
-    return bool(os.environ.get("OPENCODE_API_KEY"))
+    return bool(os.environ.get("FREEINFERENCE_API_KEY", "").strip())
 
 
 def is_vision_available() -> bool:
-    """Compatibility check for callers; vision uses the same OpenCode model chain."""
     return is_available()
 
 
-def _openai_client(api_key: str, base_url: str):
+def _client():
     try:
         from openai import OpenAI
     except ImportError as exc:
         raise RuntimeError(
             "The openai package is required. Install dependencies from requirements.txt."
         ) from exc
-    return OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
+    return OpenAI(api_key=_api_key(), base_url=BASE_URL, timeout=120.0, max_retries=0)
 
 
-def _prompt_from_kwargs(kwargs: dict) -> str:
-    messages = kwargs.get("messages") or []
-    parts = []
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            parts.append(content)
-        elif isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(str(item.get("text") or ""))
-    prompt = "\n\n".join(parts).strip()
-    if kwargs.get("response_format", {}).get("type") == "json_object":
-        prompt += "\n\nReturn only one valid JSON object. Do not use markdown fences or add commentary."
-    if not prompt:
+def _record_usage(model: str, usage) -> None:
+    if usage is None:
+        print(f"FreeInference usage unavailable for {model}.")
+        return
+
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens))
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    try:
+        USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(USAGE_PATH.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            data = {}
+        if data.get("date") != today:
+            data = {"date": today, "requests": 0, "prompt_tokens": 0,
+                    "completion_tokens": 0, "total_tokens": 0, "by_model": {}}
+        data["requests"] = int(data.get("requests", 0)) + 1
+        data["prompt_tokens"] = int(data.get("prompt_tokens", 0)) + prompt_tokens
+        data["completion_tokens"] = int(data.get("completion_tokens", 0)) + completion_tokens
+        data["total_tokens"] = int(data.get("total_tokens", 0)) + total_tokens
+        model_data = data.setdefault("by_model", {}).setdefault(
+            model, {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
+        model_data["requests"] += 1
+        model_data["prompt_tokens"] += prompt_tokens
+        model_data["completion_tokens"] += completion_tokens
+        model_data["total_tokens"] += total_tokens
+        temporary = USAGE_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temporary.replace(USAGE_PATH)
+    except OSError as exc:
+        print(f"WARNING: could not persist FreeInference usage counters: {exc}")
+
+    print(
+        f"FreeInference usage [{model}]: input={prompt_tokens}, "
+        f"output={completion_tokens}, total={total_tokens} tokens."
+    )
+
+
+def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
+              json_mode: bool = False, images: list[tuple[bytes, str]] | None = None):
+    if not prompt.strip():
         raise RuntimeError("AI request has no text prompt.")
-    prompt = (
+
+    content = (
         "SYSTEM CONSTRAINT: Do not call or request tools, web search, browser, shell, "
-        "or external functions. Answer directly using the supplied prompt and context only.\\n\\n"
+        "or external functions. Answer directly using the supplied prompt and context only.\n\n"
         + prompt
     )
-    return prompt
+    if json_mode:
+        content += "\n\nReturn only one valid JSON object. Do not use markdown fences or commentary."
 
+    if images:
+        message_content = [{"type": "text", "text": content}]
+        for image_bytes, mime_type in images:
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            message_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+            })
+    else:
+        message_content = content
 
-def _run_opencode_model(model: str, prompt: str, image_paths: list[str] | None = None):
-    command = [
-        "opencode", "run", "--standalone", "--format", "json",
-        "--model", f"opencode/{model}",
-        "--title", "Cosmic Curious unified AI gateway",
-    ]
-    for image_path in image_paths or []:
-        command.extend(["--file", image_path])
-    command.append(prompt)
-    result = subprocess.run(
-        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, encoding="utf-8",
-        errors="replace", timeout=240, check=False,
+    kwargs = {
+        "model": model,
+        "messages": [{"role": "user", "content": message_content}],
+    }
+    if max_output_tokens:
+        kwargs["max_tokens"] = int(max_output_tokens)
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    response = _client().chat.completions.create(**kwargs)
+    _record_usage(model, getattr(response, "usage", None))
+    if not response.choices:
+        raise RuntimeError(f"FreeInference returned no choices for {model}.")
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError(f"FreeInference returned an empty response for {model}.")
+    return SimpleNamespace(
+        text=text,
+        choices=response.choices,
+        usage=getattr(response, "usage", None),
+        raw=response,
     )
-    text_parts, event_errors = [], []
-    for line in result.stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") == "text":
-            value = (event.get("part") or {}).get("text")
-            if value:
-                text_parts.append(str(value))
-        elif event.get("type") == "error":
-            error = event.get("error") or {}
-            data = error.get("data") or {}
-            event_errors.append(
-                f"{data.get('message') or error.get('name') or str(error)} "
-                f"(status={data.get('statusCode', 'unknown')})"
-            )
-    content = "\n".join(text_parts).strip()
-    if result.returncode != 0 or not content:
-        detail = "; ".join(event_errors) or result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(
-            f"OpenCode CLI failed for {model} (exit {result.returncode}): "
-            f"{detail[:1200] or 'no text event returned'}"
-        )
-    return content
-
-
 
 
 def _validate_json_output(content: str) -> None:
-    """Reject malformed or truncated JSON so the next fallback model is tried."""
     candidate = content.strip()
-    candidate = re.sub(r"^\\s*```(?:json)?\\s*", "", candidate, flags=re.IGNORECASE)
-    candidate = re.sub(r"\\s*```\\s*$", "", candidate)
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1]
+        if candidate.endswith("```"):
+            candidate = candidate[:-3].strip()
     start, end = candidate.find("{"), candidate.rfind("}")
     if start < 0 or end < start:
         raise ValueError("Model did not return a complete JSON object.")
     json.loads(candidate[start:end + 1])
-
-
-def _request_with_fallback(kwargs: dict, images: list[tuple[bytes, str]] | None = None):
-    """Run text and image requests through the same ordered model chain."""
-    if not os.environ.get("OPENCODE_API_KEY"):
-        raise RuntimeError("OPENCODE_API_KEY is not set.")
-    prompt = _prompt_from_kwargs(kwargs)
-    last_error = None
-    with tempfile.TemporaryDirectory(prefix="cosmic_ai_") as temp_dir:
-        image_paths = []
-        for index, (image_bytes, mime_type) in enumerate(images or []):
-            extension = ".png" if mime_type == "image/png" else ".jpg"
-            image_path = str(Path(temp_dir) / f"frame_{index + 1}{extension}")
-            with open(image_path, "wb") as image_file:
-                image_file.write(image_bytes)
-            image_paths.append(image_path)
-
-        for provider, model in MODEL_CHAIN:
-            try:
-                content = _run_opencode_model(model, prompt, image_paths)
-                if kwargs.get("response_format", {}).get("type") == "json_object":
-                    _validate_json_output(content)
-                print(f"AI generation succeeded with model: {model} ({provider})")
-                choice = SimpleNamespace(
-                    message=SimpleNamespace(content=content), finish_reason="stop"
-                )
-                return SimpleNamespace(choices=[choice])
-            except Exception as exc:
-                last_error = exc
-                message = str(exc).lower()
-                if any(code in message for code in (
-                    "401", "403", "unauthorized", "invalid api key",
-                    "account is not activated",
-                )):
-                    raise
-                print(
-                    f"WARNING: AI model {model} ({provider}) failed; "
-                    f"trying next fallback: {exc}"
-                )
-    raise RuntimeError("All unified AI fallback models failed: " + str(last_error)) from last_error
 
 
 class _ChatSession:
@@ -171,22 +154,19 @@ class _ChatSession:
 
     def send_message(self, prompt: str):
         max_tokens = getattr(self.config, "max_output_tokens", None)
-        response_format = None
-        if getattr(self.config, "response_mime_type", None) == "application/json":
-            response_format = {"type": "json_object"}
-        kwargs = {"messages": [{"role": "user", "content": str(prompt)}]}
+        json_mode = getattr(self.config, "response_mime_type", None) == "application/json"
         prompt_lower = str(prompt).lower()
         if "return only valid json" in prompt_lower or "return only one valid json object" in prompt_lower:
-            kwargs["response_format"] = {"type": "json_object"}
-        if max_tokens:
-            kwargs["max_tokens"] = int(max_tokens)
-        if response_format:
-            kwargs["response_format"] = response_format
-        response = _request_with_fallback(kwargs)
+            json_mode = True
+        response = _complete(
+            str(prompt), model=TEXT_MODEL, max_output_tokens=max_tokens, json_mode=json_mode
+        )
+        if json_mode:
+            _validate_json_output(response.text)
         return SimpleNamespace(
-            text=(response.choices[0].message.content or "").strip(),
+            text=response.text,
             candidates=[SimpleNamespace(finish_reason=response.choices[0].finish_reason)],
-            raw=response,
+            raw=response.raw,
         )
 
 
@@ -214,53 +194,49 @@ class _Models:
                 if data:
                     images.append((data, mime))
         if images:
-            return generate_vision("\n".join(prompt_parts), images)
+            response = generate_vision("\n".join(prompt_parts), images)
+            return SimpleNamespace(text=response.text, raw=response.raw)
         return generate_response("\n".join(prompt_parts))
 
 
-class OpenCodeTextClient:
+class FreeInferenceClient:
     def __init__(self):
-        if not is_available():
-            raise RuntimeError("OPENCODE_API_KEY is not set.")
+        _api_key()
         self.chats = _Chats(self)
         self.models = _Models(self)
 
 
+# Compatibility name: existing pipeline modules import get_client().
+OpenCodeTextClient = FreeInferenceClient
+
+
 def get_client():
-    return OpenCodeTextClient()
+    return FreeInferenceClient()
 
 
 def generate(prompt: str, max_output_tokens: int | None = None,
              model: str = TEXT_MODEL, json_mode: bool = False) -> str:
-    kwargs = {"messages": [{"role": "user", "content": prompt}]}
-    if max_output_tokens:
-        kwargs["max_tokens"] = int(max_output_tokens)
+    response = _complete(
+        prompt, model=TEXT_MODEL, max_output_tokens=max_output_tokens, json_mode=json_mode
+    )
     if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
-    response = _request_with_fallback(kwargs)
-    return (response.choices[0].message.content or "").strip()
+        _validate_json_output(response.text)
+    return response.text
 
 
 def generate_vision(prompt: str, images: list[tuple[bytes, str]], model: str | None = None):
     if not images:
         raise RuntimeError("Visual verification requires at least one image.")
-    response = _request_with_fallback(
-        {"messages": [{"role": "user", "content": prompt}]}, images=images
+    return _complete(
+        prompt, model=VISION_MODEL, max_output_tokens=1200, images=images
     )
-    text = (response.choices[0].message.content or "").strip()
-    if not text:
-        raise RuntimeError("All vision fallback models returned empty output.")
-    return SimpleNamespace(text=text, raw=response)
 
 
 def generate_response(prompt: str, max_output_tokens: int | None = None,
                       model: str = TEXT_MODEL):
-    kwargs = {"messages": [{"role": "user", "content": prompt}]}
-    if max_output_tokens:
-        kwargs["max_tokens"] = int(max_output_tokens)
-    response = _request_with_fallback(kwargs)
+    response = _complete(prompt, model=TEXT_MODEL, max_output_tokens=max_output_tokens)
     return SimpleNamespace(
-        text=(response.choices[0].message.content or "").strip(),
+        text=response.text,
         candidates=[SimpleNamespace(finish_reason=response.choices[0].finish_reason)],
-        raw=response,
+        raw=response.raw,
     )
