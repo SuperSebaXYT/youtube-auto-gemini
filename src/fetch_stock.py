@@ -1601,6 +1601,10 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 if new_candidate_count == 0:
                     time.sleep(5)
 
+        if accepted_path is not None:
+            for item in rejected_candidates:
+                item["path"].unlink(missing_ok=True)
+
         if accepted_path is None and rejected_candidates:
             if all(
                 str(item.get("qa_reason", "")).startswith("Visual QA error:")
