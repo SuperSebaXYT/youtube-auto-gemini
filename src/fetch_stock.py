@@ -1306,6 +1306,7 @@ def fetch_clips_for_shots(
 
             def submit_next_candidate():
                 """Submit the next unseen Pexels candidate, if available."""
+                nonlocal checked
                 for video_id, candidate in candidate_iter:
                     if video_id in attempted_video_ids:
                         continue
@@ -1392,11 +1393,10 @@ def fetch_clips_for_shots(
 
             finally:
                 if accepted_path is not None:
-                    # Stop queued work and clean up every downloaded candidate
-                    # that is not the accepted clip.
-                    for future, (_, _, candidate_path) in list(pending.items()):
+                    # Cancel work that has not started, then wait for running
+                    # downloads before deleting their temporary files.
+                    for future in pending:
                         future.cancel()
-                        candidate_path.unlink(missing_ok=True)
 
                 executor.shutdown(wait=True, cancel_futures=True)
 
