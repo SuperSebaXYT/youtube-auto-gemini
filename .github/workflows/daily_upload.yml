@@ -56,7 +56,7 @@ jobs:
           python -m compileall -q src
           python -m src.agents.test_offline
 
-      - name: Verify FreeInference API and DeepSeek model
+      - name: Verify FreeInference API and required AI models
         env:
           FREEINFERENCE_API_KEY: ${{ secrets.FREEINFERENCE_API_KEY }}
           FREEINFERENCE_BASE_URL: https://freeinference.org/v1
@@ -75,11 +75,11 @@ jobs:
               max_retries=0,
           )
           available = {item.id for item in client.models.list().data}
-          required = {"deepseek-v4-flash"}
+          required = {"deepseek-v4-flash", "qwen3.6-35b"}
           missing = sorted(required - available)
           if missing:
               raise SystemExit("FreeInference account is missing required model(s): " + ", ".join(missing))
-          print("FreeInference API authenticated; DeepSeek V4 Flash is listed.")
+          print("FreeInference API authenticated; DeepSeek text and Qwen vision models are listed.")
           PY
 
       - name: Restore pipeline state (avoids repeating topics)
