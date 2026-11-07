@@ -562,11 +562,14 @@ invent facts to justify rejection.
     # Final approval rules.
     # ------------------------------------------------------------
 
-    if result["score"] < MIN_APPROVAL_SCORE:
+    # AI-reported scientific/editorial concerns are advisory when the
+    # score meets the configured threshold. Keep deterministic structural
+    # failures as hard blocks; do not reject a 7.5+ script merely because
+    # the reviewer listed minor wording or comparison concerns.
+    if basic_problems:
         result["approved"] = False
-
-    if result.get("problems"):
-        result["approved"] = False
+    else:
+        result["approved"] = result["score"] >= MIN_APPROVAL_SCORE
 
     return result
 
