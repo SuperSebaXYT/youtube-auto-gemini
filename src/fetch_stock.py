@@ -1463,15 +1463,14 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 f"Per-query counts: {search_result_counts}"
             )
 
-            # Keep a rolling window of up to 15 downloads active.
-            # Accept the first successfully downloaded candidate. Failed
-            # downloads are skipped and replenished without blocking the slot.
+            # Only one candidate is needed per round. Download sequentially
+            # so unused background downloads cannot delay the next round.
             from concurrent.futures import (
                 FIRST_COMPLETED,
                 wait,
             )
 
-            max_parallel_downloads = 15
+            max_parallel_downloads = 1
             candidate_iter = iter(ranked)
             pending = {}
             round_candidate_obtained = False
