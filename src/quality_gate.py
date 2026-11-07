@@ -42,7 +42,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from src.gemini_client import get_client, is_available, TEXT_MODEL as DEFAULT_TEXT_MODEL
+from src.freeinference_client import get_client, is_available, TEXT_MODEL as DEFAULT_TEXT_MODEL
 
 
 # Keep this synchronized with the rest of the project.
