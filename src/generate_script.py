@@ -506,7 +506,7 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
 
         for candidate_line in lines:
             match = re.match(
-                r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
                 candidate_line,
                 flags=re.IGNORECASE,
             )
