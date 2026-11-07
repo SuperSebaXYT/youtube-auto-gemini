@@ -1264,7 +1264,7 @@ explanations, or markdown.
             # this shot. New retry rounds must bring genuinely new search language.
             fresh_search_modes = []
             for search_query, require_action in search_modes:
-                normalized_search_query = re.sub(r"\\s+", " ", search_query.strip().lower())
+                normalized_search_query = re.sub(r"\s+", " ", search_query.strip().lower())
                 if not normalized_search_query or normalized_search_query in seen_search_queries:
                     continue
                 seen_search_queries.add(normalized_search_query)
