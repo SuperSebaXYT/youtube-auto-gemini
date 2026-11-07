@@ -1067,6 +1067,58 @@ NO_MATCH
         )
 
 
+
+
+def _score_clip_for_shot(
+    clip_path: Path,
+    animal: str,
+    action: str,
+    sentence: str,
+    visual: str,
+    strict_species: bool = True,
+) -> tuple[int, str]:
+    """Rank a fallback clip against its intended shot without rejecting it."""
+    from src.freeinference_client import generate_vision, is_vision_available
+
+    if not is_vision_available():
+        raise RuntimeError("FREEINFERENCE_API_KEY is required for fallback clip ranking.")
+
+    with tempfile.TemporaryDirectory(prefix="cosmic_visual_rank_") as temp_dir:
+        frames = _extract_audit_frames(clip_path, Path(temp_dir))
+        identity = (
+            f"The target is {animal}. Give the highest identity points only "
+            "when that exact animal/species is visibly present."
+            if strict_species
+            else "Any recognizable real wild animal is acceptable."
+        )
+        prompt = f"""
+You are ranking two fallback wildlife clips for a specific video shot.
+TARGET ANIMAL: {animal}
+SHOT VISUAL: {visual or "not provided"}
+NARRATION: {sentence or action or "not provided"}
+{identity}
+
+Evaluate only what is visibly present in the attached frames.
+Score from 0 to 100:
+- 70 points: correct visible animal identity / wildlife relevance.
+- 20 points: animal is clear, prominent and recognizable.
+- 10 points: footage is usable and visually appealing.
+Do not require the narrated action, pose, habitat or background.
+If the exact target species is not visible, do not award the identity points.
+Return one integer from 0 to 100 and nothing else.
+"""
+        frame_images = [
+            (frame_path.read_bytes(), "image/jpeg")
+            for frame_path in frames
+        ]
+        response = generate_vision(prompt, frame_images)
+        raw = (getattr(response, "text", None) or "").strip()
+        match = re.search(r"\b(100|[1-9]?\d)\b", raw)
+        if not match:
+            raise RuntimeError(f"Fallback ranking returned no valid score: {raw[:160]!r}")
+        return int(match.group(1)), raw[:160]
+
+
 def fetch_clips_for_shots(
     shots: list,
     out_dir: str,
@@ -1075,9 +1127,9 @@ def fetch_clips_for_shots(
     """
     Fetch one Pexels clip per narration shot.
 
-    Round 1 uses DeepSeek Visual QA. Round 2 accepts the first successfully
-    downloaded candidate without checking whether it matches, preventing a
-    single difficult shot from blocking the Short.
+    Each missing slot gets one candidate in round 1 and, if rejected, one
+    replacement in round 2. Both are checked by DeepSeek Visual QA. If both
+    fail, DeepSeek ranks the pair and the better candidate is retained.
     """
     api_key = os.environ.get("PEXELS_API_KEY")
     if not api_key:
@@ -1147,6 +1199,7 @@ def fetch_clips_for_shots(
         seen_search_queries = set()
         seen_ai_queries = set()
         retry_round = 0
+        rejected_candidates = []
         while accepted_path is None and retry_round < 2:
             retry_round += 1
             normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
@@ -1420,6 +1473,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             max_parallel_downloads = 15
             candidate_iter = iter(ranked)
             pending = {}
+            round_candidate_obtained = False
             executor = ThreadPoolExecutor(
                 max_workers=max_parallel_downloads
             )
@@ -1455,7 +1509,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     if not submit_next_candidate():
                         break
 
-                while pending and accepted_path is None:
+                while pending and accepted_path is None and not round_candidate_obtained:
                     completed, _ = wait(
                         pending,
                         return_when=FIRST_COMPLETED,
@@ -1474,25 +1528,23 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                             )
 
                         if was_downloaded:
-                            # First round: Visual QA checks species/type and
-                            # basic visual usability. Second round: deliberately
-                            # bypass QA and accept the first valid download.
-                            qa_passed = retry_round >= 2
-                            qa_reason = "round 2 unconditional acceptance"
-                            if retry_round == 1:
-                                try:
-                                    qa_passed, qa_reason = _verify_clip_matches_shot(
-                                        candidate_path,
-                                        animal=animal,
-                                        action=action,
-                                        sentence=sentence,
-                                        visual=visual,
-                                        require_action=False,
-                                        strict_species=strict_species,
-                                    )
-                                except Exception as exc:
-                                    qa_passed = False
-                                    qa_reason = f"Visual QA error: {exc}"
+                            # Both rounds use the same Visual QA. A rejected
+                            # first-round clip is kept for comparison with the
+                            # second-round replacement.
+                            round_candidate_obtained = True
+                            try:
+                                qa_passed, qa_reason = _verify_clip_matches_shot(
+                                    candidate_path,
+                                    animal=animal,
+                                    action=action,
+                                    sentence=sentence,
+                                    visual=visual,
+                                    require_action=False,
+                                    strict_species=strict_species,
+                                )
+                            except Exception as exc:
+                                qa_passed = False
+                                qa_reason = f"Visual QA error: {exc}"
 
                             if qa_passed:
                                 accepted_path = out_path / f"clip_{index:02d}.mp4"
@@ -1501,20 +1553,25 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                                 print(
                                     f"Downloaded Pexels clip for shot {index + 1}: "
                                     f"source_query={candidate['query']!r}; "
-                                    f"candidate {checked} accepted; "
-                                    f"round={retry_round}; {qa_reason}."
+                                    f"round={retry_round}; Visual QA accepted: {qa_reason}."
                                 )
                                 break
 
+                            rejected_candidates.append({
+                                "path": candidate_path,
+                                "video_id": video_id,
+                                "query": candidate["query"],
+                                "round": retry_round,
+                                "qa_reason": qa_reason,
+                            })
                             print(
                                 f"Visual QA REJECTED candidate for shot {index + 1}: "
-                                f"source_query={candidate['query']!r}; {qa_reason}"
+                                f"round={retry_round}; source_query={candidate['query']!r}; "
+                                f"{qa_reason}. Keeping it for fallback comparison."
                             )
-                            candidate_path.unlink(missing_ok=True)
-
-                        # Replenish immediately after this candidate is handled.
-                        # Do not wait for the rest of the active downloads.
-                        if accepted_path is None:
+                        else:
+                            # A failed download does not consume this round's
+                            # single candidate; try the next result.
                             submit_next_candidate()
 
             finally:
@@ -1526,9 +1583,10 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
                 executor.shutdown(wait=True, cancel_futures=True)
 
-                if accepted_path is not None:
-                    for _, _, candidate_path in pending.values():
-                        candidate_path.unlink(missing_ok=True)
+                # Only the single rejected candidate explicitly retained for
+                # fallback comparison may survive this round.
+                for _, _, candidate_path in pending.values():
+                    candidate_path.unlink(missing_ok=True)
 
             if accepted_path is None:
                 print(
@@ -1540,6 +1598,55 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     + ("Starting the final unconditional round." if retry_round < 2 else "No downloadable candidate was available.")
                 )
         
+        if accepted_path is None and rejected_candidates:
+            ranked_fallbacks = []
+            for rejected in rejected_candidates:
+                try:
+                    score, score_reason = _score_clip_for_shot(
+                        rejected["path"],
+                        animal=animal,
+                        action=action,
+                        sentence=sentence,
+                        visual=visual,
+                        strict_species=strict_species,
+                    )
+                except Exception as exc:
+                    # Ranking failure must not discard both downloaded clips.
+                    score = 0
+                    score_reason = f"ranking unavailable: {exc}"
+                ranked_fallbacks.append((score, rejected, score_reason))
+                print(
+                    f"Fallback rank for shot {index + 1}: "
+                    f"round={rejected['round']} score={score}/100; {score_reason}"
+                )
+
+            best_score, best_candidate, best_reason = max(
+                ranked_fallbacks,
+                key=lambda item: (
+                    item[0],
+                    item[1]["path"].stat().st_size
+                    if item[1]["path"].exists() else 0,
+                ),
+            )
+            accepted_path = out_path / f"clip_{index:02d}.mp4"
+            best_candidate["path"].replace(accepted_path)
+            used_video_ids.add(best_candidate["video_id"])
+            print(
+                f"Fallback selected for shot {index + 1}: "
+                f"round={best_candidate['round']}, score={best_score}/100; "
+                f"{best_reason}. Selected best available of "
+                f"{len(rejected_candidates)} downloaded candidate(s)."
+            )
+            for rejected in rejected_candidates:
+                if rejected is not best_candidate:
+                    rejected["path"].unlink(missing_ok=True)
+
+        if accepted_path is None:
+            raise RuntimeError(
+                f"No downloadable Pexels candidate for shot {index + 1} "
+                "after two rounds."
+            )
+
         downloaded.append(str(accepted_path))
         print(
             f"Clip sourcing progress: {len(downloaded)}/{len(shots)} downloaded; "
@@ -1555,7 +1662,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
     print(
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
-        "clips (round 1: Visual QA; round 2: unconditional acceptance; "
+        "clips (up to 2 candidates per missing slot; both Visual-QA checked; "
+        "DeepSeek ranks rejected pairs and keeps the better fallback; "
         "first 10 species-focused searches; final 5 broad wildlife searches)."
     )
     return downloaded
