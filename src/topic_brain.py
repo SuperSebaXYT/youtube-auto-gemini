@@ -20,7 +20,7 @@ V2 improvements:
 - Penalizes outdated or superseded scientific claims
 - Penalizes topics whose hook depends on a misleading premise
 
-GLM-4.7-Flash calls are routed through the centralized gemini_client.py
+DeepSeek text calls are routed through the centralized FreeInference client
 so the project consistently uses the current Chat.send_message()
 flow instead of direct client.models.generate_content().
 """
@@ -30,15 +30,15 @@ import os
 import re
 from pathlib import Path
 
-from src.gemini_client import generate, is_available
+from src.freeinference_client import generate, is_available
 
-TEXT_MODEL = "glm-4.7-flash"
+from src.freeinference_client import TEXT_MODEL
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = ROOT / "state"
 
 
-def _GLM_available():
+def _text_model_available():
     """Return True when the configured text provider has an API key."""
     return is_available()
 
@@ -60,7 +60,7 @@ def generate_candidates(config, existing_topics, count=30):
     Generate a large batch of high-quality potential topics.
     """
 
-    if not _GLM_available():
+    if not _text_model_available():
         raise RuntimeError("Configured AI API key is not set")
 
     existing = "\n".join(
@@ -293,7 +293,7 @@ def score_candidates(config, candidates):
     The final score remains normalized to 100.
     """
 
-    if not _GLM_available():
+    if not _text_model_available():
         raise RuntimeError("Configured AI API key is not set")
 
     topics = "\n".join(
