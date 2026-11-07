@@ -15,7 +15,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from src.gemini_client import generate, TEXT_MODEL
+from src.freeinference_client import generate, TEXT_MODEL
 
 load_dotenv()
 
