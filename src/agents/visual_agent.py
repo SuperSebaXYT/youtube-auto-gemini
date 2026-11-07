@@ -65,11 +65,12 @@ Return only:
             for field in fields
         )
 
+    max_plan_attempts = 3
     attempt = 0
     previous_result = None
     last_problem = "No valid shot plan was returned."
 
-    while True:
+    while attempt < max_plan_attempts:
         attempt += 1
         if attempt == 1:
             task = base_task
@@ -136,4 +137,9 @@ Do not repeat the same structural mistake. Return only the complete JSON object.
             )
 
         print(f"Visual Director: rejected shot plan on attempt {attempt}: {last_problem}")
+
+    raise RuntimeError(
+        f"Visual Director failed to produce a valid {shot_count}-shot plan "
+        f"after {max_plan_attempts} attempts. Last validation issue: {last_problem}"
+    )
 
