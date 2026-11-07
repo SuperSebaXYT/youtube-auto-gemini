@@ -1,6 +1,6 @@
 channel_id: cosmic_curious
 
-ai_provider: opencode
+ai_provider: freeinference
 display_name: "Animal Discovery & Compilations"
 
 niche: "Animals & wildlife facts"
