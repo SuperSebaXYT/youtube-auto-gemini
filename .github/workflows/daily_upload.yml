@@ -48,11 +48,6 @@ jobs:
             -o ~/.local/share/fonts/Chewy-Regular.ttf \
             https://github.com/google/fonts/raw/main/apache/chewy/Chewy-Regular.ttf
 
-      - name: Install OpenCode CLI
-        run: |
-          npm install --global @opencode/cli@2.1.3
-          opencode --version
-
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
@@ -97,8 +92,8 @@ jobs:
       - name: Manual run
         if: github.event_name == 'workflow_dispatch' && (inputs.channel != '' || inputs.force_run == true)
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          ZAI_VISION_API_KEY: ${{ secrets.ZAI_VISION_API_KEY }}
+          FREEINFERENCE_API_KEY: ${{ secrets.FREEINFERENCE_API_KEY }}
+          FREEINFERENCE_BASE_URL: https://freeinference.org/v1
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
           YOUTUBE_READONLY_TOKEN_PATH: tokens/youtube_readonly_token.pickle
@@ -111,8 +106,8 @@ jobs:
       - name: Scheduler run
         if: github.event_name == 'workflow_dispatch' && inputs.channel == '' && inputs.force_run != true
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          ZAI_VISION_API_KEY: ${{ secrets.ZAI_VISION_API_KEY }}
+          FREEINFERENCE_API_KEY: ${{ secrets.FREEINFERENCE_API_KEY }}
+          FREEINFERENCE_BASE_URL: https://freeinference.org/v1
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           ENABLED_CHANNELS: "cosmic_curious"
           YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
