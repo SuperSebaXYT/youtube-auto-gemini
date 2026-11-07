@@ -1109,6 +1109,7 @@ def fetch_clips_for_shots(
     out_path.mkdir(parents=True, exist_ok=True)
 
     downloaded = []
+    missing_slots = []
     used_video_ids = set()
 
     # Bound search work per shot. One action-specific page and one
@@ -1349,14 +1350,26 @@ def fetch_clips_for_shots(
             candidate_path.unlink(missing_ok=True)
 
         if accepted_path is None:
-            raise RuntimeError(
-                f"No verified footage of the required animal for shot "
-                f"{index + 1}: {animal}. Checked all {checked} unique "
-                f"candidates returned by {len(search_modes)} species-specific "
-                f"Pexels queries; upload blocked."
+            missing_slots.append(index + 1)
+            print(
+                f"Visual QA: slot {index + 1} remains missing after "
+                f"{checked} candidates. Keeping all approved clips; "
+                f"continuing with the other slots."
             )
+            continue
 
         downloaded.append(str(accepted_path))
+        print(
+            f"Visual QA progress: {len(downloaded)}/{len(shots)} approved; "
+            f"{len(shots) - len(downloaded)} slots still need clips."
+        )
+
+    if missing_slots:
+        raise RuntimeError(
+            f"Visual QA approved {len(downloaded)}/{len(shots)} clips. "
+            f"Missing slots: {missing_slots}. Approved clips were retained. "
+            "Rerun the pipeline to search only the missing slots."
+        )
 
     print(
         f"Cosmic Curious visual QA: verified {len(downloaded)}/{len(shots)} "
