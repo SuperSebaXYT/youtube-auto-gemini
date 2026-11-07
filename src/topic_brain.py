@@ -304,7 +304,7 @@ def score_candidates(config, candidates):
     prompt = f"""
 You are the senior editorial director of "{config['display_name']}".
 
-Your job is to select the ONE science/space topic most likely to produce
+Your job is to select the ONE animal/wildlife topic most likely to produce
 a high-retention YouTube Short WITHOUT sacrificing scientific accuracy.
 
 Evaluate every candidate carefully.
