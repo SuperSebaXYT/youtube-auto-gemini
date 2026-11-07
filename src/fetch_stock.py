@@ -928,7 +928,7 @@ def _verify_clip_matches_shot(
     action: str,
     sentence: str,
     visual: str,
-    require_action: bool = True,
+    require_action: bool = False,
 ) -> tuple[bool, str]:
     """Use the configured vision model to verify downloaded video frames."""
     from src.gemini_client import generate_vision, is_vision_available
@@ -951,8 +951,11 @@ REQUIRED ANIMAL:
 REQUIRED VISIBLE ACTION:
 {action}
 
-ACTION REQUIREMENT:
-{"The exact behavior is required for this candidate." if require_action else "This is an exact-species-only fallback: the required animal must be clearly visible, but the exact behavior is not required."}
+ACTION CONTEXT (NOT A STRICT REQUIREMENT):
+The narration describes this behavior: {action}
+The clip does NOT have to show this exact behavior. It is acceptable to show
+the required animal clearly in another natural pose or activity. Do not claim
+the described action is visible unless the frames actually show it.
 
 INTENDED SHOT:
 {visual}
@@ -962,8 +965,9 @@ Approve ONLY if:
    Similar species, related species, generic raptors, and lookalikes are NOT matches.
 2. Set "species_match" to true only when the visible evidence supports the exact
    required species. If uncertain, set it to false.
-3. If this candidate requires the exact behavior, frames visibly show that
-   behavior. Otherwise, do not infer or claim the behavior from the footage.
+3. The narration's exact behavior is optional. The animal itself must be
+   clearly visible and positively identifiable. Do not infer or claim that
+   the described behavior is visible unless it is actually shown.
 4. There is no unrelated object or food being used as a substitute.
 5. The visual evidence is clear enough to identify the animal.
 
@@ -1167,10 +1171,10 @@ def fetch_clips_for_shots(
             [animal, f"{animal} wildlife", f"{animal} {action}"],
         )
         search_modes = [(query, True)]
-        # Alternate query wording may broaden search terms, but never QA:
-        # every accepted clip must show the exact narrated action.
+        # Alternate queries and the primary query all require the exact
+        # animal to be visible. The narrated action is context, not a gate.
         search_modes.extend(
-            (candidate_query, True)
+            (candidate_query, False)
             for candidate_query in aliases
             if candidate_query.strip().lower() != query.lower()
         )
@@ -1216,8 +1220,8 @@ def fetch_clips_for_shots(
                         "query": search_query,
                         "mode_index": mode_index,
                     }
-                    # If a video appears in multiple searches, retain the
-                    # strict exact-action requirement.
+                    # Duplicate candidates are all animal-visibility checks;
+                    # the narration action is optional for every search mode.
                     if existing is None or (require_action and not existing["require_action"]):
                         candidates_by_id[video_id] = candidate
 
@@ -1229,8 +1233,9 @@ def fetch_clips_for_shots(
             search_result_counts[search_query] = query_result_count
 
         # Do not let one noisy Pexels query monopolize verification.
-        # Every candidate, including alternate species-specific search terms,
-        # must pass exact-species AND exact-action vision QA.
+        # Every candidate must pass exact-species visibility QA. The exact
+        # narrated action is not mandatory because suitable footage may not
+        # exist for every narration segment.
         candidates_by_mode = {}
         for video_id, candidate in candidates_by_id.items():
             candidates_by_mode.setdefault(candidate["mode_index"], []).append(
