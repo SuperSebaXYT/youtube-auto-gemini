@@ -1438,7 +1438,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             # without waiting for the other downloads in the window.
             from concurrent.futures import (
                 FIRST_COMPLETED,
-                ThreadPoolExecutor,
                 wait,
             )
 
