@@ -1129,6 +1129,8 @@ def fetch_clips_for_shots(
         accepted_path = None
         checked = 0
         attempted_video_ids = set()
+        seen_search_queries = set()
+        seen_ai_queries = set()
         retry_round = 0
         while accepted_path is None:
             retry_round += 1
@@ -1181,13 +1183,10 @@ def fetch_clips_for_shots(
             # AI-generated Pexels Query Brain: create fresh, natural stock-search
             # phrases from the animal's known appearance and shot context. These
             # are discovery queries only; Visual QA remains the sole approval gate.
-            if "seen_ai_queries" not in locals():
-                seen_ai_queries = set()
-
             try:
                 from src.freeinference_client import generate_response
 
-                rejected_context = ", ".join(sorted(seen_ai_queries)[-20:]) or "none yet"
+                rejected_context = ", ".join(sorted(seen_search_queries)[-40:]) or "none yet"
                 query_prompt = f"""
 You are an expert stock-footage search strategist for Pexels.
 
@@ -1261,6 +1260,24 @@ explanations, or markdown.
             # Search queries are intentionally allowed to be descriptive rather
             # than species-anchored. This discovers footage whose Pexels tags omit
             # the species name; Visual QA still rejects every wrong animal.
+            # Never spend another Pexels request on a phrase already tried for
+            # this shot. New retry rounds must bring genuinely new search language.
+            fresh_search_modes = []
+            for search_query, require_action in search_modes:
+                normalized_search_query = re.sub(r"\\s+", " ", search_query.strip().lower())
+                if not normalized_search_query or normalized_search_query in seen_search_queries:
+                    continue
+                seen_search_queries.add(normalized_search_query)
+                fresh_search_modes.append((search_query, require_action))
+            search_modes = fresh_search_modes
+
+            if not search_modes:
+                print(
+                    f"Pexels Query Brain produced no unseen phrases for shot {index + 1}; "
+                    "retrying query generation after 60 seconds."
+                )
+                time.sleep(60)
+                continue
 
             candidates_by_id = {}
             search_result_counts = {}
