@@ -1597,7 +1597,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     f"{len(attempted_video_ids)} video IDs will not be downloaded "
                     "or checked again during this slot. "
                     f"Round {retry_round} exhausted its current search queries. "
-                    + ("Starting the final unconditional round." if retry_round < 2 else "No downloadable candidate was available.")
+                    + ("Starting round 2 with a replacement candidate." if retry_round < 2 else "No downloadable candidate was available.")
                 )
         
         if accepted_path is not None:
