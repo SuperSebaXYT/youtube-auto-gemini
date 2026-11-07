@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -60,6 +61,11 @@ def _prompt_from_kwargs(kwargs: dict) -> str:
         prompt += "\n\nReturn only one valid JSON object. Do not use markdown fences or add commentary."
     if not prompt:
         raise RuntimeError("AI request has no text prompt.")
+    prompt = (
+        "SYSTEM CONSTRAINT: Do not call or request tools, web search, browser, shell, "
+        "or external functions. Answer directly using the supplied prompt and context only.\\n\\n"
+        + prompt
+    )
     return prompt
 
 
@@ -106,6 +112,17 @@ def _run_opencode_model(model: str, prompt: str, image_paths: list[str] | None =
 
 
 
+def _validate_json_output(content: str) -> None:
+    """Reject malformed or truncated JSON so the next fallback model is tried."""
+    candidate = content.strip()
+    candidate = re.sub(r"^\\s*```(?:json)?\\s*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\\s*```\\s*$", "", candidate)
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("Model did not return a complete JSON object.")
+    json.loads(candidate[start:end + 1])
+
+
 def _request_with_fallback(kwargs: dict, images: list[tuple[bytes, str]] | None = None):
     """Run text and image requests through the same ordered model chain."""
     if not os.environ.get("OPENCODE_API_KEY"):
@@ -124,6 +141,8 @@ def _request_with_fallback(kwargs: dict, images: list[tuple[bytes, str]] | None 
         for provider, model in MODEL_CHAIN:
             try:
                 content = _run_opencode_model(model, prompt, image_paths)
+                if kwargs.get("response_format", {}).get("type") == "json_object":
+                    _validate_json_output(content)
                 print(f"AI generation succeeded with model: {model} ({provider})")
                 choice = SimpleNamespace(
                     message=SimpleNamespace(content=content), finish_reason="stop"
@@ -156,6 +175,9 @@ class _ChatSession:
         if getattr(self.config, "response_mime_type", None) == "application/json":
             response_format = {"type": "json_object"}
         kwargs = {"messages": [{"role": "user", "content": str(prompt)}]}
+        prompt_lower = str(prompt).lower()
+        if "return only valid json" in prompt_lower or "return only one valid json object" in prompt_lower:
+            kwargs["response_format"] = {"type": "json_object"}
         if max_tokens:
             kwargs["max_tokens"] = int(max_tokens)
         if response_format:
