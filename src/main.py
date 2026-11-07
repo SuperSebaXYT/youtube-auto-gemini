@@ -137,7 +137,7 @@ def run(
 
 
     # Long-form is globally disabled. Reject manual/default invocations
-    # before authentication, topic selection, or any Gemini API calls.
+    # before authentication, topic selection, or any FreeInference API calls.
     if not is_short:
         raise RuntimeError(
             "Long-form is disabled. Run the pipeline with --short."
