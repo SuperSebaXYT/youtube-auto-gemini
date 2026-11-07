@@ -2,7 +2,7 @@
 FreeInference-backed text and vision gateway for Cosmic Curious.
 
 Text generation: DeepSeek V4 Flash.
-Visual QA: Qwen3.6-35B (vision-capable).
+Visual QA: DeepSeek V4 Flash.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 BASE_URL = os.environ.get("FREEINFERENCE_BASE_URL", "https://freeinference.org/v1").rstrip("/")
 TEXT_MODEL = "deepseek-v4-flash"
-VISION_MODEL = "qwen3.6-35b"
+VISION_MODEL = TEXT_MODEL
 USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "freeinference_usage.json"
 
 
