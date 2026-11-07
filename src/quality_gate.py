@@ -31,7 +31,7 @@ V3 improvements:
 - Outdated terminology and scientific interpretations are checked
 - Misleading hooks are checked
 - Repair instructions explicitly address each failed claim
-- Uses Chat.send_message() for OpenCode text model text generation
+- Uses Chat.send_message() for FreeInference text model text generation
 """
 
 import json
@@ -56,7 +56,7 @@ MIN_APPROVAL_SCORE = 8.0
 
 
 class AIProviderUnavailableError(RuntimeError):
-    """OpenCode text model remained unavailable after retrying transient API failures."""
+    """FreeInference text model remained unavailable after retrying transient API failures."""
 
 
 def _retry_after_seconds(exc) -> float | None:
@@ -82,7 +82,7 @@ def _retry_after_seconds(exc) -> float | None:
 
 
 def _is_retryable_ai_error(exc) -> bool:
-    """Recognize transient OpenCode text model/API failures using status fields and message."""
+    """Recognize transient FreeInference text model/API failures using status fields and message."""
     if isinstance(exc, TimeoutError) or type(exc).__name__ in {
         "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"
     }:
@@ -134,7 +134,7 @@ def _send_message_with_retry(
     prompt: str,
     max_attempts: int = 5,
 ):
-    """Retry transient OpenCode text model failures with backoff, jitter and Retry-After."""
+    """Retry transient FreeInference text model failures with backoff, jitter and Retry-After."""
     for attempt in range(max_attempts):
         try:
             return chat.send_message(prompt)
@@ -144,7 +144,7 @@ def _send_message_with_retry(
 
             if attempt == max_attempts - 1:
                 raise AIProviderUnavailableError(
-                    f"OpenCode text model remained unavailable after {max_attempts} attempts: {exc}"
+                    f"FreeInference text model remained unavailable after {max_attempts} attempts: {exc}"
                 ) from exc
 
             backoff = min(30.0, 2.0 * (2 ** attempt))
@@ -155,7 +155,7 @@ def _send_message_with_retry(
                 delay = max(delay, backoff)
 
             print(
-                "WARNING: OpenCode text model transient API failure; "
+                "WARNING: FreeInference text model transient API failure; "
                 f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/{max_attempts}): {exc}"
             )
@@ -164,18 +164,18 @@ def _send_message_with_retry(
 
 def _client():
     """
-    Create a OpenCode text model client.
+    Create a FreeInference text model client.
     """
 
     if not is_available():
-        raise RuntimeError("OPENCODE_API_KEY is missing; OpenCode text generation cannot run the Quality Gate.")
+        raise RuntimeError("FREEINFERENCE_API_KEY is missing; FreeInference text generation cannot run the Quality Gate.")
 
     return get_client()
 
 
 def _chat(client):
     """
-    Create a OpenCode text model chat session.
+    Create a FreeInference text model chat session.
 
     IMPORTANT:
     Use Chat.send_message() rather than client.models.generate_content()
@@ -189,12 +189,12 @@ def _chat(client):
 
 def _clean_json(text: str) -> dict:
     """
-    Extract JSON even if OpenCode text model accidentally wraps it in markdown fences.
+    Extract JSON even if FreeInference text model accidentally wraps it in markdown fences.
     """
 
     if not text:
         raise ValueError(
-            "OpenCode text model returned an empty response."
+            "FreeInference text model returned an empty response."
         )
 
     text = text.strip()
@@ -219,7 +219,7 @@ def _clean_json(text: str) -> dict:
 
     if start == -1 or end == -1:
         raise ValueError(
-            f"OpenCode text model did not return JSON: {text[:500]}"
+            f"FreeInference text model did not return JSON: {text[:500]}"
         )
 
     try:
@@ -228,7 +228,7 @@ def _clean_json(text: str) -> dict:
         )
     except json.JSONDecodeError as e:
         raise ValueError(
-            f"OpenCode text model returned invalid JSON: {e}. "
+            f"FreeInference text model returned invalid JSON: {e}. "
             f"Response: {text[:500]}"
         ) from e
 
@@ -248,7 +248,7 @@ def _word_count(text: str) -> int:
 
 def _basic_script_checks(script: str, target_words: int = 150) -> list:
     """
-    Cheap deterministic checks before spending another OpenCode text model call.
+    Cheap deterministic checks before spending another FreeInference text model call.
 
     IMPORTANT:
     This function intentionally does NOT automatically reject normal
@@ -262,7 +262,7 @@ def _basic_script_checks(script: str, target_words: int = 150) -> list:
 
     Those words can be scientifically correct in the right context.
 
-    OpenCode text model performs the actual scientific certainty audit.
+    FreeInference text model performs the actual scientific certainty audit.
 
     Deterministic checks are reserved for obvious formatting/template
     problems.
@@ -395,7 +395,7 @@ def _basic_script_checks(script: str, target_words: int = 150) -> list:
     #
     # can be perfectly valid.
     #
-    # OpenCode text model's claim-by-claim scientific audit below is responsible
+    # FreeInference text model's claim-by-claim scientific audit below is responsible
     # for determining whether certainty wording is actually wrong.
     # ------------------------------------------------------------
 
@@ -409,7 +409,7 @@ def check_script(
     target_words: int = 150,
 ) -> dict:
     """
-    Ask OpenCode text model to perform a strict scientific/editorial audit.
+    Ask FreeInference text model to perform a strict scientific/editorial audit.
     """
 
     basic_problems = _basic_script_checks(
@@ -494,7 +494,7 @@ invent facts to justify rejection.
     )
 
     # ------------------------------------------------------------
-    # Normalize OpenCode text model output.
+    # Normalize FreeInference text model output.
     # ------------------------------------------------------------
 
     if not isinstance(result, dict):
@@ -521,7 +521,7 @@ invent facts to justify rejection.
     # Add deterministic problems.
     #
     # These are hard failures because they are structural or editorial
-    # issues that OpenCode text model should not override.
+    # issues that FreeInference text model should not override.
     # ------------------------------------------------------------
 
     if basic_problems:
@@ -601,7 +601,7 @@ def repair_script(
         )
     )
 
-    # If OpenCode text model returned no corrections, explicitly tell the repair model
+    # If FreeInference text model returned no corrections, explicitly tell the repair model
     # to independently fix the listed problems without inventing science.
     if not corrections:
         corrections = (
@@ -612,7 +612,7 @@ def repair_script(
 
     # Add an explicit, concrete correction when the reviewer flags the
     # recurring whip-spider / pistol-shrimp taxonomy confusion. The generic
-    # repair prompt was allowing OpenCode text model to preserve the misleading hook.
+    # repair prompt was allowing FreeInference text model to preserve the misleading hook.
     taxonomy_repair = ""
     combined_review = " ".join(
         str(item) for item in review.get("problems", [])
@@ -691,10 +691,10 @@ Return ONLY the spoken script.
 
     if not text:
         raise RuntimeError(
-            "OpenCode text model returned an empty repair response."
+            "FreeInference text model returned an empty repair response."
         )
 
-    # Remove accidental markdown fences if OpenCode text model ignores the instruction.
+    # Remove accidental markdown fences if FreeInference text model ignores the instruction.
     text = re.sub(
         r"^```(?:text)?\s*",
         "",
@@ -836,7 +836,7 @@ def validate_and_repair(
             )
 
         except AIProviderUnavailableError:
-            # Do not mislabel a OpenCode text model outage as a failed script repair.
+            # Do not mislabel a FreeInference text model outage as a failed script repair.
             raise
 
         except Exception as e:
