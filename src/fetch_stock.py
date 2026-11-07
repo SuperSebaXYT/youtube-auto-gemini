@@ -931,7 +931,7 @@ def _verify_clip_matches_shot(
     require_action: bool = False,
 ) -> tuple[bool, str]:
     """Use the configured vision model to verify downloaded video frames."""
-    from src.gemini_client import generate_vision, is_vision_available
+    from src.freeinference_client import generate_vision, is_vision_available
 
     if not is_vision_available():
         raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
@@ -988,16 +988,8 @@ Return ONLY valid JSON:
             (frame_path.read_bytes(), "image/jpeg")
             for frame_path in frames
         ]
-        provider = "zai"
-        if provider == "groq":
-            # Groq's Qwen 3.8 vision endpoint accepts at most 3 images
-            # per request. Audit all five sampled frames in two batches.
-            image_batches = [
-                frame_images[index:index + 3]
-                for index in range(0, len(frame_images), 3)
-            ]
-        else:
-            image_batches = [frame_images]
+        # Send the complete sampled-frame batch to FreeInference Qwen.
+        image_batches = [frame_images]
 
         audit_results = []
         for image_batch in image_batches:
@@ -1032,7 +1024,7 @@ Return ONLY valid JSON:
                     time.sleep(delay)
 
             if response is None:
-                raise RuntimeError("GLM-4.6V-Flash returned no response after retries.")
+                raise RuntimeError("FreeInference Qwen vision returned no response after retries.")
 
             raw = (getattr(response, "text", None) or "").strip()
             match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
@@ -1092,8 +1084,8 @@ def fetch_clips_for_shots(
     """
     Fetch one verified clip per narration shot.
 
-    Search a broad Pexels result pool for the exact species, then use Gemini
-    Vision to verify candidates. Search results are never trusted as proof:
+    Search a broad Pexels result pool for the exact species, then use FreeInference
+    Qwen vision to verify candidates. Search results are never trusted as proof:
     wrong species are rejected and publication remains blocked if no exact
     species match can be verified.
     """
