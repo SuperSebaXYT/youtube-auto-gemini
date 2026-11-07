@@ -1259,6 +1259,7 @@ def fetch_clips_for_shots(
 
             for video_id, candidate in ranked:
                 checked += 1
+                attempted_video_ids.add(video_id)
 
                 candidate_path = out_path / (
                     f"candidate_{index:02d}_{checked:03d}.mp4"
@@ -1302,12 +1303,13 @@ def fetch_clips_for_shots(
                 candidate_path.unlink(missing_ok=True)
 
 
-            print(
-                f"Visual QA: slot {index + 1} still missing after "
-                f"{checked} unique candidates in retry round {retry_round}. "
-                "Keeping approved clips and retrying this slot in 60 seconds."
-            )
-            time.sleep(60)
+            if accepted_path is None:
+                print(
+                    f"Visual QA: slot {index + 1} still missing after "
+                    f"{checked} unique candidates in retry round {retry_round}. "
+                    "Keeping approved clips and retrying this slot in 60 seconds."
+                )
+                time.sleep(60)
 
         downloaded.append(str(accepted_path))
         print(
