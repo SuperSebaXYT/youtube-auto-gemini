@@ -1517,11 +1517,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                         if accepted_path is None:
                             submit_next_candidate()
 
-                        # Replenish immediately after this candidate is handled.
-                        # Do not wait for the rest of the active downloads.
-                        if accepted_path is None:
-                            submit_next_candidate()
-
             finally:
                 if accepted_path is not None:
                     # Cancel work that has not started, then wait for running
