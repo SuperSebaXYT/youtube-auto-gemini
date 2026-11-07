@@ -948,6 +948,103 @@ def _extract_audit_frames(clip_path: Path, frame_dir: Path) -> list[Path]:
     return frames
 
 
+def _verify_clip_batch_matches_shot(
+    clip_paths: list[Path],
+    animal: str,
+    strict_species: bool = True,
+) -> list[tuple[bool, str]]:
+    """Verify up to three clips for the same shot in one vision request."""
+    from src.freeinference_client import generate_vision, is_vision_available
+
+    if not clip_paths:
+        return []
+    if len(clip_paths) > 3:
+        raise ValueError("Visual QA batches may contain at most three clips.")
+    if not is_vision_available():
+        raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
+
+    with tempfile.TemporaryDirectory(prefix="cosmic_visual_batch_") as temp_dir:
+        frame_images = []
+        for clip_index, clip_path in enumerate(clip_paths, start=1):
+            frame_dir = Path(temp_dir) / f"clip_{clip_index:02d}"
+            frames = _extract_audit_frames(clip_path, frame_dir)
+            frame_images.extend(
+                (frame_path.read_bytes(), "image/jpeg") for frame_path in frames
+            )
+
+        identity_rule = (
+            f'TARGET ANIMAL: {animal}. The exact named animal/species (or an unmistakable '
+            "example of that animal type) must be visibly present. Reject a different animal."
+            if strict_species else
+            "TARGET ANIMAL: any recognizable real wild animal. Reject humans, objects, food, toys, drawings, models, and scenery without a clearly visible animal."
+        )
+        prompt = f"""
+You are checking {len(clip_paths)} separate wildlife video clips for the SAME shot.
+{identity_rule}
+
+The images are grouped by clip in order. Each clip has exactly three frames:
+clip 1 = images 1-3, clip 2 = images 4-6, clip 3 = images 7-9.
+If fewer than three clips are supplied, only evaluate the listed groups.
+For EACH clip independently, decide whether the required animal is recognizable,
+reasonably clear/prominent, and shown in usable wildlife footage.
+Ignore narration, action, pose, habitat, camera angle, and background.
+Do not demand rare behavior or impossible species-level details.
+Do not let one clip affect another clip's verdict.
+
+Return exactly one line per supplied clip, in this format:
+1 MATCH
+2 NO_MATCH
+3 MATCH
+Use only MATCH or NO_MATCH after each number. No JSON or explanation.
+"""
+        max_attempts = 2
+        last_response = ""
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = generate_vision(prompt, frame_images)
+            except Exception as exc:
+                error_text = str(exc)
+                retryable = any(
+                    marker in error_text
+                    for marker in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+                                   "500", "INTERNAL", "502", "504",
+                                   "temporarily unavailable")
+                )
+                if not retryable or attempt >= max_attempts:
+                    raise
+                print(
+                    f"WARNING: Batch Visual QA temporary API error "
+                    f"(attempt {attempt}/{max_attempts}); retrying: {error_text[:250]}"
+                )
+                time.sleep(2)
+                continue
+
+            last_response = (getattr(response, "text", None) or "").strip()
+            verdicts = {}
+            for line in last_response.splitlines():
+                match = re.match(r"^\s*(\d+)\s+(MATCH|NO_MATCH)\s*[.!]*\s*$", line.strip(), re.I)
+                if match:
+                    verdicts[int(match.group(1))] = match.group(2).upper()
+
+            if set(verdicts) == set(range(1, len(clip_paths) + 1)):
+                return [
+                    (
+                        verdicts[index] == "MATCH",
+                        f"animal_type_match={verdicts[index] == 'MATCH'}; vision_verdict={verdicts[index]}"
+                    )
+                    for index in range(1, len(clip_paths) + 1)
+                ]
+
+            print(
+                f"WARNING: Batch Visual QA returned incomplete/invalid verdicts "
+                f"(attempt {attempt}/{max_attempts}): {last_response[:220]!r}"
+            )
+
+        raise RuntimeError(
+            f"Batch Visual QA did not return one valid verdict per clip: {last_response[:250]!r}"
+        )
+
+
 def _verify_clip_matches_shot(
     clip_path: Path,
     animal: str,
@@ -1469,20 +1566,14 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 f"Per-query counts: {search_result_counts}"
             )
 
-            # Only one candidate is needed per round. Download sequentially
-            # so unused background downloads cannot delay the next round.
-            from concurrent.futures import (
-                FIRST_COMPLETED,
-                wait,
-            )
+            # Download and visually verify up to three candidates together.
+            from concurrent.futures import FIRST_COMPLETED, wait
 
-            max_parallel_downloads = 1
+            batch_size = 3
             candidate_iter = iter(ranked)
             pending = {}
-            round_candidate_obtained = False
-            executor = ThreadPoolExecutor(
-                max_workers=max_parallel_downloads
-            )
+            batch_candidates = []
+            executor = ThreadPoolExecutor(max_workers=batch_size)
 
             def submit_next_candidate():
                 """Submit the next unseen Pexels candidate, if available."""
@@ -1490,7 +1581,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 for video_id, candidate in candidate_iter:
                     if video_id in attempted_video_ids:
                         continue
-
                     attempted_video_ids.add(video_id)
                     checked += 1
                     candidate_path = out_path / (
@@ -1501,29 +1591,19 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                         candidate["video"],
                         candidate_path,
                     )
-                    pending[future] = (
-                        video_id,
-                        candidate,
-                        candidate_path,
-                    )
+                    pending[future] = (video_id, candidate, candidate_path)
                     return True
                 return False
 
             try:
-                # Fill the initial window.
-                for _ in range(max_parallel_downloads):
+                for _ in range(batch_size):
                     if not submit_next_candidate():
                         break
 
-                while pending and accepted_path is None and not round_candidate_obtained:
-                    completed, _ = wait(
-                        pending,
-                        return_when=FIRST_COMPLETED,
-                    )
-
+                while pending and len(batch_candidates) < batch_size:
+                    completed, _ = wait(pending, return_when=FIRST_COMPLETED)
                     for future in completed:
                         video_id, candidate, candidate_path = pending.pop(future)
-
                         try:
                             was_downloaded = future.result()
                         except Exception as exc:
@@ -1535,37 +1615,48 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
                         if was_downloaded:
                             used_video_ids.add(video_id)
-                            # Every candidate is checked with the same Visual QA. Rejected clips
-                            # are discarded; only a MATCH can fill this slot.
-                            round_candidate_obtained = True
-                            try:
-                                qa_passed, qa_reason = _verify_clip_matches_shot(
-                                    candidate_path,
-                                    animal=animal,
-                                    action=action,
-                                    sentence=sentence,
-                                    visual=visual,
-                                    require_action=False,
-                                    strict_species=strict_species,
-                                )
-                            except Exception as exc:
-                                qa_passed = False
-                                qa_reason = f"Visual QA error: {exc}"
-
-                            if qa_passed:
-                                accepted_path = out_path / f"clip_{index:02d}.mp4"
-                                candidate_path.replace(accepted_path)
-                                used_video_ids.add(video_id)
-                                print(
-                                    f"Downloaded Pexels clip for shot {index + 1}: "
-                                    f"source_query={candidate['query']!r}; "
-                                    f"round={retry_round}; Visual QA accepted: {qa_reason}."
-                                )
-                                break
-
-                            rejected_candidates.append({
-                                "path": candidate_path,
+                            batch_candidates.append({
                                 "video_id": video_id,
+                                "candidate": candidate,
+                                "path": candidate_path,
+                            })
+                        else:
+                            candidate_path.unlink(missing_ok=True)
+                            if len(batch_candidates) + len(pending) < batch_size:
+                                submit_next_candidate()
+
+                    # Keep the download window full until three usable clips
+                    # have been collected or this round has no more candidates.
+                    while len(batch_candidates) + len(pending) < batch_size:
+                        if not submit_next_candidate():
+                            break
+
+                if batch_candidates:
+                    try:
+                        batch_verdicts = _verify_clip_batch_matches_shot(
+                            [item["path"] for item in batch_candidates],
+                            animal=animal,
+                            strict_species=strict_species,
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Batch Visual QA failed for shot {index + 1}: {exc}"
+                        ) from exc
+
+                    matching_candidates = []
+                    for item, (qa_passed, qa_reason) in zip(batch_candidates, batch_verdicts):
+                        candidate = item["candidate"]
+                        if qa_passed:
+                            matching_candidates.append(item)
+                            print(
+                                f"Visual QA MATCH for shot {index + 1}: "
+                                f"round={retry_round}; source_query={candidate['query']!r}; "
+                                f"{qa_reason}."
+                            )
+                        else:
+                            rejected_candidates.append({
+                                "path": item["path"],
+                                "video_id": item["video_id"],
                                 "query": candidate["query"],
                                 "round": retry_round,
                                 "qa_reason": qa_reason,
@@ -1575,21 +1666,24 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                                 f"round={retry_round}; source_query={candidate['query']!r}; "
                                 f"{qa_reason}. Keeping it for final comparison."
                             )
-                        else:
-                            # A failed download does not consume this round's
-                            # single candidate; try the next result.
-                            submit_next_candidate()
 
+                    if matching_candidates:
+                        # Candidates arrive in Pexels quality-rank order;
+                        # keep the first verified match for this shot.
+                        selected = matching_candidates[0]
+                        accepted_path = out_path / f"clip_{index:02d}.mp4"
+                        selected["path"].replace(accepted_path)
+                        for item in matching_candidates[1:]:
+                            item["path"].unlink(missing_ok=True)
+                        print(
+                            f"Downloaded Pexels clip for shot {index + 1}: "
+                            f"source_query={selected['candidate']['query']!r}; "
+                            f"round={retry_round}; batch Visual QA accepted."
+                        )
             finally:
-                if accepted_path is not None:
-                    # Cancel work that has not started, then wait for running
-                    # downloads before deleting their temporary files.
-                    for future in pending:
-                        future.cancel()
-
+                for future in pending:
+                    future.cancel()
                 executor.shutdown(wait=True, cancel_futures=True)
-
-                # No rejected candidate is retained; remove any unfinished download.
                 for _, _, candidate_path in pending.values():
                     candidate_path.unlink(missing_ok=True)
 
