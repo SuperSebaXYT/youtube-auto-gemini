@@ -251,7 +251,7 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
-    """Generate once through the shared OpenCode text client with an output budget."""
+    """Generate once through the shared FreeInference text client with an output budget."""
     from types import SimpleNamespace
 
     generation_config = SimpleNamespace(
@@ -283,20 +283,20 @@ def _generate_with_token_budget(
 
             delay = (2 ** (attempt + 1)) + random.uniform(0.2, 0.9)
             print(
-                "WARNING: OpenCode script/topic request temporarily failed; "
+                "WARNING: FreeInference script/topic request temporarily failed; "
                 f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/3): {exc}"
             )
             time.sleep(delay)
 
     if response is None:
-        raise RuntimeError("OpenCode returned no response after retrying.")
+        raise RuntimeError("FreeInference returned no response after retrying.")
 
     try:
         finish_reason = response.candidates[0].finish_reason
         if finish_reason and "MAX_TOKENS" in str(finish_reason).upper():
             print(
-                "WARNING: OpenCode text model response hit "
+                "WARNING: FreeInference text model response hit "
                 f"max_output_tokens={max_output_tokens}."
             )
     except Exception:
@@ -451,7 +451,7 @@ def _generate_winner_inspired_topic(
         print("Winner Hunter unavailable.")
         return None
     if not is_available():
-        print("OpenCode text API unavailable; Winner Hunter cannot select a topic.")
+        print("FreeInference text API unavailable; Winner Hunter cannot select a topic.")
         return None
 
     try:
@@ -568,7 +568,7 @@ def pick_next_topic(channel_id: str, config: dict) -> str:
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for channel '{channel_id}'. "
-            "Add seed topics or enable OpenCode topic generation."
+            "Add seed topics or enable FreeInference topic generation."
         )
 
     topic = random.choice(unused)
@@ -618,7 +618,7 @@ def _parse_titled_response(text: str, fallback_topic: str) -> dict:
     }
 
 
-def generate_with_opencode(
+def generate_with_freeinference(
     topic: str,
     config: dict,
     length_seconds: int,
@@ -733,7 +733,7 @@ SCRIPT:
         )
 
     if not result["script"]:
-        raise ValueError("OpenCode returned an empty script.")
+        raise ValueError("FreeInference returned an empty script.")
 
     return result
 
@@ -745,7 +745,7 @@ def generate_with_template(
     language: str,
 ) -> dict:
     """
-    Minimal fallback used when OpenCode is unavailable.
+    Minimal fallback used when FreeInference is unavailable.
 
     This avoids pretending to know specific animal facts that were not
     generated or verified. The fallback is intentionally short.
@@ -851,16 +851,16 @@ def generate_script(
 
     if is_available():
         try:
-            generated = generate_with_opencode(
+            generated = generate_with_freeinference(
                 topic, config, length, language
             )
         except Exception as e:
             print(
-                f"ERROR: OpenCode script generation failed after retries ({e}). "
+                f"ERROR: FreeInference script generation failed after retries ({e}). "
                 "Refusing to send a generic template to the Quality Gate."
             )
             raise RuntimeError(
-                "OpenCode script generation failed; this run is stopped before "
+                "FreeInference script generation failed; this run is stopped before "
                 "quality review and video rendering."
             ) from e
 
@@ -1013,7 +1013,7 @@ def pick_next_kids_topic(
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for kids content type "
-            f"'{content_type}'. Add seed topics or enable OpenCode "
+            f"'{content_type}'. Add seed topics or enable FreeInference "
             "topic generation; refusing to recycle topics."
         )
 
@@ -1022,7 +1022,7 @@ def pick_next_kids_topic(
     return topic
 
 
-def generate_kids_script_with_opencode(
+def generate_kids_script_with_freeinference(
     topic: str,
     config: dict,
     content_type: str,
@@ -1166,7 +1166,7 @@ def generate_kids_script(
 
     try:
         if is_available():
-            generated = generate_kids_script_with_opencode(
+            generated = generate_kids_script_with_freeinference(
                 topic,
                 config,
                 content_type,
@@ -1180,7 +1180,7 @@ def generate_kids_script(
             )
     except Exception as e:
         print(
-            f"WARNING: kids OpenCode text generation failed ({e}); "
+            f"WARNING: kids FreeInference text generation failed ({e}); "
             "using template fallback."
         )
         generated = generate_kids_template(
