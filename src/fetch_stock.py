@@ -1145,6 +1145,8 @@ def fetch_clips_for_shots(
 
     downloaded = []
     used_video_ids = set()
+    fallback_pool = []
+    missing_fallback_slots = []
 
     # Search a bounded first page for a small set of species-specific queries.
     # The old unbounded pagination multiplied API calls for every shot.
@@ -1157,7 +1159,7 @@ def fetch_clips_for_shots(
         if not isinstance(shot, dict):
             raise RuntimeError(f"Visual shot {index + 1} is not a JSON object.")
 
-        strict_species = index < 10
+        strict_species = True
         animal = str(shot.get("animal", "")).strip() or "wild animal"
         action = str(shot.get("action", "")).strip()
         sentence = str(shot.get("sentence", "")).strip()
@@ -1605,77 +1607,104 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             for item in rejected_candidates:
                 item["path"].unlink(missing_ok=True)
 
-        if accepted_path is None and rejected_candidates:
-            if all(
-                str(item.get("qa_reason", "")).startswith("Visual QA error:")
-                for item in rejected_candidates
-            ):
-                for item in rejected_candidates:
-                    item["path"].unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"Visual QA service was unavailable for every candidate "
-                    f"for shot {index + 1}; refusing to select an unverified clip."
-                )
-
-            ranked_fallbacks = []
-            ranking_errors = []
-            for rejected in rejected_candidates:
-                try:
-                    score, score_reason = _score_clip_for_shot(
-                        rejected["path"], animal, action, sentence, visual,
-                        strict_species=strict_species,
-                    )
-                except Exception as exc:
-                    ranking_errors.append(str(exc))
-                    print(
-                        f"Fallback ranking unavailable for shot {index + 1}, "
-                        f"round={rejected['round']}: {exc}"
-                    )
-                    continue
-                ranked_fallbacks.append((score, rejected, score_reason))
-                print(
-                    f"Fallback rank for shot {index + 1}: "
-                    f"round={rejected['round']} score={score}/100; {score_reason}"
-                )
-
-            if not ranked_fallbacks:
-                for item in rejected_candidates:
-                    item["path"].unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"Could not rank any rejected candidate for shot {index + 1}; "
-                    "refusing to select an unverified clip. "
-                    + "; ".join(ranking_errors[:2])
-                )
-
-            best_score, best_candidate, best_reason = max(
-                ranked_fallbacks,
-                key=lambda item: item[0],
-            )
-            accepted_path = out_path / f"clip_{index:02d}.mp4"
-            best_candidate["path"].replace(accepted_path)
-            used_video_ids.add(best_candidate["video_id"])
-            print(
-                f"Fallback selected for shot {index + 1}: "
-                f"round={best_candidate['round']}, score={best_score}/100; "
-                f"{best_reason}. Selected best available of "
-                f"{len(rejected_candidates)} downloaded candidate(s) "
-                f"from {max_search_rounds} search rounds."
-            )
-            for item in rejected_candidates:
-                if item is not best_candidate:
-                    item["path"].unlink(missing_ok=True)
-
         if accepted_path is None:
-            raise RuntimeError(
-                f"No downloadable Pexels candidate for shot {index + 1} "
-                f"after {max_search_rounds} search rounds."
-            )
+            # Do not choose a fallback yet. Collect rejected clips from every
+            # missing slot, then rank the shared pool against all missing slots.
+            usable_rejections = [
+                item for item in rejected_candidates
+                if not str(item.get("qa_reason", "")).startswith("Visual QA error:")
+            ]
+            if usable_rejections:
+                for item in usable_rejections:
+                    item["source_slot"] = index
+                fallback_pool.extend(usable_rejections)
+                missing_fallback_slots.append(index)
+                print(
+                    f"Shot {index + 1}: queued {len(usable_rejections)} rejected "
+                    "candidate(s) for global best-fit selection."
+                )
+            else:
+                for item in rejected_candidates:
+                    item["path"].unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"No Visual-QA-checked rejected candidates for shot {index + 1} "
+                    f"after {max_search_rounds} rounds."
+                )
+            continue
 
         downloaded.append(str(accepted_path))
         print(
             f"Clip sourcing progress: {len(downloaded)}/{len(shots)} downloaded; "
             f"{len(shots) - len(downloaded)} slots still need clips."
         )
+
+    # Global fallback assignment: score every rejected clip against every
+    # missing narration slot, then greedily assign the highest-scoring unique
+    # clip/slot pairs. This avoids choosing a weak fallback independently
+    # when a stronger candidate from another failed slot fits better.
+    if missing_fallback_slots:
+        ranked_pairs = []
+        ranking_errors = []
+        for slot_index in missing_fallback_slots:
+            target = shots[slot_index]
+            target_animal = str(target.get("animal", "")).strip()
+            target_action = str(target.get("action", "")).strip()
+            target_sentence = str(target.get("sentence", "")).strip()
+            target_visual = str(target.get("visual", "")).strip()
+            for candidate in fallback_pool:
+                if candidate.get("slot_ranked_for") == slot_index:
+                    continue
+                try:
+                    score, reason = _score_clip_for_shot(
+                        candidate["path"],
+                        target_animal,
+                        target_action,
+                        target_sentence,
+                        target_visual,
+                        strict_species=True,
+                    )
+                except Exception as exc:
+                    ranking_errors.append(str(exc))
+                    print(
+                        f"Global fallback ranking failed: candidate from shot "
+                        f"{candidate.get('source_slot', '?') + 1}, target shot "
+                        f"{slot_index + 1}: {exc}"
+                    )
+                    continue
+                ranked_pairs.append((score, slot_index, candidate, reason))
+
+        assigned_slots = set()
+        assigned_candidates = set()
+        for score, slot_index, candidate, reason in sorted(
+            ranked_pairs, key=lambda item: item[0], reverse=True
+        ):
+            candidate_key = str(candidate.get("video_id"))
+            if slot_index in assigned_slots or candidate_key in assigned_candidates:
+                continue
+            destination = out_path / f"clip_{slot_index:02d}.mp4"
+            candidate["path"].replace(destination)
+            downloaded.append(str(destination))
+            assigned_slots.add(slot_index)
+            assigned_candidates.add(candidate_key)
+            used_video_ids.add(candidate["video_id"])
+            print(
+                f"GLOBAL FALLBACK selected for shot {slot_index + 1}: "
+                f"score={score}/100; candidate originally collected for shot "
+                f"{candidate.get('source_slot', '?') + 1}; {reason}"
+            )
+
+        for candidate in fallback_pool:
+            if str(candidate.get("video_id")) not in assigned_candidates:
+                candidate["path"].unlink(missing_ok=True)
+
+        still_missing = sorted(set(missing_fallback_slots) - assigned_slots)
+        if still_missing:
+            raise RuntimeError(
+                f"Global fallback pool could not fill {len(still_missing)} "
+                f"missing shot(s): {[i + 1 for i in still_missing]}. "
+                f"Available rejected clips: {len(fallback_pool)}; "
+                f"ranking errors: {ranking_errors[:3]}"
+            )
 
     missing = len(shots) - len(downloaded)
     if missing:
@@ -1685,6 +1714,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
         "clips (up to 3 Visual-QA search rounds per missing slot; "
         "best rejected candidate ranked as fallback; "
-        "first 10 species-focused searches; final 5 broad wildlife searches)."
+        "all 15 species-focused searches; global best-fit fallback across missing slots)."
     )
     return downloaded
