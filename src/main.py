@@ -123,7 +123,14 @@ def build_description(
     )
 
 
-def run(
+MAX_FULL_PIPELINE_ATTEMPTS = 5
+
+
+class QualityGateRejectedError(RuntimeError):
+    """Raised only when the final script Quality Gate rejects a full attempt."""
+
+
+def _run_once(
     channel_id: str,
     is_short: bool,
     privacy_status: str = "public",
@@ -282,9 +289,9 @@ def run(
             )
 
             if not quality_review.get("approved"):
-                raise RuntimeError(
+                raise QualityGateRejectedError(
                     "Final Quality Gate rejected the edited script. "
-                    "TTS and publishing are blocked."
+                    "TTS and publishing are blocked for this attempt."
                 )
 
         print(
@@ -586,6 +593,42 @@ def run(
             print(
                 "WARNING: video_registry logging failed "
                 f"({e}) -- upload itself succeeded."
+            )
+
+
+
+def run(
+    channel_id: str,
+    is_short: bool,
+    privacy_status: str = "public",
+    dry_run: bool = False,
+) -> None:
+    """
+    Restart the complete video-generation attempt when the final
+    Quality Gate rejects a script. Each attempt gets a fresh temporary
+    directory and regenerates the topic, script, editorial pass and visuals.
+    """
+    for attempt in range(1, MAX_FULL_PIPELINE_ATTEMPTS + 1):
+        try:
+            return _run_once(
+                channel_id,
+                is_short,
+                privacy_status,
+                dry_run,
+            )
+        except QualityGateRejectedError as exc:
+            if attempt >= MAX_FULL_PIPELINE_ATTEMPTS:
+                raise RuntimeError(
+                    f"Quality Gate rejected all {MAX_FULL_PIPELINE_ATTEMPTS} "
+                    f"complete pipeline attempts. Publishing is blocked. "
+                    f"Last rejection: {exc}"
+                ) from exc
+
+            print(
+                f"QUALITY GATE REJECTED attempt {attempt}/"
+                f"{MAX_FULL_PIPELINE_ATTEMPTS}. "
+                f"Restarting the entire pipeline from scratch "
+                f"({attempt + 1}/{MAX_FULL_PIPELINE_ATTEMPTS})."
             )
 
 
