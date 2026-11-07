@@ -955,6 +955,7 @@ def _verify_clip_matches_shot(
     sentence: str,
     visual: str,
     require_action: bool = False,
+    strict_species: bool = True,
 ) -> tuple[bool, str]:
     """Verify only that the intended animal/type is visibly present.
 
@@ -968,38 +969,39 @@ def _verify_clip_matches_shot(
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
+        if strict_species:
+            identity_rules = f"""
+TARGET ANIMAL: {animal}
+The exact named animal/species (or an unmistakable example of that animal type)
+must be visibly present. Reject a different animal.
+"""
+        else:
+            identity_rules = """
+TARGET ANIMAL: ANY REAL WILD ANIMAL
+Any recognizable real wild animal is acceptable. It does not need to match
+the narration or the planned shot's animal. Reject humans, objects, food,
+toys, drawings, models, and scenery without a clearly visible animal.
+"""
+
         prompt = f"""
 You are checking wildlife footage for a video editor.
 
-TARGET ANIMAL: {animal}
+{identity_rules}
 
 Look at the attached frames and answer only this question:
-Is the actual target animal (or an unmistakable example of that animal type)
-visibly present AND shown in an appealing, usable wildlife shot?
+Is an acceptable animal visibly present AND shown in an appealing, usable
+wildlife shot?
 
-The animal identity/type and basic visual appeal are the only approval criteria.
-The animal should be recognizable and reasonably clear/prominent in the frame.
-Prefer footage that looks engaging and well-composed; reject footage where the
-animal is tiny, heavily obscured, extremely blurry, or barely visible.
-Ignore the narration, described action, pose, habitat, camera angle, and
-background. The animal does NOT need to perform the narrated action.
-A normal clip of the correct animal must be accepted.
-
-Reject footage where the target animal is absent or replaced by:
-- a human holding/using an object with a similar name,
-- a different animal,
-- food, toys, drawings, models, or unrelated scenery.
-
-Examples:
-- pistol shrimp means an actual shrimp, NOT a person holding a pistol.
-- swordfish means an actual fish, NOT a person holding a sword.
-- crane as a bird means the actual bird, NOT construction machinery.
+The animal must be recognizable and reasonably clear/prominent in the frame.
+Prefer engaging, well-composed footage; reject animals that are tiny, heavily
+obscured, extremely blurry, or barely visible.
+Ignore narration, action, pose, habitat, camera angle, and background.
+The animal does NOT need to perform any narrated action.
 
 Do not demand proof of rare behavior or impossible visual species-level
-details that cannot be seen in the frames. Match the named animal/type using
-the visible animal itself. If the animal is clearly the intended animal type,
-answer MATCH even if it is resting or doing something unrelated to narration.
-If the animal is absent or clearly a different type, answer NO_MATCH.
+details that cannot be seen in the frames.
+If the required animal identity rule above is satisfied, answer MATCH.
+Otherwise answer NO_MATCH.
 
 Return exactly one of these two lines, with no JSON and no explanation:
 MATCH
@@ -1101,26 +1103,29 @@ def fetch_clips_for_shots(
         if not isinstance(shot, dict):
             raise RuntimeError(f"Visual shot {index + 1} is not a JSON object.")
 
-        animal = str(shot.get("animal", "")).strip()
+        strict_species = index < 10
+        animal = str(shot.get("animal", "")).strip() or "wild animal"
         action = str(shot.get("action", "")).strip()
         sentence = str(shot.get("sentence", "")).strip()
         visual = str(shot.get("visual", "")).strip()
         query = str(shot.get("search_query", "")).strip()
 
-        if not animal or not query:
+        if strict_species and (not animal or not query):
             raise RuntimeError(
-                f"Visual shot {index + 1} is missing its target animal or search query."
+                f"Strict Visual shot {index + 1} is missing its target animal or search query."
             )
 
-        query_words = set(re.findall(r"[a-zA-Z]+", query.lower()))
-        animal_words = set(re.findall(r"[a-zA-Z]+", animal.lower()))
-        if not animal_words.intersection(query_words):
-            raise RuntimeError(
-                f"Visual shot {index + 1} query does not name its required animal: {query!r}"
-            )
+        if strict_species:
+            query_words = set(re.findall(r"[a-zA-Z]+", query.lower()))
+            animal_words = set(re.findall(r"[a-zA-Z]+", animal.lower()))
+            if not animal_words.intersection(query_words):
+                raise RuntimeError(
+                    f"Visual shot {index + 1} query does not name its required animal: {query!r}"
+                )
 
         print(
             f"Visual shot {index + 1}/{len(shots)}: "
+            f"mode={'EXACT SPECIES' if strict_species else 'ANY WILDLIFE'}; "
             f"animal={animal!r} action={action!r} query={query!r}"
         )
 
@@ -1136,6 +1141,7 @@ def fetch_clips_for_shots(
                     sentence=sentence,
                     visual=visual,
                     require_action=False,
+                    strict_species=strict_species,
                 )
             except Exception as exc:
                 existing_ok = False
@@ -1183,32 +1189,40 @@ def fetch_clips_for_shots(
                 ],
             }
 
-            # Keep every search anchored to the target animal. Add animal-only
-            # wording variants so later retry rounds can discover different
-            # Pexels results without ever searching for a human/object homonym.
-            aliases = species_search_aliases.get(
-                normalized_animal,
-                [
-                    animal,
-                    f"{animal} wildlife",
-                    f"{animal} close up",
-                    f"{animal} in nature",
-                    f"{animal} documentary",
-                    f"{animal} habitat",
-                    f"{animal} animal",
-                    f"{animal} macro",
-                ],
-            )
-            # Rebuild the search-mode list on every retry round. The previous
-            # version called search_modes.extend(...) without initializing
-            # search_modes, which could crash before any Pexels search began.
-            # Every query is animal-anchored and action visibility is optional.
-            search_modes = [(query, False)]
-            search_modes.extend(
-                (candidate_query, False)
-                for candidate_query in aliases[:2]
-                if candidate_query.strip().lower() != query.lower()
-            )
+            if strict_species:
+                # The first 10 shots are tied to the narration's exact animal.
+                aliases = species_search_aliases.get(
+                    normalized_animal,
+                    [
+                        animal,
+                        f"{animal} wildlife",
+                        f"{animal} close up",
+                        f"{animal} in nature",
+                        f"{animal} documentary",
+                        f"{animal} habitat",
+                        f"{animal} animal",
+                        f"{animal} macro",
+                    ],
+                )
+                search_modes = [(query, False)]
+                search_modes.extend(
+                    (candidate_query, False)
+                    for candidate_query in aliases[:2]
+                    if candidate_query.strip().lower() != query.lower()
+                )
+            else:
+                # The final 5 shots deliberately use varied wildlife footage.
+                # Each retry asks Pexels for fresh broad wildlife results.
+                search_modes = [
+                    (f"wildlife animal close up {retry_round}", False),
+                    (f"wild animals natural habitat {retry_round}", False),
+                    (f"cinematic wildlife documentary {retry_round}", False),
+                    (f"birds mammals reptiles wildlife {retry_round}", False),
+                    (f"underwater wildlife animals {retry_round}", False),
+                    (f"safari wildlife animals {retry_round}", False),
+                    (f"forest wildlife animals {retry_round}", False),
+                    (f"wildlife animal portrait {retry_round}", False),
+                ]
 
             # AI-generated Pexels Query Brain: create fresh, natural stock-search
             # phrases from the animal's known appearance and shot context. These
@@ -1217,34 +1231,31 @@ def fetch_clips_for_shots(
                 from src.freeinference_client import generate_response
 
                 rejected_context = ", ".join(sorted(seen_search_queries)[-40:]) or "none yet"
-                query_prompt = f"""
-You are an expert stock-footage search strategist for Pexels.
-
+                if strict_species:
+                    query_prompt = f"""
+You are an expert Pexels wildlife stock-footage search strategist.
 TARGET ANIMAL: {animal}
 SHOT DESCRIPTION: {visual or "not provided"}
 NARRATION CONTEXT: {sentence or action or "not provided"}
 ORIGINAL SEARCH QUERY: {query}
-
-Generate 5 genuinely different, short, natural English Pexels VIDEO search queries.
-First reason about the animal's recognizable real-world appearance and typical habitat.
-Then describe it in varied ways that Pexels stock creators might tag footage:
-- visual shape, size, colors, texture, distinctive body silhouette
-- close-up, wide shot, side view, swimming/flying/walking, group or solo
-- natural habitat, underwater/ocean/forest/grassland when appropriate
-- varied descriptive phrases, but EVERY query must explicitly contain the target
-  species name "{animal}" or one of its accepted scientific/common names.
-
-Do NOT just repeat the species name with "documentary", "wildlife", "footage",
-"animal", "nature", or "close up" appended.
-Do NOT invent appearance details. Do NOT include humans, weapons, products,
-cartoons, toys, or unrelated subjects.
-NEVER omit the target species name, even when describing its appearance or habitat.
-A query such as "huge fish close up underwater" is INVALID without the species name.
-Do not repeat or lightly reword any of these previously tried AI queries:
-{rejected_context}
-
-Return exactly 5 search queries, one per line, no numbering, bullets, quotes,
-explanations, or markdown.
+Generate 5 distinct, natural English Pexels VIDEO queries. Use varied
+recognizable appearance, camera framing and natural habitat descriptions.
+EVERY query must explicitly contain "{animal}" or an accepted scientific/common
+name. Never omit or replace the target species. Do not invent traits or include
+humans, objects, toys, cartoons or unrelated subjects.
+Previously tried queries: {rejected_context}
+Return exactly 5 queries, one per line, no numbering or explanations.
+"""
+                else:
+                    query_prompt = f"""
+You are an expert Pexels wildlife stock-footage search strategist.
+Find varied, visually appealing footage of ANY real wild animals. The footage
+does not need to match the narration or a specific species.
+Generate 5 distinct natural English Pexels VIDEO queries spanning different
+wildlife categories, habitats and camera framings. Do not include humans,
+objects, food, toys, cartoons or unrelated scenery.
+Previously tried queries: {rejected_context}
+Return exactly 5 queries, one per line, no numbering or explanations.
 """
                 response = generate_response(query_prompt, max_output_tokens=220)
                 generated_queries = []
@@ -1257,7 +1268,10 @@ explanations, or markdown.
                         and len(candidate_query.split()) >= 2
                         and normalized_candidate not in seen_ai_queries
                         and normalized_candidate not in {item[0].lower() for item in search_modes}
-                        and _query_mentions_target_species(candidate_query, animal)
+                        and (
+                            not strict_species
+                            or _query_mentions_target_species(candidate_query, animal)
+                        )
                     ):
                         seen_ai_queries.add(normalized_candidate)
                         generated_queries.append(candidate_query[:100])
@@ -1276,14 +1290,25 @@ explanations, or markdown.
                     f"WARNING: Pexels Query Brain failed for {animal!r} "
                     f"in retry round {retry_round}; using deterministic fallback queries: {exc}"
                 )
-                fallback_queries = [
-                    f"{animal} underwater close up" if any(term in normalized_animal for term in ("fish", "shark", "ray", "octopus", "jellyfish")) else f"{animal} close up natural habitat",
-                    f"large {animal} in natural environment",
-                    f"{animal} side view detailed",
-                    f"{animal} moving through its habitat",
-                    f"wild {animal} portrait",
-                    f"{animal} macro texture detail",
-                ]
+                fallback_queries = (
+                    [
+                        f"{animal} underwater close up" if any(term in normalized_animal for term in ("fish", "shark", "ray", "octopus", "jellyfish")) else f"{animal} close up natural habitat",
+                        f"large {animal} in natural environment",
+                        f"{animal} side view detailed",
+                        f"{animal} moving through its habitat",
+                        f"wild {animal} portrait",
+                        f"{animal} macro texture detail",
+                    ]
+                    if strict_species
+                    else [
+                        f"wildlife animal close up retry {retry_round}",
+                        f"wild animals natural habitat retry {retry_round}",
+                        f"cinematic wildlife documentary retry {retry_round}",
+                        f"birds mammals reptiles wildlife retry {retry_round}",
+                        f"underwater wildlife animals retry {retry_round}",
+                        f"safari wildlife animals retry {retry_round}",
+                    ]
+                )
                 for candidate_query in fallback_queries:
                     if candidate_query.lower() not in seen_ai_queries:
                         seen_ai_queries.add(candidate_query.lower())
@@ -1296,7 +1321,7 @@ explanations, or markdown.
             # Never spend another Pexels request on a phrase already tried.
             fresh_search_modes = []
             for search_query, require_action in search_modes:
-                if not _query_mentions_target_species(search_query, animal):
+                if strict_species and not _query_mentions_target_species(search_query, animal):
                     print(
                         f"Skipping unanchored Pexels query for shot {index + 1}: "
                         f"{search_query!r} (required species: {animal!r})"
@@ -1403,7 +1428,7 @@ explanations, or markdown.
                 f"new_candidates={new_candidate_count}, "
                 f"total_unique_checked_after_round={checked + new_candidate_count}, "
                 f"pexels_results={sum(search_result_counts.values())}, "
-                f"animal_queries={len(search_modes)}. "
+                f"{'species' if strict_species else 'wildlife'}_queries={len(search_modes)}. "
                 f"Per-query counts: {search_result_counts}"
             )
 
@@ -1484,6 +1509,7 @@ explanations, or markdown.
                                     sentence=sentence,
                                     visual=visual,
                                     require_action=False,
+                                    strict_species=strict_species,
                                 )
                             except Exception as exc:
                                 approved = False
@@ -1542,6 +1568,6 @@ explanations, or markdown.
 
     print(
         f"Cosmic Curious visual QA: verified {len(downloaded)}/{len(shots)} "
-        "exact-species-matched clips."
+        "clips (first 10 exact-species; final 5 any wildlife)."
     )
     return downloaded
