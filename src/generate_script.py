@@ -419,6 +419,10 @@ def _load_winner_hunter_queue(channel_id: str) -> list[tuple[int, str]] | None:
         raw_candidates = payload.get("candidates")
         if not isinstance(raw_candidates, list):
             return None
+        # An empty same-day queue means the previous batch was consumed.
+        # Return None so Winner Hunter can replenish from fresh Analytics data.
+        if not raw_candidates:
+            return None
 
         candidates = []
         for item in raw_candidates[:WINNER_HUNTER_MAX_CANDIDATES]:
@@ -455,9 +459,8 @@ def _generate_winner_inspired_topic(
             print("OpenCode text API unavailable; Winner Hunter cannot generate candidates.")
             return None
 
-        # Generate one Analytics-based batch per UTC day, then consume its
-        # ranked topics across the day's Shorts instead of making a new OpenCode
-        # request for every upload slot.
+        # Generate a ranked Analytics batch when no same-day candidates remain.
+        # Exhausted batches are replenished rather than blocking the channel.
         try:
             winner_context = build_winner_context(channel_id)
             if not winner_context:
@@ -607,8 +610,8 @@ Sort from highest score to lowest score. No explanations.
 
     _save_winner_hunter_queue(channel_id, [])
     print(
-        "Winner Hunter: today's Analytics-based batch is exhausted "
-        f"({WINNER_HUNTER_MAX_CANDIDATES} topics maximum)."
+        "Winner Hunter: current Analytics-based batch is exhausted "
+        f"({WINNER_HUNTER_MAX_CANDIDATES} candidates per batch). Fresh Analytics candidates will be generated on demand."
     )
     return None
 
@@ -926,12 +929,6 @@ def generate_script(
             "Daily Brain, Trend Scout, or static fallback topics."
         )
 
-    if not forced_topic and not recap_topic:
-        mark_topic_used(channel_id, topic)
-
-    if not is_short and not forced_topic:
-        save_todays_longform_topic(channel_id, topic)
-
     generated = None
 
     if is_available():
@@ -953,6 +950,14 @@ def generate_script(
         generated = generate_with_template(
             topic, config, length, language
         )
+
+    # Only consume a topic after script generation has succeeded. Failed runs
+    # can retry the same topic instead of burning through the daily queue.
+    if not forced_topic and not recap_topic:
+        mark_topic_used(channel_id, topic)
+
+    if not is_short and not forced_topic:
+        save_todays_longform_topic(channel_id, topic)
 
     return {
         "channel_id": channel_id,
