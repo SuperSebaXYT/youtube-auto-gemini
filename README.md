@@ -19,12 +19,12 @@ under the same Google account, or separate accounts if you want fully
 independent channels (separate accounts avoids any single strike affecting
 all 3 — up to you).
 
-### 2. Get a free Gemini API key (for script writing)
-1. Go to https://aistudio.google.com/apikey
-2. Sign in, click "Create API key"
-3. Copy it — you'll need it in step 6
+### 2. Get a FreeInference API key (text + visual AI)
+1. Go to https://freeinference.org/ and create/sign in to your account.
+2. Create an API key in your account dashboard.
+3. Confirm that your account exposes `deepseek-v4-flash` and `qwen3.6-35b` at https://freeinference.org/v1/models.
 
-One key works for all 3 channels (used as `GEMINI_API_KEY`).
+Add the key to GitHub Actions as `FREEINFERENCE_API_KEY`. The pipeline uses DeepSeek V4 Flash for text generation and Qwen3.6-35B for Visual QA. The `bge-m3` model is embeddings-only and is not used for chat or image verification.
 
 ### 3. Get a free Pexels API key (for stock footage)
 1. Go to https://www.pexels.com/api/
@@ -80,7 +80,7 @@ In your repo: **Settings → Secrets and variables → Actions → New repositor
 
 | Secret name | Value |
 |---|---|
-| `GEMINI_API_KEY` | from step 2 |
+| `FREEINFERENCE_API_KEY` | from step 2 |
 | `PEXELS_API_KEY` | from step 3 |
 | `YOUTUBE_TOKEN_MIND_BITES` | `base64 -i tokens/mind_bites_token.pickle` output |
 | `YOUTUBE_TOKEN_THEN_AND_NOW` | `base64 -i tokens/then_and_now_token.pickle` output |
@@ -143,7 +143,7 @@ just append new lines to the relevant `.txt` file and commit.
 
 | Component | Free tier | Watch out for |
 |---|---|---|
-| Gemini API | Generous free daily quota | Limits change — check https://ai.google.dev/pricing |
+| FreeInference API | Account-specific daily quota and concurrency limits | Check your dashboard and https://doc.freeinference.org/models |
 | Pexels API | Free, rate-limited | 200 requests/hour on free tier — plenty for this volume |
 | Edge-TTS | Free, unofficial API | Not officially supported by Microsoft; could break without notice |
 | YouTube Data API | 10,000 units/day free | Each upload costs ~1600 units → ~6 uploads/day is close to the ceiling. 3 channels × 6 = 18 uploads would need 3 separate Cloud projects/quotas, OR you reduce volume. **See note below.** |
