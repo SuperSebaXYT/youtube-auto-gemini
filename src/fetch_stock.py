@@ -50,6 +50,35 @@ STOPWORDS = {
 }
 
 
+def _query_mentions_target_species(search_query: str, animal: str) -> bool:
+    """Return True only when a Pexels query explicitly names the target species."""
+    normalized_query = re.sub(r"[^a-z0-9]+", " ", search_query.lower()).strip()
+    normalized_animal = re.sub(r"[^a-z0-9]+", " ", animal.lower()).strip()
+
+    accepted_names = {
+        "secretary bird": [
+            "secretary bird",
+            "secretarybird",
+            "sagittarius serpentarius",
+        ],
+        "african fish eagle": [
+            "african fish eagle",
+            "african sea eagle",
+            "fish eagle africa",
+            "haliaeetus vocifer",
+        ],
+    }.get(normalized_animal, [normalized_animal])
+
+    return any(
+        re.search(
+            r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])",
+            normalized_query,
+        )
+        for name in accepted_names
+        if name
+    )
+
+
 def _topic_words(topic: str) -> list:
     """Extract meaningful words from the topic."""
 
@@ -1201,14 +1230,15 @@ Then describe it in varied ways that Pexels stock creators might tag footage:
 - visual shape, size, colors, texture, distinctive body silhouette
 - close-up, wide shot, side view, swimming/flying/walking, group or solo
 - natural habitat, underwater/ocean/forest/grassland when appropriate
-- broad descriptive phrases that can find the animal even when its species name
-  is missing from the creator's tags (for example: "huge fish close up underwater").
+- varied descriptive phrases, but EVERY query must explicitly contain the target
+  species name "{animal}" or one of its accepted scientific/common names.
 
 Do NOT just repeat the species name with "documentary", "wildlife", "footage",
 "animal", "nature", or "close up" appended.
 Do NOT invent appearance details. Do NOT include humans, weapons, products,
 cartoons, toys, or unrelated subjects.
-Some queries may omit the exact species name if they describe its real appearance.
+NEVER omit the target species name, even when describing its appearance or habitat.
+A query such as "huge fish close up underwater" is INVALID without the species name.
 Do not repeat or lightly reword any of these previously tried AI queries:
 {rejected_context}
 
@@ -1226,6 +1256,7 @@ explanations, or markdown.
                         and len(candidate_query.split()) >= 2
                         and normalized_candidate not in seen_ai_queries
                         and normalized_candidate not in {item[0].lower() for item in search_modes}
+                        and _query_mentions_target_species(candidate_query, animal)
                     ):
                         seen_ai_queries.add(normalized_candidate)
                         generated_queries.append(candidate_query[:100])
@@ -1257,13 +1288,19 @@ explanations, or markdown.
                         seen_ai_queries.add(candidate_query.lower())
                         search_modes.append((candidate_query, False))
 
-            # Search queries are intentionally allowed to be descriptive rather
-            # than species-anchored. This discovers footage whose Pexels tags omit
-            # the species name; Visual QA still rejects every wrong animal.
-            # Never spend another Pexels request on a phrase already tried for
-            # this shot. New retry rounds must bring genuinely new search language.
+            # Enforce species anchoring on EVERY Pexels request, including the
+            # original shot query, aliases, AI-generated phrases, and fallbacks.
+            # Descriptive wording is welcome, but a query without the target
+            # species name or an accepted scientific/common name is discarded.
+            # Never spend another Pexels request on a phrase already tried.
             fresh_search_modes = []
             for search_query, require_action in search_modes:
+                if not _query_mentions_target_species(search_query, animal):
+                    print(
+                        f"Skipping unanchored Pexels query for shot {index + 1}: "
+                        f"{search_query!r} (required species: {animal!r})"
+                    )
+                    continue
                 normalized_search_query = re.sub(r"\s+", " ", search_query.strip().lower())
                 if not normalized_search_query or normalized_search_query in seen_search_queries:
                     continue
