@@ -109,7 +109,7 @@ def get_authenticated_service(token_path: str, client_secret_path: str = None):
 
 def verify_token_valid(token_path: str, client_secret_path: str = None) -> None:
     """Fast pre-flight auth check -- call this BEFORE any expensive
-    Gemini/TTS/Pexels work, not just right before the upload call.
+    FreeInference/TTS/Pexels work, not just right before the upload call.
 
     Forces a genuine token refresh (regardless of whether the access
     token looks locally unexpired) -- this is the exact same operation
