@@ -88,6 +88,8 @@ def _record_usage(model: str, usage) -> None:
 
 def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
               json_mode: bool = False, images: list[tuple[bytes, str]] | None = None):
+    # Hard lock the entire gateway to one model. No caller can select a fallback.
+    model = TEXT_MODEL
     if not prompt.strip():
         raise RuntimeError("AI request has no text prompt.")
 
