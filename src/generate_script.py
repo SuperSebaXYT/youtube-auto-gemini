@@ -446,7 +446,7 @@ def _generate_winner_inspired_topic(
     config: dict,
     is_short: bool,
 ) -> str | None:
-    """Choose one fresh topic from current Analytics on every pipeline run."""
+    """Choose one fresh topic from current Analytics, retrying invalid choices."""
     if not WINNER_HUNTER_AVAILABLE:
         print("Winner Hunter unavailable.")
         return None
@@ -468,7 +468,10 @@ def _generate_winner_inspired_topic(
         f"- {topic}"
         for topic in sorted(used_topics, key=str.casefold)[-120:]
     )
+    used_normalized = [_normalize_topic(topic) for topic in used_topics]
+    rejected_candidates = []
     content_length = "a YouTube Short" if is_short else "a YouTube video"
+    max_topic_attempts = 5
 
     prompt = f"""
 You are the topic strategist for a faceless animal and wildlife channel.
@@ -500,35 +503,84 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
 
     try:
         client = get_client()
-        response = _generate_with_token_budget(client, prompt, 500)
-        lines = _parse_topic_lines(response.text)
-        used_normalized = [_normalize_topic(topic) for topic in used_topics]
 
-        for candidate_line in lines:
-            match = re.match(
-                r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
-                candidate_line,
-                flags=re.IGNORECASE,
+        for attempt in range(1, max_topic_attempts + 1):
+            retry_note = ""
+            if rejected_candidates:
+                retry_note = (
+                    "\\n\\nDO NOT RETURN ANY OF THESE REJECTED TOPICS "
+                    "OR A NEAR-IDENTICAL VERSION:\\n"
+                    + "\\n".join(f"- {item}" for item in rejected_candidates[-10:])
+                    + "\\nChoose a genuinely different animal angle supported "
+                    "by the Analytics."
+                )
+
+            response = _generate_with_token_budget(
+                client,
+                prompt + retry_note,
+                500,
             )
-            if not match:
-                continue
-            score = max(0, min(100, int(match.group(1))))
-            candidate = match.group(2).strip()
-            normalized = _normalize_topic(candidate)
-            if not candidate:
-                continue
-            if any(
-                normalized == old
-                or SequenceMatcher(None, normalized, old).ratio() >= 0.94
-                for old in used_normalized
-            ):
-                print(f"Winner Hunter rejected a repeated topic: {candidate}")
-                continue
-            print(f"Winner Hunter selected fresh topic ({score}/100): {candidate}")
-            return candidate
+            lines = _parse_topic_lines(response.text)
+            selected = None
 
-        print("Winner Hunter did not return one valid, unused Analytics-based topic.")
+            for candidate_line in lines:
+                match = re.match(
+                    r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                    candidate_line,
+                    flags=re.IGNORECASE,
+                )
+                if not match:
+                    continue
+
+                score = max(0, min(100, int(match.group(1))))
+                candidate = match.group(2).strip()
+                normalized = _normalize_topic(candidate)
+                if not candidate:
+                    continue
+
+                is_duplicate = any(
+                    normalized == old
+                    or SequenceMatcher(None, normalized, old).ratio() >= 0.94
+                    for old in used_normalized
+                ) or any(
+                    normalized == _normalize_topic(old)
+                    or SequenceMatcher(
+                        None, normalized, _normalize_topic(old)
+                    ).ratio() >= 0.94
+                    for old in rejected_candidates
+                )
+
+                if is_duplicate:
+                    print(
+                        f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
+                        f"rejected repeated topic: {candidate}"
+                    )
+                    rejected_candidates.append(candidate)
+                    continue
+
+                selected = (score, candidate)
+                break
+
+            if selected:
+                score, candidate = selected
+                print(
+                    f"Winner Hunter selected fresh topic "
+                    f"({score}/100) on attempt {attempt}/{max_topic_attempts}: "
+                    f"{candidate}"
+                )
+                return candidate
+
+            print(
+                f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
+                "returned no valid unused topic."
+            )
+
+        print(
+            f"Winner Hunter stopped after {max_topic_attempts} unsuccessful "
+            "topic attempts. No topic was consumed; pipeline will stop safely."
+        )
         return None
+
     except Exception as e:
         print(f"WARNING: Winner Hunter generation failed ({e}).")
         return None
