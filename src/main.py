@@ -132,8 +132,8 @@ def run(
 
     config = load_channel_config(channel_id)
 
-    # Cosmic Curious text generation uses the OpenCode adapter.
-    os.environ["AI_PROVIDER"] = "opencode"
+    # Cosmic Curious uses the FreeInference DeepSeek text and Qwen vision gateway.
+    os.environ["AI_PROVIDER"] = "freeinference"
 
 
     # Long-form is globally disabled. Reject manual/default invocations
