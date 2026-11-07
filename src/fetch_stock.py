@@ -1287,51 +1287,75 @@ def fetch_clips_for_shots(
                 f"Per-query counts: {search_result_counts}"
             )
 
-            for video_id, candidate in ranked:
-                checked += 1
-                attempted_video_ids.add(video_id)
+            # Download candidates in batches of 15. Each completed download
+            # is sent to Visual QA immediately; approved clips are committed to
+            # their slot at once. The batch never weakens the animal identity gate.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                candidate_path = out_path / (
-                    f"candidate_{index:02d}_{checked:03d}.mp4"
-                )
-                if not _download_pexels_video(candidate["video"], candidate_path):
-                    continue
+            batch_size = 15
+            for batch_start in range(0, len(ranked), batch_size):
+                batch = ranked[batch_start:batch_start + batch_size]
+                batch_jobs = {}
+                with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                    for video_id, candidate in batch:
+                        if video_id in attempted_video_ids:
+                            continue
+                        checked += 1
+                        attempted_video_ids.add(video_id)
+                        candidate_path = out_path / (
+                            f"candidate_{index:02d}_{checked:05d}.mp4"
+                        )
+                        future = executor.submit(
+                            _download_pexels_video, candidate["video"], candidate_path
+                        )
+                        batch_jobs[future] = (video_id, candidate, candidate_path)
 
-                require_action = candidate["require_action"]
-                try:
-                    approved, audit_reason = _verify_clip_matches_shot(
-                        candidate_path,
-                        animal=animal,
-                        action=action,
-                        sentence=sentence,
-                        visual=visual,
-                        require_action=require_action,
-                    )
-                except Exception as exc:
-                    candidate_path.unlink(missing_ok=True)
-                    print(
-                        f"WARNING: Vision QA could not assess candidate for "
-                        f"shot {index + 1}: {exc}. Rejecting this candidate "
-                        "and continuing through the remaining search results."
-                    )
-                    continue
+                    for future in as_completed(batch_jobs):
+                        video_id, candidate, candidate_path = batch_jobs[future]
+                        try:
+                            was_downloaded = future.result()
+                        except Exception as exc:
+                            was_downloaded = False
+                            print(
+                                f"WARNING: parallel download failed for shot {index + 1}, "
+                                f"video {video_id}: {exc}"
+                            )
+                        if not was_downloaded:
+                            continue
 
-                if approved:
-                    accepted_path = out_path / f"clip_{index:02d}.mp4"
-                    candidate_path.replace(accepted_path)
-                    used_video_ids.add(video_id)
-                    print(
-                        f"Visual QA PASSED for shot {index + 1}: "
-                        f"source_query={candidate['query']!r}; {audit_reason}"
-                    )
+                        # QA starts as soon as this particular download finishes.
+                        try:
+                            approved, audit_reason = _verify_clip_matches_shot(
+                                candidate_path,
+                                animal=animal,
+                                action=action,
+                                sentence=sentence,
+                                visual=visual,
+                                require_action=False,
+                            )
+                        except Exception as exc:
+                            approved = False
+                            audit_reason = f"Vision QA error: {exc}"
+
+                        if approved:
+                            accepted_path = out_path / f"clip_{index:02d}.mp4"
+                            candidate_path.replace(accepted_path)
+                            used_video_ids.add(video_id)
+                            print(
+                                f"Visual QA PASSED for shot {index + 1}: "
+                                f"source_query={candidate['query']!r}; {audit_reason}. "
+                                f"Checked {checked} distinct candidates so far."
+                            )
+                            break
+
+                        print(
+                            f"Visual QA REJECTED candidate for shot {index + 1}: "
+                            f"source_query={candidate['query']!r}; {audit_reason}"
+                        )
+                        candidate_path.unlink(missing_ok=True)
+
+                if accepted_path is not None:
                     break
-
-                print(
-                    f"Visual QA REJECTED candidate for shot {index + 1}: "
-                    f"source_query={candidate['query']!r}; {audit_reason}"
-                )
-                candidate_path.unlink(missing_ok=True)
-
 
             if accepted_path is None:
                 print(
