@@ -1151,16 +1151,24 @@ def fetch_clips_for_shots(
                 ],
             }
 
-            # Keep searches species-specific. The director's action query comes
-            # first; the remaining queries broaden wording, never the animal.
+            # Keep every search anchored to the target animal. Add animal-only
+            # wording variants so later retry rounds can discover different
+            # Pexels results without ever searching for a human/object homonym.
             aliases = species_search_aliases.get(
                 normalized_animal,
-                [animal, f"{animal} wildlife", f"{animal} {action}"],
+                [
+                    animal,
+                    f"{animal} wildlife",
+                    f"{animal} close up",
+                    f"{animal} in nature",
+                    f"{animal} documentary",
+                    f"{animal} habitat",
+                    f"{animal} animal",
+                    f"{animal} macro",
+                ],
             )
-            # Exact species is mandatory; the narrated action is never a gate.
-            search_modes = [(query, False)]
-            # Alternate queries and the primary query all require the exact
-            # animal to be visible. The narrated action is context, not a gate.
+            # The primary search query and all animal-only aliases are searched.
+            # Visual QA ignores the narrated action entirely.
             search_modes.extend(
                 (candidate_query, False)
                 for candidate_query in aliases
@@ -1219,10 +1227,8 @@ def fetch_clips_for_shots(
 
                 search_result_counts[search_query] = query_result_count
 
-            # Do not let one noisy Pexels query monopolize verification.
-            # Every candidate must pass exact-species visibility QA. The exact
-            # narrated action is not mandatory because suitable footage may not
-            # exist for every narration segment.
+            # Balance candidates from every animal-specific query. Only the
+            # target animal/type is checked; narration actions are irrelevant.
             candidates_by_mode = {}
             for video_id, candidate in candidates_by_id.items():
                 candidates_by_mode.setdefault(candidate["mode_index"], []).append(
