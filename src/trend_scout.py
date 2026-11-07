@@ -5,7 +5,7 @@ Current-signal discovery for Animals & Wildlife.
 
 Strategy:
 
-YouTube -> optional Reddit -> OpenCode text model synthesis
+YouTube -> optional Reddit -> FreeInference text model synthesis
 
 Reddit is treated as an optional signal only.
 
@@ -15,7 +15,7 @@ If no trend source works, the caller falls back to Topic Brain/static topics.
 
 The trend system never becomes a hard dependency for video generation.
 
-OpenCode text model calls are routed through shared OpenCode adapter.
+FreeInference text model calls are routed through shared FreeInference client.
 """
 
 import os
@@ -238,7 +238,7 @@ def get_trending_topic(
     Strategy:
         1. YouTube signal
         2. Reddit signal
-        3. OpenCode text model synthesis
+        3. FreeInference text model synthesis
 
     Returns None when no reliable signal is available.
     """
@@ -311,7 +311,7 @@ def get_trending_topic(
     )
 
     # ---------------------------------------------------------
-    # OpenCode text model synthesis
+    # FreeInference text model synthesis
     # ---------------------------------------------------------
 
     try:
