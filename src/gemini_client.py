@@ -27,6 +27,11 @@ def is_available() -> bool:
     return bool(os.environ.get("OPENCODE_API_KEY"))
 
 
+def is_vision_available() -> bool:
+    """Compatibility check for callers; vision uses the same OpenCode model chain."""
+    return is_available()
+
+
 def _openai_client(api_key: str, base_url: str):
     try:
         from openai import OpenAI
