@@ -15,26 +15,16 @@ Images are generated once and permanently cached under:
 Future video runs reuse the cached PNGs and do not need to generate
 the artwork again.
 
-If Gemini image generation is unavailable, placeholder frames are
-created so the pipeline does not crash.
+Cached mascot artwork is reused. Missing artwork is replaced with local
+placeholder frames; this module does not call an external image model.
 """
 
-import os
 import shutil
 from pathlib import Path
-
-try:
-    from google import genai as genai_client
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image"
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -151,152 +141,6 @@ MASCOT_BASE_DESCRIPTIONS = {
 
 
 # ============================================================
-# IMAGE EXTRACTION
-# ============================================================
-
-def _extract_image_bytes(response) -> bytes | None:
-    """
-    Extract the first inline image from a Gemini response.
-
-    Returns:
-        bytes | None
-    """
-
-    try:
-
-        candidates = getattr(response, "candidates", None)
-
-        if not candidates:
-            return None
-
-        content = getattr(candidates[0], "content", None)
-
-        if not content:
-            return None
-
-        parts = getattr(content, "parts", None)
-
-        if not parts:
-            return None
-
-        for part in parts:
-
-            inline_data = getattr(part, "inline_data", None)
-
-            if inline_data is None:
-                continue
-
-            data = getattr(inline_data, "data", None)
-
-            if data:
-                return data
-
-    except Exception as e:
-
-        print(
-            f"WARNING: could not extract image from "
-            f"Gemini response: {e}"
-        )
-
-    return None
-
-
-# ============================================================
-# GEMINI IMAGE CALL
-# ============================================================
-
-def _call_image_model(client, prompt: str):
-    """
-    Calls Gemini's image generation model.
-
-    Tries explicit IMAGE + TEXT response modalities first.
-    If the installed google-genai SDK rejects that configuration,
-    retries without explicit modalities.
-    """
-
-    try:
-
-        from google.genai import types
-
-        config = types.GenerateContentConfig(
-            response_modalities=["IMAGE", "TEXT"]
-        )
-
-        return client.models.generate_content(
-            model=GEMINI_IMAGE_MODEL,
-            contents=prompt,
-            config=config,
-        )
-
-    except Exception as first_error:
-
-        print(
-            "WARNING: Gemini image request with explicit "
-            f"response modalities failed: {first_error}"
-        )
-
-        print(
-            "Retrying Gemini image generation without "
-            "explicit response modalities..."
-        )
-
-        return client.models.generate_content(
-            model=GEMINI_IMAGE_MODEL,
-            contents=prompt,
-        )
-
-
-# ============================================================
-# GENERATE ONE POSE
-# ============================================================
-
-def _generate_pose(
-    client,
-    mascot: str,
-    pose: str
-) -> bytes:
-
-    if mascot not in MASCOT_BASE_DESCRIPTIONS:
-
-        raise ValueError(
-            f"Unknown mascot: {mascot}"
-        )
-
-    if pose not in POSE_MODIFIERS:
-
-        raise ValueError(
-            f"Unknown pose: {pose}"
-        )
-
-    prompt = MASCOT_BASE_DESCRIPTIONS[mascot].format(
-        pose=POSE_MODIFIERS[pose]
-    )
-
-    print(
-        f"Generating Gemini artwork: "
-        f"mascot={mascot}, pose={pose}"
-    )
-
-    response = _call_image_model(
-        client,
-        prompt
-    )
-
-    image_bytes = _extract_image_bytes(
-        response
-    )
-
-    if not image_bytes:
-
-        raise RuntimeError(
-            f"Gemini returned no image for pose "
-            f"'{pose}'."
-        )
-
-    return image_bytes
-
-
-# ============================================================
 # PLACEHOLDER FRAME
 # ============================================================
 
@@ -310,7 +154,7 @@ def _write_placeholder(
     Creates a simple placeholder PNG.
 
     This guarantees that the video pipeline can continue
-    even when Gemini artwork generation is unavailable.
+    when no cached artwork exists.
     """
 
     from PIL import Image, ImageDraw, ImageFont
@@ -468,43 +312,6 @@ def generate_mascot_assets(
     )
 
     # --------------------------------------------------------
-    # Create Gemini client only if available
-    # --------------------------------------------------------
-
-    client = None
-
-    if (
-        GEMINI_AVAILABLE
-        and os.environ.get("GEMINI_API_KEY")
-    ):
-
-        try:
-
-            client = genai_client.Client(
-                api_key=os.environ[
-                    "GEMINI_API_KEY"
-                ]
-            )
-
-        except Exception as e:
-
-            print(
-                "WARNING: Could not initialize "
-                f"Gemini client: {e}"
-            )
-
-            client = None
-
-    else:
-
-        print(
-            "WARNING: Gemini image generation "
-            "is unavailable. Cached images will "
-            "be used, otherwise placeholders "
-            "will be created."
-        )
-
-    # --------------------------------------------------------
     # Process every pose
     # --------------------------------------------------------
 
@@ -551,50 +358,7 @@ def generate_mascot_assets(
                     f"generating once now."
                 )
 
-            # ------------------------------------------------
-            # Try Gemini
-            # ------------------------------------------------
-
             generated = False
-
-            if client is not None:
-
-                try:
-
-                    image_bytes = _generate_pose(
-                        client,
-                        mascot,
-                        pose
-                    )
-
-                    cached_path.write_bytes(
-                        image_bytes
-                    )
-
-                    # Validate generated image
-                    if not _cached_image_is_valid(
-                        cached_path
-                    ):
-
-                        raise RuntimeError(
-                            "Generated image was "
-                            "written but failed "
-                            "validation."
-                        )
-
-                    print(
-                        f"Saved mascot art: "
-                        f"{cached_path}"
-                    )
-
-                    generated = True
-
-                except Exception as e:
-
-                    print(
-                        f"WARNING: '{pose}' art "
-                        f"generation failed: {e}"
-                    )
 
             # ------------------------------------------------
             # Placeholder fallback
