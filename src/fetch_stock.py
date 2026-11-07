@@ -1287,31 +1287,62 @@ def fetch_clips_for_shots(
                 f"Per-query counts: {search_result_counts}"
             )
 
-            # Download candidates in batches of 15. Each completed download
-            # is sent to Visual QA immediately; approved clips are committed to
-            # their slot at once. The batch never weakens the animal identity gate.
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            # Keep a rolling window of up to 15 downloads active.
+            # Every completed download is checked immediately. As soon as a
+            # candidate is rejected or fails to download, submit the next one
+            # without waiting for the other downloads in the window.
+            from concurrent.futures import (
+                FIRST_COMPLETED,
+                ThreadPoolExecutor,
+                wait,
+            )
 
-            batch_size = 15
-            for batch_start in range(0, len(ranked), batch_size):
-                batch = ranked[batch_start:batch_start + batch_size]
-                batch_jobs = {}
-                with ThreadPoolExecutor(max_workers=batch_size) as executor:
-                    for video_id, candidate in batch:
-                        if video_id in attempted_video_ids:
-                            continue
-                        checked += 1
-                        attempted_video_ids.add(video_id)
-                        candidate_path = out_path / (
-                            f"candidate_{index:02d}_{checked:05d}.mp4"
-                        )
-                        future = executor.submit(
-                            _download_pexels_video, candidate["video"], candidate_path
-                        )
-                        batch_jobs[future] = (video_id, candidate, candidate_path)
+            max_parallel_downloads = 15
+            candidate_iter = iter(ranked)
+            pending = {}
+            executor = ThreadPoolExecutor(
+                max_workers=max_parallel_downloads
+            )
 
-                    for future in as_completed(batch_jobs):
-                        video_id, candidate, candidate_path = batch_jobs[future]
+            def submit_next_candidate():
+                """Submit the next unseen Pexels candidate, if available."""
+                for video_id, candidate in candidate_iter:
+                    if video_id in attempted_video_ids:
+                        continue
+
+                    attempted_video_ids.add(video_id)
+                    checked += 1
+                    candidate_path = out_path / (
+                        f"candidate_{index:02d}_{checked:05d}.mp4"
+                    )
+                    future = executor.submit(
+                        _download_pexels_video,
+                        candidate["video"],
+                        candidate_path,
+                    )
+                    pending[future] = (
+                        video_id,
+                        candidate,
+                        candidate_path,
+                    )
+                    return True
+                return False
+
+            try:
+                # Fill the initial window.
+                for _ in range(max_parallel_downloads):
+                    if not submit_next_candidate():
+                        break
+
+                while pending and accepted_path is None:
+                    completed, _ = wait(
+                        pending,
+                        return_when=FIRST_COMPLETED,
+                    )
+
+                    for future in completed:
+                        video_id, candidate, candidate_path = pending.pop(future)
+
                         try:
                             was_downloaded = future.result()
                         except Exception as exc:
@@ -1320,48 +1351,58 @@ def fetch_clips_for_shots(
                                 f"WARNING: parallel download failed for shot {index + 1}, "
                                 f"video {video_id}: {exc}"
                             )
-                        if not was_downloaded:
-                            continue
 
-                        # QA starts as soon as this particular download finishes.
-                        try:
-                            approved, audit_reason = _verify_clip_matches_shot(
-                                candidate_path,
-                                animal=animal,
-                                action=action,
-                                sentence=sentence,
-                                visual=visual,
-                                require_action=False,
-                            )
-                        except Exception as exc:
-                            approved = False
-                            audit_reason = f"Vision QA error: {exc}"
+                        if was_downloaded:
+                            # QA starts immediately when this candidate finishes
+                            # downloading; other downloads continue in parallel.
+                            try:
+                                approved, audit_reason = _verify_clip_matches_shot(
+                                    candidate_path,
+                                    animal=animal,
+                                    action=action,
+                                    sentence=sentence,
+                                    visual=visual,
+                                    require_action=False,
+                                )
+                            except Exception as exc:
+                                approved = False
+                                audit_reason = f"Vision QA error: {exc}"
 
-                        if approved:
-                            accepted_path = out_path / f"clip_{index:02d}.mp4"
-                            candidate_path.replace(accepted_path)
-                            used_video_ids.add(video_id)
+                            if approved:
+                                accepted_path = out_path / f"clip_{index:02d}.mp4"
+                                candidate_path.replace(accepted_path)
+                                used_video_ids.add(video_id)
+                                print(
+                                    f"Visual QA PASSED for shot {index + 1}: "
+                                    f"source_query={candidate['query']!r}; {audit_reason}. "
+                                    f"Checked {checked} distinct candidates so far."
+                                )
+                                break
+
                             print(
-                                f"Visual QA PASSED for shot {index + 1}: "
-                                f"source_query={candidate['query']!r}; {audit_reason}. "
-                                f"Checked {checked} distinct candidates so far."
+                                f"Visual QA REJECTED candidate for shot {index + 1}: "
+                                f"source_query={candidate['query']!r}; {audit_reason}"
                             )
-                            break
+                            candidate_path.unlink(missing_ok=True)
 
-                        print(
-                            f"Visual QA REJECTED candidate for shot {index + 1}: "
-                            f"source_query={candidate['query']!r}; {audit_reason}"
-                        )
+                        # Replenish immediately after this candidate is handled.
+                        # Do not wait for the rest of the active downloads.
+                        if accepted_path is None:
+                            submit_next_candidate()
+
+            finally:
+                if accepted_path is not None:
+                    # Stop queued work and clean up every downloaded candidate
+                    # that is not the accepted clip.
+                    for future, (_, _, candidate_path) in list(pending.items()):
+                        future.cancel()
                         candidate_path.unlink(missing_ok=True)
 
-                # The executor waits for in-flight downloads when leaving
-                # the context. Remove any completed but unused batch files so
-                # only the approved slot clip survives on disk.
+                executor.shutdown(wait=True, cancel_futures=True)
+
                 if accepted_path is not None:
-                    for _, _, unused_path in batch_jobs.values():
-                        if unused_path != accepted_path:
-                            unused_path.unlink(missing_ok=True)
-                    break
+                    for _, _, candidate_path in pending.values():
+                        candidate_path.unlink(missing_ok=True)
 
             if accepted_path is None:
                 print(
