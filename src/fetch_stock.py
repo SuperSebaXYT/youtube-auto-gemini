@@ -1145,6 +1145,40 @@ def fetch_clips_for_shots(
             f"animal={animal!r} action={action!r} query={query!r}"
         )
 
+        # Resume safely: retain clips that already passed Visual QA in an
+        # earlier attempt. Only missing or rejected slots are searched again.
+        accepted_path = out_path / f"clip_{index:02d}.mp4"
+        if accepted_path.exists():
+            try:
+                existing_ok, existing_reason = _verify_clip_matches_shot(
+                    accepted_path,
+                    animal=animal,
+                    action=action,
+                    sentence=sentence,
+                    visual=visual,
+                    require_action=False,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not re-verify existing clip for shot {index + 1}; "
+                    f"upload blocked. Details: {exc}"
+                ) from exc
+
+            if existing_ok:
+                downloaded.append(str(accepted_path))
+                print(
+                    f"Visual QA RETAINED existing approved clip for shot "
+                    f"{index + 1}: {existing_reason}. "
+                    f"Remaining slots: {len(shots) - len(downloaded)}"
+                )
+                continue
+
+            print(
+                f"Visual QA REJECTED existing clip for shot {index + 1}: "
+                f"{existing_reason}. Searching replacement for this slot only."
+            )
+            accepted_path.unlink(missing_ok=True)
+
         normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
         species_search_aliases = {
             "secretary bird": [
