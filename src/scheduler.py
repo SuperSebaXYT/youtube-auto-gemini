@@ -38,7 +38,6 @@ ENABLE_LONGFORM = False
 
 MAX_SLOT_ATTEMPTS_PER_DAY = 2
 SLOT_RETRY_COOLDOWN = timedelta(hours=1)
-OPENROUTER_RATE_LIMIT_PATH = STATE_DIR / "openrouter_rate_limit.json"
 
 
 def _time_to_minutes(time_str: str) -> int:
@@ -110,20 +109,6 @@ def _record_slot_attempt(channel_id: str, state: dict, slot_id: str, now: dateti
     entry["last_attempt_utc"] = now.isoformat()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     _state_path(channel_id).write_text(json.dumps(state, indent=2))
-
-
-def _openrouter_cooldown(now: datetime):
-    try:
-        reset_at = datetime.fromisoformat(
-            json.loads(OPENROUTER_RATE_LIMIT_PATH.read_text(encoding="utf-8"))["reset_at"]
-        )
-        if reset_at.tzinfo is None:
-            reset_at = reset_at.replace(tzinfo=timezone.utc)
-        if now < reset_at:
-            return reset_at
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    return None
 
 
 def _mark_slot_done(
@@ -295,15 +280,6 @@ def main():
             # ------------------------------------------------
             # LOAD STATE
             # ------------------------------------------------
-
-            if config.get("ai_provider") == "openrouter":
-                reset_at = _openrouter_cooldown(now)
-                if reset_at:
-                    print(
-                        "OpenRouter free daily limit is active until "
-                        f"{reset_at.isoformat()}; skipping {channel_id}."
-                    )
-                    continue
 
             state = _load_schedule_state(
                 channel_id,
