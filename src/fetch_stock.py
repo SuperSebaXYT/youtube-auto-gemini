@@ -998,7 +998,9 @@ Return ONLY valid JSON:
         audit_results = []
         for image_batch in image_batches:
             response = None
-            max_vision_attempts = 3
+            # Vision service overload (429/503) is often transient. Give it
+            # a few more chances before failing closed, without long waits.
+            max_vision_attempts = 5
             for attempt in range(1, max_vision_attempts + 1):
                 try:
                     response = generate_vision(prompt, image_batch)
@@ -1017,7 +1019,7 @@ Return ONLY valid JSON:
                     )
                     if not retryable or attempt >= max_vision_attempts:
                         raise
-                    delay = min(3 * (2 ** (attempt - 1)), 8)
+                    delay = min(3 * (2 ** (attempt - 1)), 20)
                     print(
                         f"WARNING: GLM-4.6V-Flash temporary API error "
                         f"(attempt {attempt}/{max_vision_attempts}); "
@@ -1165,14 +1167,16 @@ def fetch_clips_for_shots(
             [animal, f"{animal} wildlife", f"{animal} {action}"],
         )
         search_modes = [(query, True)]
+        # Alternate query wording may broaden search terms, but never QA:
+        # every accepted clip must show the exact narrated action.
         search_modes.extend(
-            (candidate_query, False)
+            (candidate_query, True)
             for candidate_query in aliases
             if candidate_query.strip().lower() != query.lower()
         )
         # Keep the highest-value searches: exact narrated action first,
-        # then exact species fallback. Avoid spending minutes paging through
-        # near-duplicate stock search results.
+        # then alternate exact-species wording. Every accepted clip must
+        # still show the requested action.
         search_modes = search_modes[:max_search_modes]
 
         candidates_by_id = {}
@@ -1212,8 +1216,8 @@ def fetch_clips_for_shots(
                         "query": search_query,
                         "mode_index": mode_index,
                     }
-                    # If a video appears in both exact-action and species-only
-                    # searches, retain the stricter action requirement.
+                    # If a video appears in multiple searches, retain the
+                    # strict exact-action requirement.
                     if existing is None or (require_action and not existing["require_action"]):
                         candidates_by_id[video_id] = candidate
 
@@ -1224,12 +1228,9 @@ def fetch_clips_for_shots(
 
             search_result_counts[search_query] = query_result_count
 
-        # Do not let one noisy Pexels query monopolize the verification
-        # budget. Action-specific searches often return semantically
-        # unrelated stock; interleave their candidates with exact-species
-        # fallback searches. Vision QA still enforces exact species identity,
-        # and enforces the action whenever the candidate came from the
-        # action-specific query.
+        # Do not let one noisy Pexels query monopolize verification.
+        # Every candidate, including alternate species-specific search terms,
+        # must pass exact-species AND exact-action vision QA.
         candidates_by_mode = {}
         for video_id, candidate in candidates_by_id.items():
             candidates_by_mode.setdefault(candidate["mode_index"], []).append(
