@@ -1178,25 +1178,89 @@ def fetch_clips_for_shots(
                 if candidate_query.strip().lower() != query.lower()
             )
 
-            # Expand discovery progressively after each exhausted round.
-            # These remain animal-specific, while Visual QA is the final
-            # authority that rejects homonyms and unrelated footage.
-            expansion_phrases = (
-                "wild animal footage",
-                "animal wildlife video",
-                "animal closeup footage",
-                "wildlife documentary footage",
-                "animal in natural habitat",
-                "animal portrait wildlife",
-            )
-            expansion = expansion_phrases[(retry_round - 1) % len(expansion_phrases)]
-            expanded_query = f"{animal} {expansion}"
-            if expanded_query.lower() not in {
-                item[0].lower() for item in search_modes
-            }:
-                search_modes.append((expanded_query, False))
-            # No arbitrary query/candidate cap. Search all animal-specific
-            # aliases; action visibility is never part of the approval decision.
+            # AI-generated Pexels Query Brain: create fresh, natural stock-search
+            # phrases from the animal's known appearance and shot context. These
+            # are discovery queries only; Visual QA remains the sole approval gate.
+            if "seen_ai_queries" not in locals():
+                seen_ai_queries = set()
+
+            try:
+                from src.freeinference_client import generate_response
+
+                rejected_context = ", ".join(sorted(seen_ai_queries)[-20:]) or "none yet"
+                query_prompt = f"""
+You are an expert stock-footage search strategist for Pexels.
+
+TARGET ANIMAL: {animal}
+SHOT DESCRIPTION: {visual or "not provided"}
+NARRATION CONTEXT: {sentence or action or "not provided"}
+ORIGINAL SEARCH QUERY: {query}
+
+Generate 12 genuinely different, short, natural English Pexels VIDEO search queries.
+First reason about the animal's recognizable real-world appearance and typical habitat.
+Then describe it in varied ways that Pexels stock creators might tag footage:
+- visual shape, size, colors, texture, distinctive body silhouette
+- close-up, wide shot, side view, swimming/flying/walking, group or solo
+- natural habitat, underwater/ocean/forest/grassland when appropriate
+- broad descriptive phrases that can find the animal even when its species name
+  is missing from the creator's tags (for example: "huge fish close up underwater").
+
+Do NOT just repeat the species name with "documentary", "wildlife", "footage",
+"animal", "nature", or "close up" appended.
+Do NOT invent appearance details. Do NOT include humans, weapons, products,
+cartoons, toys, or unrelated subjects.
+Some queries may omit the exact species name if they describe its real appearance.
+Do not repeat or lightly reword any of these previously tried AI queries:
+{rejected_context}
+
+Return exactly 12 search queries, one per line, no numbering, bullets, quotes,
+explanations, or markdown.
+"""
+                response = generate_response(query_prompt, max_output_tokens=420)
+                generated_queries = []
+                for raw_line in (getattr(response, "text", "") or "").splitlines():
+                    candidate_query = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", raw_line).strip().strip('"\' ')
+                    candidate_query = re.sub(r"\s+", " ", candidate_query)
+                    normalized_candidate = candidate_query.lower()
+                    if (
+                        len(candidate_query) >= 8
+                        and len(candidate_query.split()) >= 2
+                        and normalized_candidate not in seen_ai_queries
+                        and normalized_candidate not in {item[0].lower() for item in search_modes}
+                    ):
+                        seen_ai_queries.add(normalized_candidate)
+                        generated_queries.append(candidate_query[:100])
+                    if len(generated_queries) >= 12:
+                        break
+
+                for candidate_query in generated_queries:
+                    search_modes.append((candidate_query, False))
+
+                print(
+                    f"Pexels Query Brain: generated {len(generated_queries)} fresh queries "
+                    f"for {animal!r} in retry round {retry_round}: {generated_queries}"
+                )
+            except Exception as exc:
+                print(
+                    f"WARNING: Pexels Query Brain failed for {animal!r} "
+                    f"in retry round {retry_round}; using deterministic fallback queries: {exc}"
+                )
+                fallback_queries = [
+                    f"{animal} underwater close up" if any(term in normalized_animal for term in ("fish", "shark", "ray", "octopus", "jellyfish")) else f"{animal} close up natural habitat",
+                    f"large {animal} in natural environment",
+                    f"{animal} side view detailed",
+                    f"{animal} moving through its habitat",
+                    f"wild {animal} portrait",
+                    f"{animal} macro texture detail",
+                ]
+                for candidate_query in fallback_queries:
+                    if candidate_query.lower() not in seen_ai_queries:
+                        seen_ai_queries.add(candidate_query.lower())
+                        search_modes.append((candidate_query, False))
+
+            # Search queries are intentionally allowed to be descriptive rather
+            # than species-anchored. This discovers footage whose Pexels tags omit
+            # the species name; Visual QA still rejects every wrong animal.
 
             candidates_by_id = {}
             search_result_counts = {}
