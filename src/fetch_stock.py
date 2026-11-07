@@ -1032,14 +1032,7 @@ Return ONLY valid JSON:
                 raise RuntimeError(
                     f"Vision model returned invalid JSON: {raw[:300]}"
                 )
-            try:
-                audit_results.append(json.loads(match.group(0)))
-            except json.JSONDecodeError as exc:
-                print(
-                    f"Visual QA returned malformed JSON for this candidate: {exc}. "
-                    "Rejecting this candidate and checking the next one."
-                )
-                return False, f"invalid Visual QA JSON: {exc}"
+            audit_results.append(json.loads(match.group(0)))
 
         def _audit_score(candidate):
             try:
@@ -1091,11 +1084,10 @@ def fetch_clips_for_shots(
     """
     Fetch one verified clip per narration shot.
 
-    Search Pexels for the exact species, inspect at most three downloaded
-    candidates per slot, and select the highest-confidence exact-species match.
-    The narrated action is context only; it is not a rejection requirement.
-    Search results are never trusted as proof: wrong species are rejected and
-    publication remains blocked if none of the three candidates shows the animal.
+    Search a broad Pexels result pool for the exact species, then use FreeInference
+    Qwen vision to verify candidates. Search results are never trusted as proof:
+    wrong species are rejected and publication remains blocked if no exact
+    species match can be verified.
     """
     api_key = os.environ.get("PEXELS_API_KEY")
     if not api_key:
@@ -1205,7 +1197,7 @@ def fetch_clips_for_shots(
             normalized_animal,
             [animal, f"{animal} wildlife", f"{animal} {action}"],
         )
-        search_modes = [(query, False)]
+        search_modes = [(query, True)]
         # Alternate queries and the primary query all require the exact
         # animal to be visible. The narrated action is context, not a gate.
         search_modes.extend(
@@ -1306,15 +1298,8 @@ def fetch_clips_for_shots(
         )
 
         accepted_path = None
-        best_candidate_path = None
-        best_candidate_id = None
-        best_candidate_reason = ""
-        best_candidate_confidence = -1.0
         checked = 0
-        max_visual_candidates = 3
         for video_id, candidate in ranked:
-            if checked >= max_visual_candidates:
-                break
             checked += 1
 
             candidate_path = out_path / (
@@ -1341,37 +1326,20 @@ def fetch_clips_for_shots(
                 ) from exc
 
             if approved:
-                confidence_match = re.search(r"confidence=([0-9.]+)", audit_reason)
-                confidence = float(confidence_match.group(1)) if confidence_match else 0.0
+                accepted_path = out_path / f"clip_{index:02d}.mp4"
+                candidate_path.replace(accepted_path)
+                used_video_ids.add(video_id)
                 print(
-                    f"Visual QA CANDIDATE PASSED for shot {index + 1}: "
+                    f"Visual QA PASSED for shot {index + 1}: "
                     f"source_query={candidate['query']!r}; {audit_reason}"
                 )
-                if confidence > best_candidate_confidence:
-                    if best_candidate_path is not None:
-                        best_candidate_path.unlink(missing_ok=True)
-                    best_candidate_path = candidate_path
-                    best_candidate_id = video_id
-                    best_candidate_reason = audit_reason
-                    best_candidate_confidence = confidence
-                else:
-                    candidate_path.unlink(missing_ok=True)
-            else:
-                print(
-                    f"Visual QA REJECTED candidate for shot {index + 1}: "
-                    f"source_query={candidate['query']!r}; {audit_reason}"
-                )
-                candidate_path.unlink(missing_ok=True)
+                break
 
-        if best_candidate_path is not None:
-            accepted_path = out_path / f"clip_{index:02d}.mp4"
-            best_candidate_path.replace(accepted_path)
-            used_video_ids.add(best_candidate_id)
             print(
-                f"Visual QA SELECTED best of {checked} candidates for shot "
-                f"{index + 1}: confidence={best_candidate_confidence:.2f}; "
-                f"{best_candidate_reason}"
+                f"Visual QA REJECTED candidate for shot {index + 1}: "
+                f"source_query={candidate['query']!r}; {audit_reason}"
             )
+            candidate_path.unlink(missing_ok=True)
 
         if accepted_path is None:
             missing_slots.append(index + 1)
