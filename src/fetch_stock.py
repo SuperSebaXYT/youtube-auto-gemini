@@ -930,7 +930,11 @@ def _verify_clip_matches_shot(
     visual: str,
     require_action: bool = False,
 ) -> tuple[bool, str]:
-    """Use the configured vision model to verify downloaded video frames."""
+    """Verify only that the intended animal/type is visibly present.
+
+    The narration action, pose, habitat, and background are never approval
+    requirements. Vision output is a one-word verdict, not JSON.
+    """
     from src.freeinference_client import generate_vision, is_vision_available
 
     if not is_vision_available():
@@ -939,176 +943,97 @@ def _verify_clip_matches_shot(
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
         prompt = f"""
-You are a strict visual evidence inspector for a wildlife video.
-Inspect the attached frames from ONE real video clip.
+You are checking wildlife footage for a video editor.
 
-NARRATION SEGMENT:
-{sentence}
+TARGET ANIMAL: {animal}
 
-REQUIRED ANIMAL:
-{animal}
+Look at the attached frames and answer only this question:
+Is the actual target animal (or an unmistakable example of that animal type)
+visibly present in the footage?
 
-REQUIRED VISIBLE ACTION:
-{action}
+The animal identity/type is the ONLY thing that matters.
+Ignore the narration, described action, pose, habitat, camera angle, and
+background. The animal does NOT need to perform the narrated action.
+A normal clip of the correct animal must be accepted.
 
-ACTION CONTEXT (NOT A STRICT REQUIREMENT):
-The narration describes this behavior: {action}
-The clip does NOT have to show this exact behavior. It is acceptable to show
-the required animal clearly in another natural pose or activity. Do not claim
-the described action is visible unless the frames actually show it.
+Reject footage where the target animal is absent or replaced by:
+- a human holding/using an object with a similar name,
+- a different animal,
+- food, toys, drawings, models, or unrelated scenery.
 
-INTENDED SHOT:
-{visual}
+Examples:
+- pistol shrimp means an actual shrimp, NOT a person holding a pistol.
+- swordfish means an actual fish, NOT a person holding a sword.
+- crane as a bird means the actual bird, NOT construction machinery.
 
-Approve ONLY if:
-1. The visible animal is positively identifiable as the exact REQUIRED ANIMAL.
-   Similar species, related species, generic raptors, and lookalikes are NOT matches.
-2. Set "species_match" to true only when the visible evidence supports the exact
-   required species. If uncertain, set it to false.
-3. The narration's exact behavior is optional. The animal itself must be
-   clearly visible and positively identifiable. Do not infer or claim that
-   the described behavior is visible unless it is actually shown.
-4. There is no unrelated object or food being used as a substitute.
-5. The visual evidence is clear enough to identify the animal.
+Do not demand proof of rare behavior or impossible visual species-level
+details that cannot be seen in the frames. Match the named animal/type using
+the visible animal itself. If the animal is clearly the intended animal type,
+answer MATCH even if it is resting or doing something unrelated to narration.
+If the animal is absent or clearly a different type, answer NO_MATCH.
 
-Reject humans, office workers, unrelated animals, food, generic nature
-scenery, and empty habitats. Judge only what is actually visible in frames.
-
-Return ONLY valid JSON:
-{{
-  "animal_visible": true,
-  "species_match": true,
-  "animal_identification": "exact species visibly shown, or why it cannot be confirmed",
-  "action_visible": true,
-  "confidence": 0.95,
-  "reason": "brief evidence-based explanation"
-}}
+Return exactly one of these two lines, with no JSON and no explanation:
+MATCH
+NO_MATCH
 """
         frame_images = [
             (frame_path.read_bytes(), "image/jpeg")
             for frame_path in frames
         ]
-        # Send the complete sampled-frame batch to FreeInference Qwen.
-        image_batches = [frame_images]
 
-        audit_results = []
-        for image_batch in image_batches:
-            parsed_result = None
-            # Retry both transient API failures and malformed model JSON.
-            # A formatting mistake must reject this candidate, not abort the
-            # entire 15-shot pipeline.
-            max_vision_attempts = 5
-            parse_prompt = prompt
-            last_parse_error = None
-
-            for attempt in range(1, max_vision_attempts + 1):
-                try:
-                    response = generate_vision(parse_prompt, image_batch)
-                except Exception as exc:
-                    error_text = str(exc)
-                    retryable = any(
-                        marker in error_text
-                        for marker in (
-                            "503", "UNAVAILABLE",
-                            "429", "RESOURCE_EXHAUSTED",
-                            "500", "INTERNAL",
-                            "502", "504",
-                            "temporarily unavailable",
-                        )
-                    )
-                    if not retryable or attempt >= max_vision_attempts:
-                        raise
-                    delay = min(3 * (2 ** (attempt - 1)), 20)
-                    print(
-                        f"WARNING: FreeInference vision temporary API error "
-                        f"(attempt {attempt}/{max_vision_attempts}); "
-                        f"retrying in {delay}s: {error_text[:250]}"
-                    )
-                    time.sleep(delay)
-                    continue
-
-                raw = (getattr(response, "text", None) or "").strip()
-                match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-                try:
-                    if not match:
-                        raise ValueError("No JSON object found in response.")
-                    parsed = json.loads(match.group(0))
-                    required_types = {
-                        "animal_visible": bool,
-                        "species_match": bool,
-                        "action_visible": bool,
-                        "confidence": (int, float),
-                        "reason": str,
-                    }
-                    for field, expected_type in required_types.items():
-                        if not isinstance(parsed.get(field), expected_type):
-                            raise ValueError(f"Invalid or missing '{field}' field.")
-                    parsed_result = parsed
-                    break
-                except (json.JSONDecodeError, ValueError) as exc:
-                    last_parse_error = str(exc)
-                    print(
-                        f"WARNING: Visual QA returned malformed JSON "
-                        f"(attempt {attempt}/{max_vision_attempts}): {last_parse_error}"
-                    )
-                    parse_prompt = (
-                        prompt
-                        + "\n\nYour previous response was invalid JSON. "
-                        "Return ONLY one syntactically valid JSON object with "
-                        "all five required fields and correct value types. "
-                        "Do not add markdown or commentary."
-                    )
-
-            if parsed_result is None:
-                return False, (
-                    "Visual QA candidate rejected because the vision model "
-                    f"failed to return valid structured JSON after "
-                    f"{max_vision_attempts} attempts: {last_parse_error}"
-                )
-
-            audit_results.append(parsed_result)
-
-        def _audit_score(candidate):
+        # A plain one-token verdict avoids fragile JSON generation/parsing.
+        # Retry malformed/ambiguous text responses; never let formatting
+        # mistakes crash the full 15-shot pipeline.
+        max_vision_attempts = 5
+        last_response = ""
+        for attempt in range(1, max_vision_attempts + 1):
             try:
-                candidate_confidence = float(candidate.get("confidence", 0))
-            except (TypeError, ValueError):
-                candidate_confidence = 0.0
-            candidate_passes = (
-                candidate.get("animal_visible") is True
-                and candidate.get("species_match") is True
-                and (
-                    candidate.get("action_visible") is True
-                    or not require_action
+                response = generate_vision(prompt, frame_images)
+            except Exception as exc:
+                error_text = str(exc)
+                retryable = any(
+                    marker in error_text
+                    for marker in (
+                        "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+                        "500", "INTERNAL", "502", "504",
+                        "temporarily unavailable",
+                    )
                 )
+                if not retryable or attempt >= max_vision_attempts:
+                    raise
+                delay = min(3 * (2 ** (attempt - 1)), 20)
+                print(
+                    f"WARNING: Vision QA temporary API error "
+                    f"(attempt {attempt}/{max_vision_attempts}); "
+                    f"retrying in {delay}s: {error_text[:250]}"
+                )
+                time.sleep(delay)
+                continue
+
+            last_response = (getattr(response, "text", None) or "").strip()
+            verdict_lines = [
+                line.strip().upper().strip(" .! *_")
+                for line in last_response.splitlines()
+                if line.strip()
+            ]
+            if verdict_lines and verdict_lines[0] in {"MATCH", "NO_MATCH"}:
+                matched = verdict_lines[0] == "MATCH"
+                return matched, (
+                    f"animal_type_match={matched}; "
+                    f"vision_verdict={verdict_lines[0]}"
+                )
+
+            print(
+                f"WARNING: Vision QA returned an invalid plain-text verdict "
+                f"(attempt {attempt}/{max_vision_attempts}): "
+                f"{last_response[:180]!r}"
             )
-            return (candidate_passes, candidate_confidence)
 
-        # Require animal and requested action evidence from the same batch;
-        # do not combine unrelated evidence across distant clip frames.
-        result = max(audit_results, key=_audit_score)
-        animal_ok = result.get("animal_visible") is True
-        species_ok = result.get("species_match") is True
-        action_ok = result.get("action_visible") is True
-
-        try:
-            confidence = float(result.get("confidence", 0))
-        except (TypeError, ValueError):
-            confidence = 0.0
-
-        reason = str(result.get("reason", "No reason returned"))
-        approved = (
-            animal_ok
-            and species_ok
-            and (action_ok or not require_action)
-            and confidence >= 0.80
+        return False, (
+            "Vision QA candidate rejected because the model did not return "
+            f"MATCH or NO_MATCH after {max_vision_attempts} attempts: "
+            f"{last_response[:180]!r}"
         )
-
-        return approved, (
-            f"animal_visible={animal_ok}, species_match={species_ok}, "
-            f"action_visible={action_ok}, action_required={require_action}, "
-            f"confidence={confidence:.2f}: {reason}"
-        )
-
 
 def fetch_clips_for_shots(
     shots: list,
@@ -1138,12 +1063,10 @@ def fetch_clips_for_shots(
     missing_slots = []
     used_video_ids = set()
 
-    # Bound search work per shot. One action-specific page and one
-    # exact-species fallback page provide up to 160 candidates without
-    # crawling every Pexels page (which previously caused very long runs).
-    # QA still checks candidates in order and only replaces rejected shots.
+    # Search every species-specific query and every available Pexels page.
+    # There is no fixed candidate-count cap: rejected clips do not consume
+    # a shot slot, and only a matching animal can fill that slot.
     pexels_per_page = 80
-    max_search_modes = 2
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1240,9 +1163,8 @@ def fetch_clips_for_shots(
             for candidate_query in aliases
             if candidate_query.strip().lower() != query.lower()
         )
-        # Keep the highest-value searches: exact-species query first,
-        # then alternate wording. Action visibility is optional.
-        search_modes = search_modes[:max_search_modes]
+        # No arbitrary query/candidate cap. Search all animal-specific
+        # aliases; action visibility is never part of the approval decision.
 
         candidates_by_id = {}
         search_result_counts = {}
@@ -1354,10 +1276,12 @@ def fetch_clips_for_shots(
                 )
             except Exception as exc:
                 candidate_path.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"Visual verification failed for shot {index + 1}; "
-                    f"upload blocked. Details: {exc}"
-                ) from exc
+                print(
+                    f"WARNING: Vision QA could not assess candidate for "
+                    f"shot {index + 1}: {exc}. Rejecting this candidate "
+                    "and continuing through the remaining search results."
+                )
+                continue
 
             if approved:
                 accepted_path = out_path / f"clip_{index:02d}.mp4"
