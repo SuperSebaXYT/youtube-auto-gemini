@@ -934,7 +934,7 @@ def _verify_clip_matches_shot(
     from src.gemini_client import generate_vision, is_vision_available
 
     if not is_vision_available():
-        raise RuntimeError("ZAI_VISION_API_KEY is required for Cosmic Curious visual verification.")
+        raise RuntimeError("OPENCODE_API_KEY is required for Cosmic Curious visual verification.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
