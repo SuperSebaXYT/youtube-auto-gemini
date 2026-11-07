@@ -934,7 +934,7 @@ def _verify_clip_matches_shot(
     from src.gemini_client import generate_vision, is_vision_available
 
     if not is_vision_available():
-        raise RuntimeError("OPENCODE_API_KEY is required for Cosmic Curious visual verification.")
+        raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
@@ -1025,7 +1025,7 @@ Return ONLY valid JSON:
                         raise
                     delay = min(3 * (2 ** (attempt - 1)), 20)
                     print(
-                        f"WARNING: GLM-4.6V-Flash temporary API error "
+                        f"WARNING: FreeInference Qwen vision temporary API error "
                         f"(attempt {attempt}/{max_vision_attempts}); "
                         f"retrying in {delay}s: {error_text[:250]}"
                     )
