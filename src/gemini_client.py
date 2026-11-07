@@ -207,7 +207,6 @@ class FreeInferenceClient:
 
 
 # Compatibility name: existing pipeline modules import get_client().
-OpenCodeTextClient = FreeInferenceClient
 
 
 def get_client():
