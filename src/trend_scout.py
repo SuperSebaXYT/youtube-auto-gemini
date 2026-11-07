@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from .gemini_client import generate as text_generate, is_available as ai_available
+from .freeinference_client import generate as text_generate, is_available as ai_available
 
 
 def _fetch_reddit_trending(
