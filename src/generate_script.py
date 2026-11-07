@@ -34,7 +34,7 @@ try:
 except ImportError:
     WINNER_HUNTER_AVAILABLE = False
 
-from src.gemini_client import get_client, is_available, TEXT_MODEL as DEFAULT_TEXT_MODEL
+from src.freeinference_client import get_client, is_available, TEXT_MODEL as DEFAULT_TEXT_MODEL
 
 
 TEXT_MODEL = DEFAULT_TEXT_MODEL
