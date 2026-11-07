@@ -1354,7 +1354,13 @@ def fetch_clips_for_shots(
                         )
                         candidate_path.unlink(missing_ok=True)
 
+                # The executor waits for in-flight downloads when leaving
+                # the context. Remove any completed but unused batch files so
+                # only the approved slot clip survives on disk.
                 if accepted_path is not None:
+                    for _, _, unused_path in batch_jobs.values():
+                        if unused_path != accepted_path:
+                            unused_path.unlink(missing_ok=True)
                     break
 
             if accepted_path is None:
