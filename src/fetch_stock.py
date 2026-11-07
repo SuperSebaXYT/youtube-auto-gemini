@@ -1201,7 +1201,6 @@ def fetch_clips_for_shots(
         seen_search_queries = set()
         seen_ai_queries = set()
         retry_round = 0
-        rejected_candidates = []
         while accepted_path is None:
             retry_round += 1
             normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
@@ -1580,8 +1579,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
                 executor.shutdown(wait=True, cancel_futures=True)
 
-                # Only the single rejected candidate explicitly retained for
-                # fallback comparison may survive this round.
+                # No rejected candidate is retained; remove any unfinished download.
                 for _, _, candidate_path in pending.values():
                     candidate_path.unlink(missing_ok=True)
 
@@ -1589,15 +1587,11 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 print(
                     f"Clip slot {index + 1} still missing. "
                     f"Progress: {checked} distinct videos checked; "
-                    f"{len(attempted_video_ids)} video IDs will not be downloaded "
-                    "or checked again during this slot. "
-                    f"Search cycle {retry_round} exhausted its current queries. Starting another cycle."
+                    f"{len(attempted_video_ids)} unique video IDs checked so far. "
+                    f"Search cycle {retry_round} exhausted; generating new queries."
                 )
-        
-        if accepted_path is not None:
-            # A later-round QA pass wins; discard any earlier rejected fallback.
-            for rejected in rejected_candidates:
-                rejected["path"].unlink(missing_ok=True)
+                if new_candidate_count == 0:
+                    time.sleep(5)
 
         downloaded.append(str(accepted_path))
         print(
@@ -1611,8 +1605,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
     print(
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
-        "clips (up to 2 candidates per missing slot; both Visual-QA checked; "
-        "DeepSeek ranks rejected pairs and keeps the better fallback; "
+        "clips (unbounded Pexels search per missing slot until Visual QA accepts; "
         "first 10 species-focused searches; final 5 broad wildlife searches)."
     )
     return downloaded
