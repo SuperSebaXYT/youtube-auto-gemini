@@ -446,174 +446,92 @@ def _generate_winner_inspired_topic(
     config: dict,
     is_short: bool,
 ) -> str | None:
+    """Choose one fresh topic from current Analytics on every pipeline run."""
     if not WINNER_HUNTER_AVAILABLE:
         print("Winner Hunter unavailable.")
         return None
+    if not is_available():
+        print("OpenCode text API unavailable; Winner Hunter cannot select a topic.")
+        return None
 
-    # Reuse today's cached Analytics batch even if the text API is
-    # temporarily unavailable. The API is needed only to create a new batch.
-    candidates = _load_winner_hunter_queue(channel_id)
-
-    if candidates is None:
-        if not is_available():
-            print("OpenCode text API unavailable; Winner Hunter cannot generate candidates.")
+    try:
+        winner_context = build_winner_context(channel_id)
+        if not winner_context:
+            print("Winner Hunter has no performance context.")
             return None
+    except Exception as e:
+        print(f"WARNING: Winner Hunter context failed ({e}).")
+        return None
 
-        # Generate a ranked Analytics batch when no same-day candidates remain.
-        # Exhausted batches are replenished rather than blocking the channel.
-        try:
-            winner_context = build_winner_context(channel_id)
-            if not winner_context:
-                print("Winner Hunter has no performance context.")
-                return None
-        except Exception as e:
-            print(f"WARNING: Winner Hunter context failed ({e}).")
-            return None
+    used_topics = get_used_topics(channel_id)
+    used_sample = "\\n".join(
+        f"- {topic}"
+        for topic in sorted(used_topics, key=str.casefold)[-120:]
+    )
+    content_length = "a YouTube Short" if is_short else "a YouTube video"
 
-        used_topics = get_used_topics(channel_id)
-        used_sample = "\n".join(
-            f"- {topic}"
-            for topic in sorted(used_topics, key=str.casefold)[-120:]
-        )
-
-        content_length = "a YouTube Short" if is_short else "a YouTube video"
-
-        prompt = f"""
+    prompt = f"""
 You are the topic strategist for a faceless animal and wildlife channel.
-Generate exactly {WINNER_HUNTER_MAX_CANDIDATES} distinct candidate topics for {content_length}.
+Choose EXACTLY ONE best fresh topic for {content_length}, using the latest
+channel Analytics below. Do not create a batch or a list.
 
 CHANNEL PERFORMANCE DATA:
 {winner_context}
 
-PREVIOUSLY USED TOPICS. Avoid exact repeats and near-identical video premises,
-but DO NOT reject a topic just because the same animal or subject appeared before:
+PREVIOUSLY USED TOPICS. Avoid exact repeats and near-identical premises.
+The same animal may be reused when Analytics supports a genuinely different angle:
 {used_sample}
 
-Use the channel's actual YouTube Analytics as the main evidence for topic choice.
-PRIORITY: topics, animals, hooks, and storytelling angles associated with the
-highest view counts and strongest view velocity on this channel.
-Do not invent performance evidence or claim that an unmeasured topic won.
+Use actual channel Analytics as the main evidence. Prioritize subjects,
+hooks and storytelling angles associated with the highest views and strongest
+view velocity. Never invent performance evidence.
 
-MISSION: choose topics with the best realistic chance of reaching
-20,000,000 views within 30 days. This is an aggressive target, not a promise.
-Optimize for global reach, first-second hook, retention, shareability,
-and broad worldwide appeal. Do not target or exclude any country.
+Aim for the strongest realistic chance of reaching 20,000,000 views within
+30 days. This is an aggressive target, not a promise. Optimize for global reach,
+an immediate visual hook, retention, shareability and broad appeal.
 
-REUSE WHAT WORKS. You MAY reuse popular species, animal families, subject
-areas, and proven topic formats when Analytics supports them. A proven subject
-is an advantage, not a reason for rejection. Create a distinct specific angle
-or factual hook rather than copying an existing title or exact premise.
-Do not favor novelty over demonstrated popularity. Avoid only the core
-promises and formats that consistently underperform.
+Accuracy is mandatory. Choose a real, well-documented animal behavior or
+adaptation. Do not invent species, abilities, statistics or discoveries.
+No astronomy, space, NASA or unrelated science.
 
-Score each candidate from 0-100 using this rubric:
-- 35 points: evidence that this subject/angle matches high-view channel winners
-- 20 points: immediate visual hook understandable in the first second
-- 15 points: strong retention and engaged-view patterns in related winners
-- 15 points: broad worldwide appeal and cross-cultural clarity
-- 10 points: strong factual payoff and visual footage potential
-- 5 points: distinctness from exact previously used video premises
-
-Accuracy is mandatory. Do not invent species, behavior, abilities,
-statistics, or discoveries. Every topic must describe a real,
-well-documented animal behavior or adaptation. Analytics guides the
-content strategy, never the truth of a biological claim.
-No astronomy, space, NASA, or unrelated science.
-
-Return exactly {WINNER_HUNTER_MAX_CANDIDATES} lines in this format:
+Return exactly ONE line in this format, with no explanation:
 SCORE: <0-100> | TOPIC: <specific animal topic>
-Sort from highest score to lowest score. No explanations.
 """
 
-        try:
-            client = get_client()
-            response = _generate_with_token_budget(client, prompt, 1600)
+    try:
+        client = get_client()
+        response = _generate_with_token_budget(client, prompt, 500)
+        lines = _parse_topic_lines(response.text)
+        used_normalized = [_normalize_topic(topic) for topic in used_topics]
 
-            generated = []
-            comparison_set = set(used_topics)
-
-            for candidate_line in _parse_topic_lines(response.text):
-                score_match = re.match(
-                    r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
-                    candidate_line,
-                    flags=re.IGNORECASE,
-                )
-                if score_match:
-                    candidate_score = max(0, min(100, int(score_match.group(1))))
-                    candidate = score_match.group(2).strip()
-                else:
-                    candidate_score = 0
-                    candidate = candidate_line.strip()
-
-                if not candidate:
-                    continue
-
-                # Reusing a proven animal or subject is allowed. Reject only
-                # exact/near-identical wording, not a different angle on a
-                # species that has already performed well.
-                normalized_candidate = _normalize_topic(candidate)
-                is_near_exact_duplicate = any(
-                    normalized_candidate == _normalize_topic(old)
-                    or SequenceMatcher(
-                        None, normalized_candidate, _normalize_topic(old)
-                    ).ratio() >= 0.94
-                    for old in comparison_set
-                )
-                if is_near_exact_duplicate:
-                    print(f"Winner Hunter exact/near-exact duplicate rejected: {candidate}")
-                    continue
-
-                generated.append((candidate_score, candidate))
-                comparison_set.add(candidate)
-
-            generated.sort(key=lambda item: item[0], reverse=True)
-            candidates = generated[:WINNER_HUNTER_MAX_CANDIDATES]
-
-            if not candidates:
-                print("Winner Hunter returned no fresh Analytics-based candidates.")
-                return None
-
-            _save_winner_hunter_queue(channel_id, candidates)
-            print(
-                f"Winner Hunter generated and ranked {len(candidates)} "
-                f"Analytics-based topics (daily maximum "
-                f"{WINNER_HUNTER_MAX_CANDIDATES})."
+        for candidate_line in lines:
+            match = re.match(
+                r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                candidate_line,
+                flags=re.IGNORECASE,
             )
+            if not match:
+                continue
+            score = max(0, min(100, int(match.group(1))))
+            candidate = match.group(2).strip()
+            normalized = _normalize_topic(candidate)
+            if not candidate:
+                continue
+            if any(
+                normalized == old
+                or SequenceMatcher(None, normalized, old).ratio() >= 0.94
+                for old in used_normalized
+            ):
+                print(f"Winner Hunter rejected a repeated topic: {candidate}")
+                continue
+            print(f"Winner Hunter selected fresh topic ({score}/100): {candidate}")
+            return candidate
 
-        except Exception as e:
-            print(f"WARNING: Winner Hunter generation failed ({e}).")
-            return None
-
-    used_topics = get_used_topics(channel_id)
-    while candidates:
-        selected_score, selected = candidates.pop(0)
-        normalized_selected = _normalize_topic(selected)
-        is_near_exact_duplicate = any(
-            normalized_selected == _normalize_topic(old)
-            or SequenceMatcher(
-                None, normalized_selected, _normalize_topic(old)
-            ).ratio() >= 0.94
-            for old in used_topics
-        )
-        if is_near_exact_duplicate:
-            print(f"Winner Hunter cached exact/near-exact duplicate rejected: {selected}")
-            continue
-
-        # Persist the remaining ranked batch before returning the topic.
-        _save_winner_hunter_queue(channel_id, candidates)
-        print(
-            f"Winner Hunter selected topic ({selected_score}/100); "
-            f"{len(candidates)} Analytics-based topics remain today: "
-            f"{selected}"
-        )
-        return selected
-
-    _save_winner_hunter_queue(channel_id, [])
-    print(
-        "Winner Hunter: current Analytics-based batch is exhausted "
-        f"({WINNER_HUNTER_MAX_CANDIDATES} candidates per batch). Fresh Analytics candidates will be generated on demand."
-    )
-    return None
+        print("Winner Hunter did not return one valid, unused Analytics-based topic.")
+        return None
+    except Exception as e:
+        print(f"WARNING: Winner Hunter generation failed ({e}).")
+        return None
 
 def pick_next_topic(channel_id: str, config: dict) -> str:
     topics_file = ROOT / config["topics_seed_file"]
