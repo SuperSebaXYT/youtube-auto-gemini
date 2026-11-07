@@ -18,6 +18,8 @@ V4:
 import json
 import os
 import re
+import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
@@ -893,17 +895,189 @@ def _download_pexels_video(video: dict, clip_path: Path) -> bool:
     return False
 
 
+def _extract_audit_frames(clip_path: Path, frame_dir: Path) -> list[Path]:
+    """Extract five evenly spaced frames so QA checks actual clip content."""
+    frame_dir.mkdir(parents=True, exist_ok=True)
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(clip_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(f"Could not inspect downloaded clip: {probe.stderr[-500:]}")
+
+    duration = float(probe.stdout.strip())
+    if duration <= 0:
+        raise RuntimeError("Downloaded clip has an invalid duration.")
+
+    frames = []
+    # Three evenly spaced frames are enough for a first-pass audit.
+    # This cuts image upload and vision inference cost by 40%.
+    for index, fraction in enumerate((0.15, 0.50, 0.85)):
+        timestamp = min(max(0.05, duration * fraction), max(0.05, duration - 0.05))
+        frame_path = frame_dir / f"frame_{index}.jpg"
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{timestamp:.2f}",
+                "-i", str(clip_path),
+                "-frames:v", "1",
+                "-vf", "scale=640:-2",
+                "-q:v", "4",
+                str(frame_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode == 0 and frame_path.exists() and frame_path.stat().st_size > 1000:
+            frames.append(frame_path)
+
+    if not frames:
+        raise RuntimeError("Could not extract any frames for visual verification.")
+
+    return frames
+
+
+def _verify_clip_matches_shot(
+    clip_path: Path,
+    animal: str,
+    action: str,
+    sentence: str,
+    visual: str,
+    require_action: bool = False,
+    strict_species: bool = True,
+) -> tuple[bool, str]:
+    """Verify only that the intended animal/type is visibly present.
+
+    The narration action, pose, habitat, and background are never approval
+    requirements. Vision output is a one-word verdict, not JSON.
+    """
+    from src.freeinference_client import generate_vision, is_vision_available
+
+    if not is_vision_available():
+        raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
+
+    with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
+        frames = _extract_audit_frames(clip_path, Path(temp_dir))
+        if strict_species:
+            identity_rules = f"""
+TARGET ANIMAL: {animal}
+The exact named animal/species (or an unmistakable example of that animal type)
+must be visibly present. Reject a different animal.
+"""
+        else:
+            identity_rules = """
+TARGET ANIMAL: ANY REAL WILD ANIMAL
+Any recognizable real wild animal is acceptable. It does not need to match
+the narration or the planned shot's animal. Reject humans, objects, food,
+toys, drawings, models, and scenery without a clearly visible animal.
+"""
+
+        prompt = f"""
+You are checking wildlife footage for a video editor.
+
+{identity_rules}
+
+Look at the attached frames and answer only this question:
+Is an acceptable animal visibly present AND shown in an appealing, usable
+wildlife shot?
+
+The animal must be recognizable and reasonably clear/prominent in the frame.
+Prefer engaging, well-composed footage; reject animals that are tiny, heavily
+obscured, extremely blurry, or barely visible.
+Ignore narration, action, pose, habitat, camera angle, and background.
+The animal does NOT need to perform any narrated action.
+
+Do not demand proof of rare behavior or impossible visual species-level
+details that cannot be seen in the frames.
+If the required animal identity rule above is satisfied, answer MATCH.
+Otherwise answer NO_MATCH.
+
+Return exactly one of these two lines, with no JSON and no explanation:
+MATCH
+NO_MATCH
+"""
+        frame_images = [
+            (frame_path.read_bytes(), "image/jpeg")
+            for frame_path in frames
+        ]
+
+        # A plain one-token verdict avoids fragile JSON generation/parsing.
+        # Retry malformed/ambiguous text responses; never let formatting
+        # mistakes crash the full 15-shot pipeline.
+        max_vision_attempts = 5
+        last_response = ""
+        for attempt in range(1, max_vision_attempts + 1):
+            try:
+                response = generate_vision(prompt, frame_images)
+            except Exception as exc:
+                error_text = str(exc)
+                retryable = any(
+                    marker in error_text
+                    for marker in (
+                        "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED",
+                        "500", "INTERNAL", "502", "504",
+                        "temporarily unavailable",
+                    )
+                )
+                if not retryable or attempt >= max_vision_attempts:
+                    raise
+                delay = min(3 * (2 ** (attempt - 1)), 20)
+                print(
+                    f"WARNING: Vision QA temporary API error "
+                    f"(attempt {attempt}/{max_vision_attempts}); "
+                    f"retrying in {delay}s: {error_text[:250]}"
+                )
+                time.sleep(delay)
+                continue
+
+            last_response = (getattr(response, "text", None) or "").strip()
+            verdict_lines = [
+                line.strip().upper().strip(" .! *_")
+                for line in last_response.splitlines()
+                if line.strip()
+            ]
+            if verdict_lines and verdict_lines[0] in {"MATCH", "NO_MATCH"}:
+                matched = verdict_lines[0] == "MATCH"
+                return matched, (
+                    f"animal_type_match={matched}; "
+                    f"vision_verdict={verdict_lines[0]}"
+                )
+
+            print(
+                f"WARNING: Vision QA returned an invalid plain-text verdict "
+                f"(attempt {attempt}/{max_vision_attempts}): "
+                f"{last_response[:180]!r}"
+            )
+
+        return False, (
+            "Vision QA candidate rejected because the model did not return "
+            f"MATCH or NO_MATCH after {max_vision_attempts} attempts: "
+            f"{last_response[:180]!r}"
+        )
+
+
 def fetch_clips_for_shots(
     shots: list,
     out_dir: str,
     orientation: str = "portrait",
 ) -> list:
     """
-    Fetch one downloaded Pexels clip per narration shot.
+    Fetch one Pexels clip per narration shot.
 
-    Search species-focused Pexels queries for the first 10 shots and broad
-    wildlife queries for the remaining shots. Accept downloaded clips without
-    image-based Visual QA so vision checks cannot block the pipeline.
+    Round 1 uses DeepSeek Visual QA. Round 2 accepts the first successfully
+    downloaded candidate without checking whether it matches, preventing a
+    single difficult shot from blocking the Short.
     """
     api_key = os.environ.get("PEXELS_API_KEY")
     if not api_key:
@@ -921,7 +1095,7 @@ def fetch_clips_for_shots(
 
     # Search a bounded first page for a small set of species-specific queries.
     # The old unbounded pagination multiplied API calls for every shot.
-    # Rejected clips still do not consume a slot; retries continue indefinitely.
+    # Each slot gets at most two search rounds.
     pexels_per_page = 80
     max_queries_per_round = 8
     max_parallel_searches = 8
@@ -973,7 +1147,7 @@ def fetch_clips_for_shots(
         seen_search_queries = set()
         seen_ai_queries = set()
         retry_round = 0
-        while accepted_path is None:
+        while accepted_path is None and retry_round < 2:
             retry_round += 1
             normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
             species_search_aliases = {
@@ -1140,8 +1314,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
             if not search_modes:
                 print(
-                    f"Pexels Query Brain produced no unseen phrases for shot {index + 1}; "
-                    "retrying query generation after 60 seconds."
+                    f"Pexels produced no new search phrases for shot {index + 1} "
+                    f"in round {retry_round}."
                 )
                 continue
 
@@ -1300,15 +1474,48 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                             )
 
                         if was_downloaded:
-                            accepted_path = out_path / f"clip_{index:02d}.mp4"
-                            candidate_path.replace(accepted_path)
-                            used_video_ids.add(video_id)
+                            # First round: Visual QA checks species/type and
+                            # basic visual usability. Second round: deliberately
+                            # bypass QA and accept the first valid download.
+                            qa_passed = retry_round >= 2
+                            qa_reason = "round 2 unconditional acceptance"
+                            if retry_round == 1:
+                                try:
+                                    qa_passed, qa_reason = _verify_clip_matches_shot(
+                                        candidate_path,
+                                        animal=animal,
+                                        action=action,
+                                        sentence=sentence,
+                                        visual=visual,
+                                        require_action=False,
+                                        strict_species=strict_species,
+                                    )
+                                except Exception as exc:
+                                    qa_passed = False
+                                    qa_reason = f"Visual QA error: {exc}"
+
+                            if qa_passed:
+                                accepted_path = out_path / f"clip_{index:02d}.mp4"
+                                candidate_path.replace(accepted_path)
+                                used_video_ids.add(video_id)
+                                print(
+                                    f"Downloaded Pexels clip for shot {index + 1}: "
+                                    f"source_query={candidate['query']!r}; "
+                                    f"candidate {checked} accepted; "
+                                    f"round={retry_round}; {qa_reason}."
+                                )
+                                break
+
                             print(
-                                f"Downloaded Pexels clip for shot {index + 1}: "
-                                f"source_query={candidate['query']!r}; "
-                                f"candidate {checked} accepted without Visual QA."
+                                f"Visual QA REJECTED candidate for shot {index + 1}: "
+                                f"source_query={candidate['query']!r}; {qa_reason}"
                             )
-                            break
+                            candidate_path.unlink(missing_ok=True)
+
+                        # Replenish immediately after this candidate is handled.
+                        # Do not wait for the rest of the active downloads.
+                        if accepted_path is None:
+                            submit_next_candidate()
 
                         # Replenish immediately after this candidate is handled.
                         # Do not wait for the rest of the active downloads.
@@ -1334,8 +1541,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     f"Progress: {checked} distinct videos checked; "
                     f"{len(attempted_video_ids)} video IDs will not be downloaded "
                     "or checked again during this slot. "
-                    f"Round {retry_round} exhausted its current animal-specific queries. "
-                    "Keeping approved clips; expanding the animal search and retrying in 60 seconds."
+                    f"Round {retry_round} exhausted its current search queries. "
+                    + ("Starting the final unconditional round." if retry_round < 2 else "No downloadable candidate was available.")
                 )
         
         downloaded.append(str(accepted_path))
@@ -1344,9 +1551,16 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             f"{len(shots) - len(downloaded)} slots still need clips."
         )
 
+    missing = len(shots) - len(downloaded)
+    if missing:
+        raise RuntimeError(
+            f"Pexels could not provide downloadable clips for {missing} shot(s) "
+            "after the maximum of 2 search rounds per slot."
+        )
+
     print(
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
-        "clips (first 10 species-focused searches; final 5 broad wildlife searches; "
-        "Visual QA disabled)."
+        "clips (round 1: Visual QA; round 2: unconditional acceptance; "
+        "first 10 species-focused searches; final 5 broad wildlife searches)."
     )
     return downloaded
