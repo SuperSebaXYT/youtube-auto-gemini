@@ -139,7 +139,7 @@ def _run_once(
 
     config = load_channel_config(channel_id)
 
-    # Cosmic Curious uses the FreeInference DeepSeek text and Qwen vision gateway.
+    # Cosmic Curious routes every AI task, including image-based Visual QA, through DeepSeek V4 Flash.
     os.environ["AI_PROVIDER"] = "freeinference"
 
 
