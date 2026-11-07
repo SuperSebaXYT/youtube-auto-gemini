@@ -1167,13 +1167,34 @@ def fetch_clips_for_shots(
                     f"{animal} macro",
                 ],
             )
-            # The primary search query and all animal-only aliases are searched.
-            # Visual QA ignores the narrated action entirely.
+            # Rebuild the search-mode list on every retry round. The previous
+            # version called search_modes.extend(...) without initializing
+            # search_modes, which could crash before any Pexels search began.
+            # Every query is animal-anchored and action visibility is optional.
+            search_modes = [(query, False)]
             search_modes.extend(
                 (candidate_query, False)
                 for candidate_query in aliases
                 if candidate_query.strip().lower() != query.lower()
             )
+
+            # Expand discovery progressively after each exhausted round.
+            # These remain animal-specific, while Visual QA is the final
+            # authority that rejects homonyms and unrelated footage.
+            expansion_phrases = (
+                "wild animal footage",
+                "animal wildlife video",
+                "animal closeup footage",
+                "wildlife documentary footage",
+                "animal in natural habitat",
+                "animal portrait wildlife",
+            )
+            expansion = expansion_phrases[(retry_round - 1) % len(expansion_phrases)]
+            expanded_query = f"{animal} {expansion}"
+            if expanded_query.lower() not in {
+                item[0].lower() for item in search_modes
+            }:
+                search_modes.append((expanded_query, False))
             # No arbitrary query/candidate cap. Search all animal-specific
             # aliases; action visibility is never part of the approval decision.
 
@@ -1255,11 +1276,14 @@ def fetch_clips_for_shots(
                     break
                 depth += 1
 
+            new_candidate_count = len(candidates_by_id)
             print(
-                f"Visual shot {index + 1}: Pexels returned "
-                f"{sum(search_result_counts.values())} results "
-                f"({len(candidates_by_id)} unique videos) across "
-                f"{len(search_modes)} species-specific queries. "
+                f"Visual shot {index + 1} search progress: "
+                f"retry_round={retry_round}, previously_checked={checked}, "
+                f"new_candidates={new_candidate_count}, "
+                f"total_unique_checked_after_round={checked + new_candidate_count}, "
+                f"pexels_results={sum(search_result_counts.values())}, "
+                f"animal_queries={len(search_modes)}. "
                 f"Per-query counts: {search_result_counts}"
             )
 
@@ -1311,9 +1335,12 @@ def fetch_clips_for_shots(
 
             if accepted_path is None:
                 print(
-                    f"Visual QA: slot {index + 1} still missing after "
-                    f"{checked} unique candidates in retry round {retry_round}. "
-                    "Keeping approved clips and retrying this slot in 60 seconds."
+                    f"Visual QA: slot {index + 1} still missing. "
+                    f"Progress: {checked} distinct videos checked; "
+                    f"{len(attempted_video_ids)} video IDs will not be downloaded "
+                    "or checked again during this slot. "
+                    f"Round {retry_round} exhausted its current animal-specific queries. "
+                    "Keeping approved clips; expanding the animal search and retrying in 60 seconds."
                 )
                 time.sleep(60)
 
