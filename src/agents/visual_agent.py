@@ -65,16 +65,17 @@ Return only:
             for field in fields
         )
 
-    max_attempts = 5
+    attempt = 0
     previous_result = None
     last_problem = "No valid shot plan was returned."
 
-    for attempt in range(1, max_attempts + 1):
+    while True:
+        attempt += 1
         if attempt == 1:
             task = base_task
         else:
             task = f'''The previous shot plan was invalid. Correct it completely.
-This is attempt {attempt} of {max_attempts}. Return a FULL replacement plan,
+This is attempt {attempt}. Return a FULL replacement plan,
 not a partial patch. The replacement must contain exactly {shot_count} shots,
 with slot numbers 1 through {shot_count} exactly once and in order.
 
@@ -91,7 +92,7 @@ Do not repeat the same structural mistake. Return only the complete JSON object.
 
         print(
             f"Visual Director: generating shot plan "
-            f"(attempt {attempt}/{max_attempts})."
+            f"(attempt {attempt}; retrying until valid)."
         )
 
         try:
@@ -136,7 +137,3 @@ Do not repeat the same structural mistake. Return only the complete JSON object.
 
         print(f"Visual Director: rejected shot plan on attempt {attempt}: {last_problem}")
 
-    raise RuntimeError(
-        f"Visual Director failed to produce exactly {shot_count} valid shots "
-        f"after {max_attempts} attempts. Last validation error: {last_problem}"
-    )
