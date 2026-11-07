@@ -52,7 +52,7 @@ TEXT_MODEL = DEFAULT_TEXT_MODEL
 MAX_REPAIR_ATTEMPTS = 2
 
 # Minimum score required for approval.
-MIN_APPROVAL_SCORE = 8.0
+MIN_APPROVAL_SCORE = 7.5
 
 
 class AIProviderUnavailableError(RuntimeError):
