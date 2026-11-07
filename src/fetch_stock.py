@@ -993,14 +993,17 @@ Return ONLY valid JSON:
 
         audit_results = []
         for image_batch in image_batches:
-            response = None
-            # Vision service overload (429/503) is often transient. Give it
-            # a few more chances before failing closed, without long waits.
+            parsed_result = None
+            # Retry both transient API failures and malformed model JSON.
+            # A formatting mistake must reject this candidate, not abort the
+            # entire 15-shot pipeline.
             max_vision_attempts = 5
+            parse_prompt = prompt
+            last_parse_error = None
+
             for attempt in range(1, max_vision_attempts + 1):
                 try:
-                    response = generate_vision(prompt, image_batch)
-                    break
+                    response = generate_vision(parse_prompt, image_batch)
                 except Exception as exc:
                     error_text = str(exc)
                     retryable = any(
@@ -1017,22 +1020,53 @@ Return ONLY valid JSON:
                         raise
                     delay = min(3 * (2 ** (attempt - 1)), 20)
                     print(
-                        f"WARNING: FreeInference Qwen vision temporary API error "
+                        f"WARNING: FreeInference vision temporary API error "
                         f"(attempt {attempt}/{max_vision_attempts}); "
                         f"retrying in {delay}s: {error_text[:250]}"
                     )
                     time.sleep(delay)
+                    continue
 
-            if response is None:
-                raise RuntimeError("FreeInference Qwen vision returned no response after retries.")
+                raw = (getattr(response, "text", None) or "").strip()
+                match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+                try:
+                    if not match:
+                        raise ValueError("No JSON object found in response.")
+                    parsed = json.loads(match.group(0))
+                    required_types = {
+                        "animal_visible": bool,
+                        "species_match": bool,
+                        "action_visible": bool,
+                        "confidence": (int, float),
+                        "reason": str,
+                    }
+                    for field, expected_type in required_types.items():
+                        if not isinstance(parsed.get(field), expected_type):
+                            raise ValueError(f"Invalid or missing '{field}' field.")
+                    parsed_result = parsed
+                    break
+                except (json.JSONDecodeError, ValueError) as exc:
+                    last_parse_error = str(exc)
+                    print(
+                        f"WARNING: Visual QA returned malformed JSON "
+                        f"(attempt {attempt}/{max_vision_attempts}): {last_parse_error}"
+                    )
+                    parse_prompt = (
+                        prompt
+                        + "\n\nYour previous response was invalid JSON. "
+                        "Return ONLY one syntactically valid JSON object with "
+                        "all five required fields and correct value types. "
+                        "Do not add markdown or commentary."
+                    )
 
-            raw = (getattr(response, "text", None) or "").strip()
-            match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-            if not match:
-                raise RuntimeError(
-                    f"Vision model returned invalid JSON: {raw[:300]}"
+            if parsed_result is None:
+                return False, (
+                    "Visual QA candidate rejected because the vision model "
+                    f"failed to return valid structured JSON after "
+                    f"{max_vision_attempts} attempts: {last_parse_error}"
                 )
-            audit_results.append(json.loads(match.group(0)))
+
+            audit_results.append(parsed_result)
 
         def _audit_score(candidate):
             try:
@@ -1197,7 +1231,8 @@ def fetch_clips_for_shots(
             normalized_animal,
             [animal, f"{animal} wildlife", f"{animal} {action}"],
         )
-        search_modes = [(query, True)]
+        # Exact species is mandatory; the narrated action is never a gate.
+        search_modes = [(query, False)]
         # Alternate queries and the primary query all require the exact
         # animal to be visible. The narrated action is context, not a gate.
         search_modes.extend(
@@ -1205,9 +1240,8 @@ def fetch_clips_for_shots(
             for candidate_query in aliases
             if candidate_query.strip().lower() != query.lower()
         )
-        # Keep the highest-value searches: exact narrated action first,
-        # then alternate exact-species wording. Every accepted clip must
-        # still show the requested action.
+        # Keep the highest-value searches: exact-species query first,
+        # then alternate wording. Action visibility is optional.
         search_modes = search_modes[:max_search_modes]
 
         candidates_by_id = {}
@@ -1365,6 +1399,6 @@ def fetch_clips_for_shots(
 
     print(
         f"Cosmic Curious visual QA: verified {len(downloaded)}/{len(shots)} "
-        "animal-and-action-matched clips."
+        "exact-species-matched clips."
     )
     return downloaded
