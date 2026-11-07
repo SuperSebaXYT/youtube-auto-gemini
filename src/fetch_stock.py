@@ -1201,7 +1201,9 @@ def fetch_clips_for_shots(
         seen_search_queries = set()
         seen_ai_queries = set()
         retry_round = 0
-        while accepted_path is None:
+        rejected_candidates = []
+        max_search_rounds = 3
+        while accepted_path is None and retry_round < max_search_rounds:
             retry_round += 1
             normalized_animal = re.sub(r"[^a-z]+", " ", animal.lower()).strip()
             species_search_aliases = {
@@ -1559,11 +1561,17 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                                 )
                                 break
 
-                            candidate_path.unlink(missing_ok=True)
+                            rejected_candidates.append({
+                                "path": candidate_path,
+                                "video_id": video_id,
+                                "query": candidate["query"],
+                                "round": retry_round,
+                                "qa_reason": qa_reason,
+                            })
                             print(
                                 f"Visual QA REJECTED candidate for shot {index + 1}: "
                                 f"round={retry_round}; source_query={candidate['query']!r}; "
-                                f"{qa_reason}. Discarding it and continuing the search loop."
+                                f"{qa_reason}. Keeping it for final comparison."
                             )
                         else:
                             # A failed download does not consume this round's
@@ -1588,10 +1596,76 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     f"Clip slot {index + 1} still missing. "
                     f"Progress: {checked} distinct videos checked; "
                     f"{len(attempted_video_ids)} unique video IDs checked so far. "
-                    f"Search cycle {retry_round} exhausted; generating new queries."
+                    f"Search round {retry_round}/{max_search_rounds} exhausted."
                 )
                 if new_candidate_count == 0:
                     time.sleep(5)
+
+        if accepted_path is None and rejected_candidates:
+            if all(
+                str(item.get("qa_reason", "")).startswith("Visual QA error:")
+                for item in rejected_candidates
+            ):
+                for item in rejected_candidates:
+                    item["path"].unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Visual QA service was unavailable for every candidate "
+                    f"for shot {index + 1}; refusing to select an unverified clip."
+                )
+
+            ranked_fallbacks = []
+            ranking_errors = []
+            for rejected in rejected_candidates:
+                try:
+                    score, score_reason = _score_clip_for_shot(
+                        rejected["path"], animal, action, sentence, visual,
+                        strict_species=strict_species,
+                    )
+                except Exception as exc:
+                    ranking_errors.append(str(exc))
+                    print(
+                        f"Fallback ranking unavailable for shot {index + 1}, "
+                        f"round={rejected['round']}: {exc}"
+                    )
+                    continue
+                ranked_fallbacks.append((score, rejected, score_reason))
+                print(
+                    f"Fallback rank for shot {index + 1}: "
+                    f"round={rejected['round']} score={score}/100; {score_reason}"
+                )
+
+            if not ranked_fallbacks:
+                for item in rejected_candidates:
+                    item["path"].unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Could not rank any rejected candidate for shot {index + 1}; "
+                    "refusing to select an unverified clip. "
+                    + "; ".join(ranking_errors[:2])
+                )
+
+            best_score, best_candidate, best_reason = max(
+                ranked_fallbacks,
+                key=lambda item: item[0],
+            )
+            accepted_path = out_path / f"clip_{index:02d}.mp4"
+            best_candidate["path"].replace(accepted_path)
+            used_video_ids.add(best_candidate["video_id"])
+            print(
+                f"Fallback selected for shot {index + 1}: "
+                f"round={best_candidate['round']}, score={best_score}/100; "
+                f"{best_reason}. Selected best available of "
+                f"{len(rejected_candidates)} downloaded candidate(s) "
+                f"from {max_search_rounds} search rounds."
+            )
+            for item in rejected_candidates:
+                if item is not best_candidate:
+                    item["path"].unlink(missing_ok=True)
+
+        if accepted_path is None:
+            raise RuntimeError(
+                f"No downloadable Pexels candidate for shot {index + 1} "
+                f"after {max_search_rounds} search rounds."
+            )
 
         downloaded.append(str(accepted_path))
         print(
@@ -1605,7 +1679,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
     print(
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
-        "clips (unbounded Pexels search per missing slot until Visual QA accepts; "
+        "clips (up to 3 Visual-QA search rounds per missing slot; "
+        "best rejected candidate ranked as fallback; "
         "first 10 species-focused searches; final 5 broad wildlife searches)."
     )
     return downloaded
