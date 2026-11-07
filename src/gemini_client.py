@@ -2,14 +2,12 @@
 Unified text and vision model gateway for Cosmic Curious.
 
 Shared fallback order:
-1. GLM-5.3 Flash Free (OpenCode)
-2. DeepSeek V4.1 Flash Free (OpenCode)
-3. GLM-4.6V Flash (Z.AI)
-4. Nemotron 3.5 Super VL Free (OpenCode)
+1. DeepSeek V4.1 Flash Free (OpenCode) - primary
+2. GLM-5.3 Flash Free (OpenCode) - fallback 1
+3. Nemotron 3.5 Super VL Free (OpenCode) - fallback 2
 """
 from __future__ import annotations
 
-import base64
 import os
 import json
 import subprocess
@@ -18,22 +16,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 MODEL_CHAIN = (
-    ("opencode", "glm-5.3-flash-free"),
     ("opencode", "deepseek-v4.1-flash-free"),
-    ("zai", "glm-4.6v-flash"),
+    ("opencode", "glm-5.3-flash-free"),
     ("opencode", "nemotron-3.5-super-vl-free"),
 )
-TEXT_MODEL = "glm-5.3-flash-free"
-VISION_BASE_URL = "https://api.z.ai/api/paas/v4/"
-VISION_MODEL = "glm-4.6v-flash"
+TEXT_MODEL = "deepseek-v4.1-flash-free"
 
 
 def is_available() -> bool:
     return bool(os.environ.get("OPENCODE_API_KEY"))
-
-
-def is_vision_available() -> bool:
-    return bool(os.environ.get("ZAI_VISION_API_KEY"))
 
 
 def _openai_client(api_key: str, base_url: str):
@@ -108,26 +99,6 @@ def _run_opencode_model(model: str, prompt: str, image_paths: list[str] | None =
     return content
 
 
-def _run_zai_model(prompt: str, images: list[tuple[bytes, str]] | None = None):
-    if not is_vision_available():
-        raise RuntimeError("ZAI_VISION_API_KEY is not set; GLM-4.6V fallback unavailable.")
-    content = [{"type": "text", "text": prompt}]
-    for image_bytes, mime_type in images or []:
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
-        })
-    response = _openai_client(
-        os.environ["ZAI_VISION_API_KEY"], VISION_BASE_URL
-    ).chat.completions.create(
-        model=VISION_MODEL, messages=[{"role": "user", "content": content}],
-        max_tokens=1800,
-    )
-    result = (response.choices[0].message.content or "").strip()
-    if not result:
-        raise RuntimeError("GLM-4.6V-Flash returned an empty response.")
-    return result
 
 
 def _request_with_fallback(kwargs: dict, images: list[tuple[bytes, str]] | None = None):
@@ -147,10 +118,7 @@ def _request_with_fallback(kwargs: dict, images: list[tuple[bytes, str]] | None 
 
         for provider, model in MODEL_CHAIN:
             try:
-                if provider == "zai":
-                    content = _run_zai_model(prompt, images)
-                else:
-                    content = _run_opencode_model(model, prompt, image_paths)
+                content = _run_opencode_model(model, prompt, image_paths)
                 print(f"AI generation succeeded with model: {model} ({provider})")
                 choice = SimpleNamespace(
                     message=SimpleNamespace(content=content), finish_reason="stop"
