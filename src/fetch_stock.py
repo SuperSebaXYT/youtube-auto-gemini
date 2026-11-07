@@ -1183,6 +1183,7 @@ def fetch_clips_for_shots(
         )
 
         # Resume safely: retain any existing non-empty clip for this slot.
+        accepted_path = out_path / f"clip_{index:02d}.mp4"
         if accepted_path.exists() and accepted_path.stat().st_size > 10000:
             downloaded.append(str(accepted_path))
             print(
@@ -1528,6 +1529,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                             )
 
                         if was_downloaded:
+                            used_video_ids.add(video_id)
                             # Both rounds use the same Visual QA. A rejected
                             # first-round clip is kept for comparison with the
                             # second-round replacement.
@@ -1598,6 +1600,11 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     + ("Starting the final unconditional round." if retry_round < 2 else "No downloadable candidate was available.")
                 )
         
+        if accepted_path is not None:
+            # A later-round QA pass wins; discard any earlier rejected fallback.
+            for rejected in rejected_candidates:
+                rejected["path"].unlink(missing_ok=True)
+
         if accepted_path is None and rejected_candidates:
             ranked_fallbacks = []
             for rejected in rejected_candidates:
