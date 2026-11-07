@@ -1015,7 +1015,8 @@ NO_MATCH
         # A plain one-token verdict avoids fragile JSON generation/parsing.
         # Retry malformed/ambiguous text responses; never let formatting
         # mistakes crash the full 15-shot pipeline.
-        max_vision_attempts = 5
+        # One retry is enough for transient gateway failures; avoid spending ~41s per clip.
+        max_vision_attempts = 2
         last_response = ""
         for attempt in range(1, max_vision_attempts + 1):
             try:
@@ -1032,7 +1033,7 @@ NO_MATCH
                 )
                 if not retryable or attempt >= max_vision_attempts:
                     raise
-                delay = min(3 * (2 ** (attempt - 1)), 20)
+                delay = 2
                 print(
                     f"WARNING: Vision QA temporary API error "
                     f"(attempt {attempt}/{max_vision_attempts}); "
@@ -1605,7 +1606,20 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 rejected["path"].unlink(missing_ok=True)
 
         if accepted_path is None and rejected_candidates:
+            # If Visual QA failed at the API level for every candidate, a
+            # second vision call cannot reliably rank them. Never pretend that
+            # two unavailable scores of 0 identify a "best" clip.
+            if all(
+                str(item.get("qa_reason", "")).startswith("Visual QA error:")
+                for item in rejected_candidates
+            ):
+                raise RuntimeError(
+                    f"Visual QA service was unavailable for every candidate "
+                    f"for shot {index + 1}; refusing to select an unverified clip."
+                )
+
             ranked_fallbacks = []
+            ranking_errors = []
             for rejected in rejected_candidates:
                 try:
                     score, score_reason = _score_clip_for_shot(
@@ -1617,13 +1631,23 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                         strict_species=strict_species,
                     )
                 except Exception as exc:
-                    # Ranking failure must not discard both downloaded clips.
-                    score = 0
-                    score_reason = f"ranking unavailable: {exc}"
+                    ranking_errors.append(str(exc))
+                    print(
+                        f"Fallback ranking unavailable for shot {index + 1}, "
+                        f"round={rejected['round']}: {exc}"
+                    )
+                    continue
                 ranked_fallbacks.append((score, rejected, score_reason))
                 print(
                     f"Fallback rank for shot {index + 1}: "
                     f"round={rejected['round']} score={score}/100; {score_reason}"
+                )
+
+            if not ranked_fallbacks:
+                raise RuntimeError(
+                    f"Could not rank any rejected candidate for shot {index + 1}; "
+                    "refusing to select a clip with a fabricated 0/100 score. "
+                    + "; ".join(ranking_errors[:2])
                 )
 
             best_score, best_candidate, best_reason = max(
