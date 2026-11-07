@@ -464,7 +464,7 @@ def _generate_winner_inspired_topic(
         return None
 
     used_topics = get_used_topics(channel_id)
-    used_sample = "\\n".join(
+    used_sample = "\n".join(
         f"- {topic}"
         for topic in sorted(used_topics, key=str.casefold)[-120:]
     )
@@ -508,10 +508,10 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
             retry_note = ""
             if rejected_candidates:
                 retry_note = (
-                    "\\n\\nDO NOT RETURN ANY OF THESE REJECTED TOPICS "
-                    "OR A NEAR-IDENTICAL VERSION:\\n"
-                    + "\\n".join(f"- {item}" for item in rejected_candidates[-10:])
-                    + "\\nChoose a genuinely different animal angle supported "
+                    "\n\nDO NOT RETURN ANY OF THESE REJECTED TOPICS "
+                    "OR A NEAR-IDENTICAL VERSION:\n"
+                    + "\n".join(f"- {item}" for item in rejected_candidates[-10:])
+                    + "\nChoose a genuinely different animal angle supported "
                     "by the Analytics."
                 )
 
@@ -525,7 +525,7 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
 
             for candidate_line in lines:
                 match = re.match(
-                    r"^SCORE:\\s*(\\d{1,3})\\s*\\|\\s*TOPIC:\\s*(.+)$",
+                    r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
                     candidate_line,
                     flags=re.IGNORECASE,
                 )
