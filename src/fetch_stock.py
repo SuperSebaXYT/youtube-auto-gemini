@@ -18,6 +18,7 @@ V4:
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import tempfile
 import time
@@ -501,12 +502,8 @@ def _score_video(
         elif ratio > 1.1:
             score += 3
 
-    if 5 <= duration <= 30:
-        score += 2
-
-    elif duration > 30:
-        score += 1
-
+    # Do not rank by clip length or subjective technical polish.
+    # Keep only portrait suitability and enough source resolution for Shorts.
     if width >= 720:
         score += 2
 
@@ -978,9 +975,12 @@ TARGET ANIMAL: {animal}
 
 Look at the attached frames and answer only this question:
 Is the actual target animal (or an unmistakable example of that animal type)
-visibly present in the footage?
+visibly present AND shown in an appealing, usable wildlife shot?
 
-The animal identity/type is the ONLY thing that matters.
+The animal identity/type and basic visual appeal are the only approval criteria.
+The animal should be recognizable and reasonably clear/prominent in the frame.
+Prefer footage that looks engaging and well-composed; reject footage where the
+animal is tiny, heavily obscured, extremely blurry, or barely visible.
 Ignore the narration, described action, pose, habitat, camera angle, and
 background. The animal does NOT need to perform the narrated action.
 A normal clip of the correct animal must be accepted.
@@ -1072,10 +1072,9 @@ def fetch_clips_for_shots(
     """
     Fetch one verified clip per narration shot.
 
-    Search a broad Pexels result pool for the exact species, then use FreeInference
-    Qwen vision to verify candidates. Search results are never trusted as proof:
-    wrong species are rejected and publication remains blocked if no exact
-    species match can be verified.
+    Search a focused Pexels result pool for the exact animal, then use DeepSeek
+    vision to verify species identity and visual appeal. Search results are
+    never trusted as proof: wrong or visually weak clips are rejected.
     """
     api_key = os.environ.get("PEXELS_API_KEY")
     if not api_key:
@@ -1091,10 +1090,12 @@ def fetch_clips_for_shots(
     downloaded = []
     used_video_ids = set()
 
-    # Search every species-specific query and every available Pexels page.
-    # There is no fixed candidate-count cap: rejected clips do not consume
-    # a shot slot, and only a matching animal can fill that slot.
+    # Search a bounded first page for a small set of species-specific queries.
+    # The old unbounded pagination multiplied API calls for every shot.
+    # Rejected clips still do not consume a slot; retries continue indefinitely.
     pexels_per_page = 80
+    max_queries_per_round = 8
+    max_parallel_searches = 8
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1205,7 +1206,7 @@ def fetch_clips_for_shots(
             search_modes = [(query, False)]
             search_modes.extend(
                 (candidate_query, False)
-                for candidate_query in aliases
+                for candidate_query in aliases[:2]
                 if candidate_query.strip().lower() != query.lower()
             )
 
@@ -1224,7 +1225,7 @@ SHOT DESCRIPTION: {visual or "not provided"}
 NARRATION CONTEXT: {sentence or action or "not provided"}
 ORIGINAL SEARCH QUERY: {query}
 
-Generate 12 genuinely different, short, natural English Pexels VIDEO search queries.
+Generate 5 genuinely different, short, natural English Pexels VIDEO search queries.
 First reason about the animal's recognizable real-world appearance and typical habitat.
 Then describe it in varied ways that Pexels stock creators might tag footage:
 - visual shape, size, colors, texture, distinctive body silhouette
@@ -1242,10 +1243,10 @@ A query such as "huge fish close up underwater" is INVALID without the species n
 Do not repeat or lightly reword any of these previously tried AI queries:
 {rejected_context}
 
-Return exactly 12 search queries, one per line, no numbering, bullets, quotes,
+Return exactly 5 search queries, one per line, no numbering, bullets, quotes,
 explanations, or markdown.
 """
-                response = generate_response(query_prompt, max_output_tokens=420)
+                response = generate_response(query_prompt, max_output_tokens=220)
                 generated_queries = []
                 for raw_line in (getattr(response, "text", "") or "").splitlines():
                     candidate_query = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", raw_line).strip().strip('"\' ')
@@ -1260,7 +1261,7 @@ explanations, or markdown.
                     ):
                         seen_ai_queries.add(normalized_candidate)
                         generated_queries.append(candidate_query[:100])
-                    if len(generated_queries) >= 12:
+                    if len(generated_queries) >= 5:
                         break
 
                 for candidate_query in generated_queries:
@@ -1306,65 +1307,66 @@ explanations, or markdown.
                     continue
                 seen_search_queries.add(normalized_search_query)
                 fresh_search_modes.append((search_query, require_action))
-            search_modes = fresh_search_modes
+            search_modes = fresh_search_modes[:max_queries_per_round]
 
             if not search_modes:
                 print(
                     f"Pexels Query Brain produced no unseen phrases for shot {index + 1}; "
                     "retrying query generation after 60 seconds."
                 )
-                time.sleep(60)
                 continue
 
             candidates_by_id = {}
             search_result_counts = {}
-            for mode_index, (search_query, require_action) in enumerate(search_modes):
-                page = 1
-                query_result_count = 0
-                while True:
-                    try:
-                        results = _search_pexels(
-                            search_query,
-                            headers,
-                            orientation,
-                            per_page=pexels_per_page,
-                            page=page,
-                        )
-                    except Exception as exc:
-                        print(
-                            f"WARNING: Pexels search failed for shot {index + 1} "
-                            f"query={search_query!r} page={page}: {exc}"
-                        )
-                        break
 
-                    if not results:
-                        break
+            def search_one_mode(item):
+                mode_index, (search_query, require_action) = item
+                try:
+                    results = _search_pexels(
+                        search_query,
+                        headers,
+                        orientation,
+                        per_page=pexels_per_page,
+                        page=1,
+                    )
+                    return mode_index, search_query, require_action, results, None
+                except Exception as exc:
+                    return mode_index, search_query, require_action, [], exc
 
-                    query_result_count += len(results)
-                    for video in results:
-                        video_id = video.get("id")
-                        if (not video_id or video_id in used_video_ids
-                                or video_id in attempted_video_ids):
-                            continue
+            # Pexels network searches are independent. Run them concurrently
+            # instead of waiting for each species phrase and every result page.
+            with ThreadPoolExecutor(
+                max_workers=min(max_parallel_searches, len(search_modes))
+            ) as search_executor:
+                search_batches = list(
+                    search_executor.map(search_one_mode, enumerate(search_modes))
+                )
 
-                        existing = candidates_by_id.get(video_id)
-                        candidate = {
-                            "video": video,
-                            "require_action": require_action,
-                            "query": search_query,
-                            "mode_index": mode_index,
-                        }
-                        # Duplicate candidates are all animal-visibility checks;
-                        # the narration action is optional for every search mode.
-                        if existing is None or (require_action and not existing["require_action"]):
-                            candidates_by_id[video_id] = candidate
+            for mode_index, search_query, require_action, results, search_error in search_batches:
+                if search_error is not None:
+                    print(
+                        f"WARNING: Pexels search failed for shot {index + 1} "
+                        f"query={search_query!r}: {search_error}"
+                    )
+                    search_result_counts[search_query] = 0
+                    continue
 
-                    # A short page means Pexels has no further results for this query.
-                    if len(results) < pexels_per_page:
-                        break
-                    page += 1
+                search_result_counts[search_query] = len(results)
+                for video in results:
+                    video_id = video.get("id")
+                    if (not video_id or video_id in used_video_ids
+                            or video_id in attempted_video_ids):
+                        continue
 
-                search_result_counts[search_query] = query_result_count
+                    existing = candidates_by_id.get(video_id)
+                    candidate = {
+                        "video": video,
+                        "require_action": require_action,
+                        "query": search_query,
+                        "mode_index": mode_index,
+                    }
+                    if existing is None or (require_action and not existing["require_action"]):
+                        candidates_by_id[video_id] = candidate
 
             # Balance candidates from every animal-specific query. Only the
             # target animal/type is checked; narration actions are irrelevant.
@@ -1531,8 +1533,7 @@ explanations, or markdown.
                     f"Round {retry_round} exhausted its current animal-specific queries. "
                     "Keeping approved clips; expanding the animal search and retrying in 60 seconds."
                 )
-                time.sleep(60)
-
+        
         downloaded.append(str(accepted_path))
         print(
             f"Visual QA progress: {len(downloaded)}/{len(shots)} approved; "
