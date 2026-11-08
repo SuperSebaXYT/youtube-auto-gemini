@@ -982,14 +982,14 @@ You are checking {len(clip_paths)} separate wildlife video clips for the SAME sh
 
 The images are grouped by clip in order. Each clip has exactly three consecutive frames.
 Clip 1 = images 1-3, clip 2 = images 4-6, clip 3 = images 7-9, and so on.
-There are exactly ${clip_paths.length} clips. Evaluate EVERY supplied clip, with no omissions.
+There are exactly {len(clip_paths)} clips. Evaluate EVERY supplied clip, with no omissions.
 For EACH clip independently, decide whether the required animal is recognizable,
 reasonably clear/prominent, and shown in usable wildlife footage.
 Ignore narration, action, pose, habitat, camera angle, and background.
 Do not demand rare behavior or impossible species-level details.
 Do not let one clip affect another clip's verdict.
 
-Return exactly ${clip_paths.length} lines, one per clip, numbered 1 through ${clip_paths.length}:
+Return exactly {len(clip_paths)} lines, one per clip, numbered 1 through {len(clip_paths)}:
 1 MATCH
 2 NO_MATCH
 3 MATCH
