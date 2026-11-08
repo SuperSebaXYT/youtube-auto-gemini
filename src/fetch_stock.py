@@ -953,13 +953,11 @@ def _verify_clip_batch_matches_shot(
     animal: str,
     strict_species: bool = True,
 ) -> list[tuple[bool, str]]:
-    """Verify up to three clips for the same shot in one vision request."""
+    """Verify every supplied clip for the same shot in one vision request."""
     from src.freeinference_client import generate_vision, is_vision_available
 
     if not clip_paths:
         return []
-    if len(clip_paths) > 3:
-        raise ValueError("Visual QA batches may contain at most three clips.")
     if not is_vision_available():
         raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
 
@@ -982,19 +980,20 @@ def _verify_clip_batch_matches_shot(
 You are checking {len(clip_paths)} separate wildlife video clips for the SAME shot.
 {identity_rule}
 
-The images are grouped by clip in order. Each clip has exactly three frames:
-clip 1 = images 1-3, clip 2 = images 4-6, clip 3 = images 7-9.
-If fewer than three clips are supplied, only evaluate the listed groups.
+The images are grouped by clip in order. Each clip has exactly three consecutive frames.
+Clip 1 = images 1-3, clip 2 = images 4-6, clip 3 = images 7-9, and so on.
+There are exactly ${clip_paths.length} clips. Evaluate EVERY supplied clip, with no omissions.
 For EACH clip independently, decide whether the required animal is recognizable,
 reasonably clear/prominent, and shown in usable wildlife footage.
 Ignore narration, action, pose, habitat, camera angle, and background.
 Do not demand rare behavior or impossible species-level details.
 Do not let one clip affect another clip's verdict.
 
-Return exactly one line per supplied clip, in this format:
+Return exactly ${clip_paths.length} lines, one per clip, numbered 1 through ${clip_paths.length}:
 1 MATCH
 2 NO_MATCH
 3 MATCH
+Continue the same format for every remaining clip.
 Use only MATCH or NO_MATCH after each number. No JSON or explanation.
 """
         max_attempts = 2
@@ -1566,70 +1565,56 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 f"Per-query counts: {search_result_counts}"
             )
 
-            # Download and visually verify up to three candidates together.
-            from concurrent.futures import FIRST_COMPLETED, wait
+            # Download every newly found candidate in this search cycle, then
+            # send the complete available set to Visual QA in one request.
+            from concurrent.futures import as_completed
 
-            batch_size = 3
-            candidate_iter = iter(ranked)
-            pending = {}
             batch_candidates = []
-            executor = ThreadPoolExecutor(max_workers=batch_size)
-
-            def submit_next_candidate():
-                """Submit the next unseen Pexels candidate, if available."""
-                nonlocal checked
-                for video_id, candidate in candidate_iter:
-                    if video_id in attempted_video_ids:
-                        continue
-                    attempted_video_ids.add(video_id)
-                    checked += 1
-                    candidate_path = out_path / (
-                        f"candidate_{index:02d}_{checked:05d}.mp4"
-                    )
-                    future = executor.submit(
-                        _download_pexels_video,
-                        candidate["video"],
-                        candidate_path,
-                    )
-                    pending[future] = (video_id, candidate, candidate_path)
-                    return True
-                return False
+            pending = {}
+            candidate_items = []
+            for video_id, candidate in ranked:
+                if video_id in attempted_video_ids:
+                    continue
+                attempted_video_ids.add(video_id)
+                checked += 1
+                candidate_path = out_path / (
+                    f"candidate_{index:02d}_{checked:05d}.mp4"
+                )
+                candidate_items.append((video_id, candidate, candidate_path))
 
             try:
-                for _ in range(batch_size):
-                    if not submit_next_candidate():
-                        break
+                if candidate_items:
+                    download_workers = min(12, len(candidate_items))
+                    with ThreadPoolExecutor(max_workers=download_workers) as executor:
+                        future_map = {
+                            executor.submit(_download_pexels_video, candidate, candidate_path):
+                                (video_id, candidate, candidate_path)
+                            for video_id, candidate, candidate_path in candidate_items
+                        }
+                        for future in as_completed(future_map):
+                            video_id, candidate, candidate_path = future_map[future]
+                            try:
+                                was_downloaded = future.result()
+                            except Exception as exc:
+                                was_downloaded = False
+                                print(
+                                    f"WARNING: parallel download failed for shot {index + 1}, "
+                                    f"video {video_id}: {exc}"
+                                )
 
-                while pending and len(batch_candidates) < batch_size:
-                    completed, _ = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in completed:
-                        video_id, candidate, candidate_path = pending.pop(future)
-                        try:
-                            was_downloaded = future.result()
-                        except Exception as exc:
-                            was_downloaded = False
-                            print(
-                                f"WARNING: parallel download failed for shot {index + 1}, "
-                                f"video {video_id}: {exc}"
-                            )
+                            if was_downloaded:
+                                used_video_ids.add(video_id)
+                                batch_candidates.append({
+                                    "video_id": video_id,
+                                    "candidate": candidate,
+                                    "path": candidate_path,
+                                })
+                            else:
+                                candidate_path.unlink(missing_ok=True)
 
-                        if was_downloaded:
-                            used_video_ids.add(video_id)
-                            batch_candidates.append({
-                                "video_id": video_id,
-                                "candidate": candidate,
-                                "path": candidate_path,
-                            })
-                        else:
-                            candidate_path.unlink(missing_ok=True)
-                            if len(batch_candidates) + len(pending) < batch_size:
-                                submit_next_candidate()
-
-                    # Keep the download window full until three usable clips
-                    # have been collected or this round has no more candidates.
-                    while len(batch_candidates) + len(pending) < batch_size:
-                        if not submit_next_candidate():
-                            break
+                # Preserve Pexels ranking order for deterministic selection.
+                rank_positions = {video_id: position for position, (video_id, _) in enumerate(ranked)}
+                batch_candidates.sort(key=lambda item: rank_positions.get(item["video_id"], len(ranked)))
 
                 if batch_candidates:
                     try:
@@ -1683,7 +1668,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             finally:
                 for future in pending:
                     future.cancel()
-                executor.shutdown(wait=True, cancel_futures=True)
                 for _, _, candidate_path in pending.values():
                     candidate_path.unlink(missing_ok=True)
 
@@ -1806,7 +1790,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
     print(
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
-        "clips (up to 3 Visual-QA search rounds per missing slot; "
+        "clips (all available candidates per Visual-QA request; "
         "best rejected candidate ranked as fallback; "
         "all 15 species-focused searches; global best-fit fallback across missing slots)."
     )
