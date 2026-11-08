@@ -923,6 +923,12 @@ def generate_script(
                 "quality review and video rendering."
             ) from e
 
+    if not generated and channel_id == "cosmic_curious":
+        raise RuntimeError(
+            "DeepSeek is unavailable. Cosmic Curious will not publish "
+            "a generic template as an animal-facts script."
+        )
+
     if not generated:
         generated = generate_with_template(
             topic, config, length, language
