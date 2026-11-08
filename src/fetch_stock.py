@@ -1461,6 +1461,29 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     if len(generated_queries) >= 5:
                         break
 
+                # A blank or malformed DeepSeek response is not fatal.
+                # Build species-anchored queries from the Visual Director's
+                # existing description and action instead of aborting the slot.
+                if strict_species and not generated_queries:
+                    fallback_queries = [
+                        f"{animal} {visual}" if visual else f"{animal} close up natural habitat",
+                        f"{animal} {action}" if action else f"{animal} detailed side view",
+                        f"{animal} close up recognizable body markings",
+                        f"{animal} side view natural habitat",
+                        f"{animal} wildlife portrait close up",
+                    ]
+                    generated_queries = [
+                        item[:100]
+                        for item in fallback_queries
+                        if _query_mentions_target_species(item, animal)
+                        and item.lower() not in seen_ai_queries
+                    ][:5]
+                    print(
+                        f"WARNING: Pexels Query Brain returned no usable queries "
+                        f"for {animal!r}; using {len(generated_queries)} "
+                        "species-anchored fallback descriptions."
+                    )
+
                 for candidate_query in generated_queries:
                     search_modes.append((candidate_query, False))
 
