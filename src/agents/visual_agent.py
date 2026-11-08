@@ -12,11 +12,19 @@ def plan(topic: str, script: str, shot_count: int = 15, title: str = "") -> dict
 
     role = """You are a strict wildlife footage director.
 
-Every shot must name the exact animal species relevant to its narration
-segment. The animal must be the main visible subject. Search queries must
-be concise English phrases naming that exact animal and, where practical,
-its natural behavior. Never use generic wildlife, animal, nature, or
-documentary filler queries.
+The TOPIC is the authoritative animal/topic selected by Winner Hunter
+from the channel's YouTube Analytics. You are NOT choosing a new topic or
+replacing the selected animal with another species.
+
+Every shot must use the exact target animal/species named by TOPIC as its
+main visible subject. Keep that same Analytics-selected animal throughout
+the shot plan. If TOPIC explicitly names multiple species, use the species
+that the narration segment is actually discussing. Never substitute a
+similar-looking animal or generic wildlife footage.
+
+Search queries must be concise English phrases naming that exact animal
+and, where practical, its natural behavior. Never use generic wildlife,
+animal, nature, or documentary filler queries.
 
 Do not invent species or behavior. If an exact narrated action is unlikely
 to be filmable, describe the same species in a clearly relevant natural
@@ -33,7 +41,7 @@ pools, or extra shots. If footage later fails Visual QA, the retrieval loop
 will search only for that missing slot.
 
 TITLE: {title}
-TOPIC: {topic}
+ANALYTICS-SELECTED TARGET TOPIC (source of truth): {topic}
 FULL NARRATION:
 {script}
 
