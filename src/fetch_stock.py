@@ -978,9 +978,11 @@ def _verify_clip_batch_matches_shot(
             "TARGET ANIMAL: any recognizable real wild animal. Reject humans, objects, food, toys, drawings, models, and scenery without a clearly visible animal."
         )
         traits_instruction = (
-            f"Distinctive visual traits to track (NOT rejection requirements): {visual_traits}. "
-            "For each clip, separately report whether at least one listed trait is clearly visible. "
-            "Missing traits must NEVER change MATCH/NO_MATCH; species identity alone decides that verdict."
+            f"Visual traits to track (NOT rejection requirements): {visual_traits}. "
+            "The PRIMARY trait is the one immediately after PRIMARY= and is the key visual signature. "
+            "Report TRAITS_VISIBLE only if that PRIMARY signature is clearly visible. "
+            "Secondary traits do not count for this check. Missing traits must NEVER change "
+            "MATCH/NO_MATCH; species identity alone decides that verdict."
             if visual_traits else
             "No extra visual-trait check is requested. Use TRAITS_UNCLEAR for every clip."
         )
@@ -1004,9 +1006,9 @@ Return exactly {len(clip_paths)} lines, one per clip, numbered 1 through {len(cl
 2 NO_MATCH TRAITS_MISSING
 3 MATCH TRAITS_UNCLEAR
 Continue the same format for every remaining clip.
-Use MATCH or NO_MATCH only for animal identity. Use TRAITS_VISIBLE if at least one listed
-trait is clearly visible, TRAITS_MISSING if none is visible, or TRAITS_UNCLEAR if frames
-do not allow a reliable judgement. Never reject a clip because a trait is missing.
+Use MATCH or NO_MATCH only for animal identity. Use TRAITS_VISIBLE only if the PRIMARY signature trait is clearly visible,
+TRAITS_MISSING if it is not visible, or TRAITS_UNCLEAR if frames do not allow a
+reliable judgement. Never reject a clip because a trait is missing.
 No JSON or explanations.
 """
         max_attempts = 2
@@ -1399,17 +1401,19 @@ TARGET ANIMAL: {animal}
 SHOT DESCRIPTION: {visual or "not provided"}
 NARRATION CONTEXT: {sentence or action or "not provided"}
 ORIGINAL SEARCH QUERY: {query}
-First identify 2-4 reliable, visually distinctive physical traits of this exact
-species (markings, body shape, colors, fins, beak, etc.). Do not invent traits.
+Identify one reliable, highly distinctive PRIMARY visual signature of this exact
+species (especially a recognizable marking or body pattern), plus up to 3 secondary
+physical traits. Do not invent traits. Keep previously identified traits stable:
+{visual_traits or "none identified yet"}.
 Then generate 5 distinct, natural English Pexels VIDEO queries that deliberately
-include those traits so search results are more likely to show them.
+emphasize the PRIMARY signature so search results are more likely to show it.
 EVERY query must explicitly contain "{animal}" or an accepted scientific/common
 name. Never omit or replace the target species. Do not include humans, objects,
 toys, cartoons or unrelated subjects.
 Search cycle: {retry_round}. Make the phrases genuinely different from all previously tried queries.
 Previously tried queries: {rejected_context}
 {previous_trait_feedback}
-Return one first line exactly as: VISUAL_TRAITS: trait 1; trait 2; trait 3
+Return one first line exactly as: VISUAL_TRAITS: PRIMARY=main signature; SECONDARY=trait 2, trait 3
 Then return exactly 5 query lines, each prefixed with QUERY:
 Do not add numbering or explanations.
 """
