@@ -900,6 +900,7 @@ def generate_script(
 
     topic = forced_topic.strip() if forced_topic else None
     recap_topic = False
+    selected_animal = ""
 
     if not topic and is_short:
         topic = get_recap_topic_for_short(channel_id)
@@ -916,6 +917,11 @@ def generate_script(
             topic = _fresh_candidate(
                 channel_id, candidate, "Winner Hunter"
             )
+            if channel_id == "cosmic_curious" and topic:
+                animal_match = re.match(r"^\[ANIMAL:\s*(.+?)\]\s*", topic)
+                if animal_match:
+                    selected_animal = animal_match.group(1).strip()
+                    topic = re.sub(r"^\[ANIMAL:\s*.+?\]\s*", "", topic).strip()
         except Exception as e:
             print(f"WARNING: Winner Hunter selection failed ({e}).")
 
@@ -976,13 +982,10 @@ def generate_script(
     if not forced_topic and not recap_topic:
         mark_topic_used(channel_id, topic)
 
-    # Persist the species used by the successfully generated video. The next
-    # pipeline invocation must choose a different species, across processes.
-    if channel_id == "cosmic_curious" and not forced_topic and not recap_topic:
-        animal_match = re.match(r"^\[ANIMAL:\s*(.+?)\]\s*", topic)
-        if animal_match:
-            _save_last_animal(channel_id, animal_match.group(1))
-            topic = re.sub(r"^\[ANIMAL:\s*.+?\]\s*", "", topic).strip()
+    # Persist species after successful script generation. This survives separate
+    # scheduled pipeline runs and prevents consecutive videos using one species.
+    if channel_id == "cosmic_curious" and selected_animal:
+        _save_last_animal(channel_id, selected_animal)
 
     if not is_short and not forced_topic:
         save_todays_longform_topic(channel_id, topic)
