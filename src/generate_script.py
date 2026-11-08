@@ -836,8 +836,10 @@ def generate_script(
     Topic priority:
     1. Explicit forced topic.
     2. One eligible same-day longform recap for a Short.
-    3. Winner Hunter's daily batch of up to 10 Analytics-based topics.
-    4. Other topic sources are retained for non-Cosmic channels only.
+    3. Winner Hunter's Analytics-based topic selection.
+    4. Daily Brain and Trend Scout as safe topic-source fallbacks.
+    5. An unused channel seed topic if AI topic sources are unavailable.
+    All text generation is routed through DeepSeek by freeinference_client.
     """
     config = load_channel_config(channel_id)
 
