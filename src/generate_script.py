@@ -69,6 +69,36 @@ def _used_topics_path(channel_id: str) -> Path:
     return STATE_DIR / f"{channel_id}_used_topics.json"
 
 
+def _last_animal_path(channel_id: str) -> Path:
+    """Persist the animal species used by the most recently completed video."""
+    return STATE_DIR / f"{channel_id}_last_animal.json"
+
+
+def _get_last_animal(channel_id: str) -> str:
+    path = _last_animal_path(channel_id)
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return str(data.get("animal", "")).strip()
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return ""
+
+
+def _save_last_animal(channel_id: str, animal: str) -> None:
+    animal = str(animal or "").strip()
+    if not animal:
+        return
+    path = _last_animal_path(channel_id)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps({"animal": animal, "updated_at": datetime.now(timezone.utc).isoformat()},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
 def get_used_topics(channel_id: str) -> set:
     path = _used_topics_path(channel_id)
 
@@ -472,6 +502,7 @@ def _generate_winner_inspired_topic(
     rejected_candidates = []
     content_length = "a YouTube Short" if is_short else "a YouTube video"
     max_topic_attempts = 5
+    last_animal = _get_last_animal(channel_id)
 
     prompt = f"""
 You are the topic strategist for a faceless animal and wildlife channel.
@@ -484,6 +515,13 @@ CHANNEL PERFORMANCE DATA:
 PREVIOUSLY USED TOPICS. Avoid exact repeats and near-identical premises.
 The same animal may be reused when Analytics supports a genuinely different angle:
 {used_sample}
+
+CRITICAL SPECIES ROTATION:
+The immediately previous completed video featured this animal species: {last_animal or "not recorded"}.
+For this new video, choose a DIFFERENT animal species. Do not choose the same species
+again, even for a different fact or angle. Rotate species video-to-video (for example,
+lion -> fish -> spider -> orca). If the last species is unknown, choose any species.
+Return the species name separately in the required ANIMAL field.
 
 Use actual channel Analytics as the main evidence. Prioritize subjects,
 hooks and storytelling angles associated with the highest views and strongest
@@ -498,7 +536,7 @@ adaptation. Do not invent species, abilities, statistics or discoveries.
 No astronomy, space, NASA or unrelated science.
 
 Return exactly ONE line in this format, with no explanation:
-SCORE: <0-100> | TOPIC: <specific animal topic>
+SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic>
 """
 
     try:
@@ -525,7 +563,8 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
 
             for candidate_line in lines:
                 match = re.match(
-                    r"^SCORE:\s*(\d{1,3})\s*\|\s*TOPIC:\s*(.+)$",
+                    r"^SCORE:\s*(\d{1,3})\s*\|\s*"
+                    r"(?:ANIMAL:\s*(.*?)\s*\|\s*)?TOPIC:\s*(.+)$",
                     candidate_line,
                     flags=re.IGNORECASE,
                 )
@@ -533,9 +572,17 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
                     continue
 
                 score = max(0, min(100, int(match.group(1))))
-                candidate = match.group(2).strip()
+                animal = str(match.group(2) or "").strip()
+                candidate = match.group(3).strip()
                 normalized = _normalize_topic(candidate)
-                if not candidate:
+                if not candidate or not animal:
+                    continue
+                if last_animal and _normalize_topic(animal) == _normalize_topic(last_animal):
+                    print(
+                        f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
+                        f"rejected repeated animal species: {animal}"
+                    )
+                    rejected_candidates.append(candidate)
                     continue
 
                 is_duplicate = any(
@@ -565,10 +612,13 @@ SCORE: <0-100> | TOPIC: <specific animal topic>
                 score, candidate = selected
                 print(
                     f"Winner Hunter selected fresh topic "
-                    f"({score}/100) on attempt {attempt}/{max_topic_attempts}: "
-                    f"{candidate}"
+                    f"({score}/100) on attempt {attempt}/{max_topic_attempts}; "
+                    f"animal species: {animal}; topic: {candidate}"
                 )
-                return candidate
+                # Return topic as usual; animal rotation is recorded only after
+                # the script successfully generates, so failed attempts don't
+                # consume the species slot.
+                return f"[ANIMAL: {animal}] {candidate}"
 
             print(
                 f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
@@ -925,6 +975,14 @@ def generate_script(
     # can retry the same topic instead of burning through the daily queue.
     if not forced_topic and not recap_topic:
         mark_topic_used(channel_id, topic)
+
+    # Persist the species used by the successfully generated video. The next
+    # pipeline invocation must choose a different species, across processes.
+    if channel_id == "cosmic_curious" and not forced_topic and not recap_topic:
+        animal_match = re.match(r"^\[ANIMAL:\s*(.+?)\]\s*", topic)
+        if animal_match:
+            _save_last_animal(channel_id, animal_match.group(1))
+            topic = re.sub(r"^\[ANIMAL:\s*.+?\]\s*", "", topic).strip()
 
     if not is_short and not forced_topic:
         save_todays_longform_topic(channel_id, topic)
