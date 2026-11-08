@@ -852,7 +852,7 @@ def generate_script(
     topic = forced_topic.strip() if forced_topic else None
     recap_topic = False
 
-    if not topic and is_short:
+    if not topic and is_short and channel_id != "cosmic_curious":
         topic = get_recap_topic_for_short(channel_id)
         recap_topic = bool(topic)
 
