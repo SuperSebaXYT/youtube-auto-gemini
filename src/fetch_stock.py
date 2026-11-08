@@ -952,7 +952,8 @@ def _verify_clip_batch_matches_shot(
     clip_paths: list[Path],
     animal: str,
     strict_species: bool = True,
-) -> list[tuple[bool, str]]:
+    visual_traits: str = "",
+) -> list[tuple[bool, str, bool | None]]:
     """Verify every supplied clip for the same shot in one vision request."""
     from src.freeinference_client import generate_vision, is_vision_available
 
@@ -976,25 +977,37 @@ def _verify_clip_batch_matches_shot(
             if strict_species else
             "TARGET ANIMAL: any recognizable real wild animal. Reject humans, objects, food, toys, drawings, models, and scenery without a clearly visible animal."
         )
+        traits_instruction = (
+            f"Distinctive visual traits to track (NOT rejection requirements): {visual_traits}. "
+            "For each clip, separately report whether at least one listed trait is clearly visible. "
+            "Missing traits must NEVER change MATCH/NO_MATCH; species identity alone decides that verdict."
+            if visual_traits else
+            "No extra visual-trait check is requested. Use TRAITS_UNCLEAR for every clip."
+        )
         prompt = f"""
 You are checking {len(clip_paths)} separate wildlife video clips for the SAME shot.
 {identity_rule}
+
+{traits_instruction}
 
 The images are grouped by clip in order. Each clip has exactly three consecutive frames.
 Clip 1 = images 1-3, clip 2 = images 4-6, clip 3 = images 7-9, and so on.
 There are exactly {len(clip_paths)} clips. Evaluate EVERY supplied clip, with no omissions.
 For EACH clip independently, decide whether the required animal is recognizable,
 reasonably clear/prominent, and shown in usable wildlife footage.
-Ignore narration, action, pose, habitat, camera angle, and background.
+Ignore narration, action, pose, habitat, camera angle, and background when deciding species identity.
 Do not demand rare behavior or impossible species-level details.
 Do not let one clip affect another clip's verdict.
 
 Return exactly {len(clip_paths)} lines, one per clip, numbered 1 through {len(clip_paths)}:
-1 MATCH
-2 NO_MATCH
-3 MATCH
+1 MATCH TRAITS_VISIBLE
+2 NO_MATCH TRAITS_MISSING
+3 MATCH TRAITS_UNCLEAR
 Continue the same format for every remaining clip.
-Use only MATCH or NO_MATCH after each number. No JSON or explanation.
+Use MATCH or NO_MATCH only for animal identity. Use TRAITS_VISIBLE if at least one listed
+trait is clearly visible, TRAITS_MISSING if none is visible, or TRAITS_UNCLEAR if frames
+do not allow a reliable judgement. Never reject a clip because a trait is missing.
+No JSON or explanations.
 """
         max_attempts = 2
         last_response = ""
@@ -1021,15 +1034,29 @@ Use only MATCH or NO_MATCH after each number. No JSON or explanation.
             last_response = (getattr(response, "text", None) or "").strip()
             verdicts = {}
             for line in last_response.splitlines():
-                match = re.match(r"^\s*(\d+)\s+(MATCH|NO_MATCH)\s*[.!]*\s*$", line.strip(), re.I)
+                match = re.match(
+                    r"^\s*(\d+)\s+(MATCH|NO_MATCH)(?:\s+(TRAITS_VISIBLE|TRAITS_MISSING|TRAITS_UNCLEAR))?\s*[.!]*\s*$",
+                    line.strip(),
+                    re.I,
+                )
                 if match:
-                    verdicts[int(match.group(1))] = match.group(2).upper()
+                    verdicts[int(match.group(1))] = (
+                        match.group(2).upper(),
+                        (match.group(3) or "TRAITS_UNCLEAR").upper(),
+                    )
 
             if set(verdicts) == set(range(1, len(clip_paths) + 1)):
                 return [
                     (
-                        verdicts[index] == "MATCH",
-                        f"animal_type_match={verdicts[index] == 'MATCH'}; vision_verdict={verdicts[index]}"
+                        verdicts[index][0] == "MATCH",
+                        f"animal_type_match={verdicts[index][0] == 'MATCH'}; "
+                        f"vision_verdict={verdicts[index][0]}; "
+                        f"visual_traits_visible={verdicts[index][1] == 'TRAITS_VISIBLE'}",
+                        (
+                            True if verdicts[index][1] == "TRAITS_VISIBLE"
+                            else False if verdicts[index][1] == "TRAITS_MISSING"
+                            else None
+                        ),
                     )
                     for index in range(1, len(clip_paths) + 1)
                 ]
@@ -1300,6 +1327,8 @@ def fetch_clips_for_shots(
         seen_ai_queries = set()
         retry_round = 0
         rejected_candidates = []
+        visual_traits = ""
+        previous_trait_feedback = ""
         max_search_rounds = 3
         while accepted_path is None and retry_round < max_search_rounds:
             retry_round += 1
@@ -1370,14 +1399,19 @@ TARGET ANIMAL: {animal}
 SHOT DESCRIPTION: {visual or "not provided"}
 NARRATION CONTEXT: {sentence or action or "not provided"}
 ORIGINAL SEARCH QUERY: {query}
-Generate 5 distinct, natural English Pexels VIDEO queries. Use varied
-recognizable appearance, camera framing and natural habitat descriptions.
+First identify 2-4 reliable, visually distinctive physical traits of this exact
+species (markings, body shape, colors, fins, beak, etc.). Do not invent traits.
+Then generate 5 distinct, natural English Pexels VIDEO queries that deliberately
+include those traits so search results are more likely to show them.
 EVERY query must explicitly contain "{animal}" or an accepted scientific/common
-name. Never omit or replace the target species. Do not invent traits or include
-humans, objects, toys, cartoons or unrelated subjects.
+name. Never omit or replace the target species. Do not include humans, objects,
+toys, cartoons or unrelated subjects.
 Search cycle: {retry_round}. Make the phrases genuinely different from all previously tried queries.
 Previously tried queries: {rejected_context}
-Return exactly 5 queries, one per line, no numbering or explanations.
+{previous_trait_feedback}
+Return one first line exactly as: VISUAL_TRAITS: trait 1; trait 2; trait 3
+Then return exactly 5 query lines, each prefixed with QUERY:
+Do not add numbering or explanations.
 """
                 else:
                     query_prompt = f"""
@@ -1393,7 +1427,15 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 response = generate_response(query_prompt, max_output_tokens=220)
                 generated_queries = []
                 for raw_line in (getattr(response, "text", "") or "").splitlines():
-                    candidate_query = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", raw_line).strip().strip('"\' ')
+                    cleaned_line = raw_line.strip().strip('"\' ')
+                    if strict_species and cleaned_line.lower().startswith("visual_traits:"):
+                        proposed_traits = cleaned_line.split(":", 1)[1].strip()
+                        if proposed_traits:
+                            visual_traits = proposed_traits[:300]
+                        continue
+                    if strict_species and cleaned_line.lower().startswith("query:"):
+                        cleaned_line = cleaned_line.split(":", 1)[1].strip()
+                    candidate_query = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", cleaned_line).strip()
                     candidate_query = re.sub(r"\s+", " ", candidate_query)
                     normalized_candidate = candidate_query.lower()
                     if (
@@ -1416,7 +1458,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
                 print(
                     f"Pexels Query Brain: generated {len(generated_queries)} fresh queries "
-                    f"for {animal!r} in retry round {retry_round}: {generated_queries}"
+                    f"for {animal!r} in retry round {retry_round}; "
+                    f"visual_traits={visual_traits!r}: {generated_queries}"
                 )
             except Exception as exc:
                 print(
@@ -1622,6 +1665,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                             [item["path"] for item in batch_candidates],
                             animal=animal,
                             strict_species=strict_species,
+                            visual_traits=visual_traits,
                         )
                     except Exception as exc:
                         raise RuntimeError(
@@ -1629,10 +1673,17 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                         ) from exc
 
                     matching_candidates = []
-                    for item, (qa_passed, qa_reason) in zip(batch_candidates, batch_verdicts):
+                    trait_visible_candidates = []
+                    trait_assessments = []
+                    for item, (qa_passed, qa_reason, traits_visible) in zip(batch_candidates, batch_verdicts):
                         candidate = item["candidate"]
+                        if traits_visible is not None:
+                            trait_assessments.append(traits_visible)
                         if qa_passed:
+                            item["traits_visible"] = traits_visible
                             matching_candidates.append(item)
+                            if traits_visible is True:
+                                trait_visible_candidates.append(item)
                             print(
                                 f"Visual QA MATCH for shot {index + 1}: "
                                 f"round={retry_round}; source_query={candidate['query']!r}; "
@@ -1653,18 +1704,56 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                             )
 
                     if matching_candidates:
-                        # Candidates arrive in Pexels quality-rank order;
-                        # keep the first verified match for this shot.
-                        selected = matching_candidates[0]
-                        accepted_path = out_path / f"clip_{index:02d}.mp4"
-                        selected["path"].replace(accepted_path)
-                        for item in matching_candidates[1:]:
-                            item["path"].unlink(missing_ok=True)
-                        print(
-                            f"Downloaded Pexels clip for shot {index + 1}: "
-                            f"source_query={selected['candidate']['query']!r}; "
-                            f"round={retry_round}; batch Visual QA accepted."
-                        )
+                        assessed_matches = [
+                            item for item in matching_candidates
+                            if item.get("traits_visible") is not None
+                        ]
+                        if visual_traits and assessed_matches:
+                            visible_ratio = len(trait_visible_candidates) / len(assessed_matches)
+                            previous_trait_feedback = (
+                                f"Previous visual check: {len(assessed_matches) - len(trait_visible_candidates)} "
+                                f"of {len(assessed_matches)} species-matching clips did NOT clearly show "
+                                f"these traits: {visual_traits}. Make the next queries much more specific "
+                                "to these visible physical features."
+                            )
+                        else:
+                            visible_ratio = 1.0
+
+                        if visual_traits and assessed_matches and visible_ratio < 0.5:
+                            # These clips still MATCH the animal and are retained.
+                            # Their missing extra traits only trigger better searches.
+                            for item in matching_candidates:
+                                rejected_candidates.append({
+                                    "path": item["path"],
+                                    "video_id": item["video_id"],
+                                    "query": item["candidate"]["query"],
+                                    "round": retry_round,
+                                    "qa_reason": (
+                                        "Animal identity MATCH; distinctive visual traits not sufficiently visible. "
+                                        "Retained for global best-fit fallback, not rejected as wrong species."
+                                    ),
+                                })
+                            print(
+                                f"Visual trait refinement for shot {index + 1}: "
+                                f"{len(assessed_matches) - len(trait_visible_candidates)}/"
+                                f"{len(assessed_matches)} matching clips lacked the traits. "
+                                "Keeping them for fallback and searching more specifically."
+                            )
+                        else:
+                            # Prefer a clip showing the defining traits when enough
+                            # candidates do; never reject a species match for missing them.
+                            selectable = trait_visible_candidates or matching_candidates
+                            selected = selectable[0]
+                            accepted_path = out_path / f"clip_{index:02d}.mp4"
+                            selected["path"].replace(accepted_path)
+                            for item in matching_candidates:
+                                if item is not selected:
+                                    item["path"].unlink(missing_ok=True)
+                            print(
+                                f"Downloaded Pexels clip for shot {index + 1}: "
+                                f"source_query={selected['candidate']['query']!r}; "
+                                f"round={retry_round}; batch Visual QA accepted."
+                            )
             finally:
                 for future in pending:
                     future.cancel()
