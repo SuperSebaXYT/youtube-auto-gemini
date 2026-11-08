@@ -1225,9 +1225,11 @@ def fetch_clips_for_shots(
     """
     Fetch one Pexels clip per narration shot.
 
-    Each missing slot keeps searching Pexels until Visual QA accepts a clip.
-    Every downloaded candidate is checked; rejected candidates are discarded.
-    No unverified fallback is selected.
+    Each missing slot gets at most three Pexels search rounds. Rejected clips
+    are retained across all rounds and pooled across every missing slot.
+    AI ranks that shared pool and assigns the best unique clips to the missing
+    slots. Fallback selections bypass Visual QA and are not checked again.
+    The returned paths are always ordered by shot slot.
     """
     api_key = os.environ.get("PEXELS_API_KEY")
     if not api_key:
@@ -1799,6 +1801,24 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 f"Available rejected clips: {len(fallback_pool)}; "
                 f"ranking errors: {ranking_errors[:3]}"
             )
+
+    # Rebuild the result in exact slot order. Fallback clips are assigned
+    # after the normal per-slot pass, so appending them directly would shift
+    # their narration positions during editing.
+    ordered_downloads = [
+        str(out_path / f"clip_{slot_index:02d}.mp4")
+        for slot_index in range(len(shots))
+    ]
+    missing_paths = [
+        path for path in ordered_downloads
+        if not Path(path).exists() or Path(path).stat().st_size <= 10000
+    ]
+    if missing_paths:
+        raise RuntimeError(
+            f"Clip sourcing produced {len(missing_paths)} missing/invalid slot file(s): "
+            f"{missing_paths[:5]}"
+        )
+    downloaded = ordered_downloads
 
     missing = len(shots) - len(downloaded)
     if missing:
