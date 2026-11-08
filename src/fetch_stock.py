@@ -1397,19 +1397,23 @@ def fetch_clips_for_shots(
                 if strict_species:
                     query_prompt = f"""
 You are an expert Pexels wildlife stock-footage search strategist.
-TARGET ANIMAL: {animal}
+The target animal below was selected by Winner Hunter from YouTube Analytics.
+You do NOT choose, broaden, or replace the animal. Use this exact species only.
+TARGET ANIMAL FROM ANALYTICS: {animal}
 SHOT DESCRIPTION: {visual or "not provided"}
 NARRATION CONTEXT: {sentence or action or "not provided"}
 ORIGINAL SEARCH QUERY: {query}
 Identify one reliable, highly distinctive PRIMARY visual signature of this exact
-species (especially a recognizable marking or body pattern), plus up to 3 secondary
-physical traits. Do not invent traits. Keep previously identified traits stable:
+species (especially a recognizable marking, body shape, or pattern), plus up to 3
+secondary physical traits. Do not invent traits or borrow traits from similar species.
+Keep previously identified traits stable:
 {visual_traits or "none identified yet"}.
-Then generate 5 distinct, natural English Pexels VIDEO queries that deliberately
-emphasize the PRIMARY signature so search results are more likely to show it.
+Then generate 5 distinct, natural English Pexels VIDEO queries based on that
+appearance profile. Emphasize the PRIMARY signature so search results are more
+likely to show the correct animal and its distinguishing appearance.
 EVERY query must explicitly contain "{animal}" or an accepted scientific/common
-name. Never omit or replace the target species. Do not include humans, objects,
-toys, cartoons or unrelated subjects.
+name. Never omit, broaden, or replace the target species. Do not include humans,
+objects, toys, cartoons or unrelated subjects.
 Search cycle: {retry_round}. Make the phrases genuinely different from all previously tried queries.
 Previously tried queries: {rejected_context}
 {previous_trait_feedback}
@@ -1472,6 +1476,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 )
                 fallback_queries = (
                     [
+                        f"{animal} {visual}" if visual else f"{animal} close up natural habitat cycle {retry_round}",
+                        f"{animal} {action}" if action else f"{animal} detailed side view cycle {retry_round}",
                         f"{animal} underwater close up" if any(term in normalized_animal for term in ("fish", "shark", "ray", "octopus", "jellyfish")) else f"{animal} close up natural habitat cycle {retry_round}",
                         f"large {animal} in natural environment cycle {retry_round}",
                         f"{animal} side view detailed cycle {retry_round}",
