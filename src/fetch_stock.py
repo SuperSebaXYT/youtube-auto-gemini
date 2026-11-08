@@ -1170,12 +1170,8 @@ NO_MATCH
 def _score_clip_for_shot(
     clip_path: Path,
     animal: str,
-    action: str,
-    sentence: str,
-    visual: str,
-    strict_species: bool = True,
 ) -> tuple[int, str]:
-    """Rank a fallback clip against its intended shot without rejecting it."""
+    """Rank fallback footage only by target species, visibility and clip quality."""
     from src.freeinference_client import generate_vision, is_vision_available
 
     if not is_vision_available():
@@ -1183,26 +1179,24 @@ def _score_clip_for_shot(
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_rank_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
-        identity = (
-            f"The target is {animal}. Give the highest identity points only "
-            "when that exact animal/species is visibly present."
-            if strict_species
-            else "Any recognizable real wild animal is acceptable."
-        )
         prompt = f"""
-You are ranking two fallback wildlife clips for a specific video shot.
-TARGET ANIMAL: {animal}
-SHOT VISUAL: {visual or "not provided"}
-NARRATION: {sentence or action or "not provided"}
-{identity}
+You are ranking a rejected wildlife stock clip for fallback use.
+TARGET SPECIES: {animal}
 
-Evaluate only what is visibly present in the attached frames.
+IGNORE ALL NARRATION, SCRIPT, SENTENCE, ACTION, SHOT DESCRIPTION,
+SEARCH INTENT, POSE, HABITAT AND STORY CONTEXT. They are irrelevant.
+Judge the attached video frames ONLY on these three criteria:
+1. Correct animal species: the exact target species must be visibly present.
+2. Visibility: the animal is clear, prominent and recognizable.
+3. Footage quality: the clip is usable, sharp enough and visually clear.
+
 Score from 0 to 100:
-- 70 points: correct visible animal identity / wildlife relevance.
-- 20 points: animal is clear, prominent and recognizable.
-- 10 points: footage is usable and visually appealing.
-Do not require the narrated action, pose, habitat or background.
-If the exact target species is not visible, do not award the identity points.
+- 70 points: exact target species visibly present.
+- 20 points: animal visibility and recognizability.
+- 10 points: usable visual quality.
+If the exact target species is not visible, award zero species-identity points.
+Do not reward or penalize the clip for what the animal is doing or for its
+relationship to any narration or shot description.
 Return one integer from 0 to 100 and nothing else.
 """
         frame_images = [
@@ -1744,9 +1738,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
         for slot_index in missing_fallback_slots:
             target = shots[slot_index]
             target_animal = str(target.get("animal", "")).strip()
-            target_action = str(target.get("action", "")).strip()
-            target_sentence = str(target.get("sentence", "")).strip()
-            target_visual = str(target.get("visual", "")).strip()
             for candidate in fallback_pool:
                 if candidate.get("slot_ranked_for") == slot_index:
                     continue
@@ -1754,10 +1745,6 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     score, reason = _score_clip_for_shot(
                         candidate["path"],
                         target_animal,
-                        target_action,
-                        target_sentence,
-                        target_visual,
-                        strict_species=True,
                     )
                 except Exception as exc:
                     ranking_errors.append(str(exc))
