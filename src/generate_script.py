@@ -836,10 +836,9 @@ def generate_script(
     Topic priority:
     1. Explicit forced topic.
     2. One eligible same-day longform recap for a Short.
-    3. Winner Hunter's Analytics-based topic selection.
-    4. Daily Brain and Trend Scout as safe topic-source fallbacks.
-    5. An unused channel seed topic if AI topic sources are unavailable.
-    All text generation is routed through DeepSeek by freeinference_client.
+    3. Winner Hunter's Analytics-based topic selection for Cosmic Curious.
+    4. Other topic sources are retained for non-Cosmic channels only.
+    DeepSeek handles text generation and Pexels visual-search descriptions.
     """
     config = load_channel_config(channel_id)
 
@@ -871,10 +870,7 @@ def generate_script(
         except Exception as e:
             print(f"WARNING: Winner Hunter selection failed ({e}).")
 
-    # DeepSeek-backed fallback chain. Winner Hunter remains the primary
-    # source, but temporary Analytics/registry failures must not prevent a
-    # valid animal topic from being selected.
-    if not topic:
+    if not topic and channel_id != "cosmic_curious":
         try:
             candidate = get_daily_brain_topic(
                 channel_id, config, is_short
@@ -883,30 +879,26 @@ def generate_script(
                 channel_id, candidate, "Daily Brain"
             )
         except Exception as e:
-            print(f"WARNING: Daily Brain selection failed ({e}); trying Trend Scout.")
+            print(f"WARNING: Daily Brain selection failed ({e}).")
 
-    if not topic:
+    if not topic and channel_id != "cosmic_curious":
         try:
             candidate = get_trending_topic(channel_id, config)
             topic = _fresh_candidate(
                 channel_id, candidate, "Trend Scout"
             )
         except Exception as e:
-            print(f"WARNING: Trend Scout selection failed ({e}); trying unused seed topics.")
+            print(f"WARNING: Trend Scout selection failed ({e}).")
 
-    if not topic:
-        try:
-            topic = pick_next_topic(channel_id, config)
-            print(
-                "WARNING: Analytics-based topic sources were unavailable; "
-                f"using a fresh channel seed topic: {topic}"
-            )
-        except Exception as e:
-            raise RuntimeError(
-                "No usable fresh topic was available from Winner Hunter, "
-                "Daily Brain, Trend Scout, or the DeepSeek/seed fallback. "
-                f"Safe stop before script generation: {str(e)[:300]}"
-            ) from e
+    if not topic and channel_id != "cosmic_curious":
+        topic = pick_next_topic(channel_id, config)
+
+    if not topic and channel_id == "cosmic_curious":
+        raise RuntimeError(
+            "Winner Hunter could not provide a fresh topic from today's "
+            "Analytics-based batch. Cosmic Curious will not use unrelated "
+            "Daily Brain, Trend Scout, or static fallback topics."
+        )
 
     generated = None
 
