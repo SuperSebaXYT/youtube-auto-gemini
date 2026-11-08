@@ -1184,47 +1184,25 @@ def _score_clip_for_shot(
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_rank_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
         identity = (
-            f"The footage must visibly show {animal}, the exact animal/species named for this shot."
+            f"The target is {animal}. Give the highest identity points only "
+            "when that exact animal/species is visibly present."
             if strict_species
-            else "The footage must show the animal explicitly described by the narration."
+            else "Any recognizable real wild animal is acceptable."
         )
         prompt = f"""
-You are selecting the best rejected wildlife clip for ONE specific missing
-video slot. Your top priority is whether the visible footage actually matches
-the meaning of the narration, not whether it is merely attractive wildlife.
-
+You are ranking two fallback wildlife clips for a specific video shot.
 TARGET ANIMAL: {animal}
-NARRATION FOR THIS EXACT SLOT: {sentence or "not provided"}
-PLANNED VISUAL: {visual or "not provided"}
-EXPECTED BEHAVIOR / CONTEXT: {action or "not provided"}
+SHOT VISUAL: {visual or "not provided"}
+NARRATION: {sentence or action or "not provided"}
 {identity}
 
-Compare the attached frames with the narration and planned visual:
-- Identify what animal and behavior/context are actually visible.
-- Judge whether a viewer watching this footage while hearing this exact
-  narration would see a relevant visual representation of what is being said.
-- Do NOT give a high score to generic footage of the same animal if it does
-  not visually relate to the narrated fact, behavior, or context.
-- Do NOT accept a different species just because it is also wildlife.
-- If the narration describes a specific action that can be shown, prefer
-  footage visibly showing that action. If the action is genuinely impossible
-  or too rare to capture, prefer the same exact species in the closest
-  clearly relevant natural behavior or context. Never substitute unrelated
-  wildlife, scenery, or filler.
-- Clarity and visual quality matter only after semantic relevance is assessed.
-
+Evaluate only what is visibly present in the attached frames.
 Score from 0 to 100:
-- 60 points: visible footage meaningfully represents the exact narration
-  and its fact, behavior, or context.
-- 25 points: correct exact animal/species is visibly identifiable.
-- 10 points: the relevant animal/action is clear and prominent.
-- 5 points: usable, visually appealing footage.
-
-A clip showing the wrong animal or unrelated behavior must score very low,
-even if it is beautiful footage. A clip that only shows the right species
-but has no meaningful connection to this narration must not outrank a clip
-that actually illustrates the narrated content.
-
+- 70 points: correct visible animal identity / wildlife relevance.
+- 20 points: animal is clear, prominent and recognizable.
+- 10 points: footage is usable and visually appealing.
+Do not require the narrated action, pose, habitat or background.
+If the exact target species is not visible, do not award the identity points.
 Return one integer from 0 to 100 and nothing else.
 """
         frame_images = [
