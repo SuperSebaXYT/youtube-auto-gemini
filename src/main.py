@@ -456,6 +456,19 @@ def _run_once(
                 portrait=is_short,
             )
 
+            # The assembled video no longer needs the downloaded source clips.
+            # Keep only Commons attribution metadata for the upload description.
+            removed_clip_files = 0
+            if clips_dir.exists():
+                for clip_file in clips_dir.iterdir():
+                    if clip_file.is_file() and clip_file.name != "source_credits.json":
+                        clip_file.unlink(missing_ok=True)
+                        removed_clip_files += 1
+            print(
+                f"Clip cleanup after assembly: removed {removed_clip_files} "
+                "temporary/saved source clip file(s)."
+            )
+
         print(
             f"Assembled video: {output_path} "
             f"({output_path.stat().st_size / 1e6:.1f} MB)"
