@@ -74,26 +74,65 @@ def _last_animal_path(channel_id: str) -> Path:
     return STATE_DIR / f"{channel_id}_last_animal.json"
 
 
-def _get_last_animal(channel_id: str) -> str:
+def _normalize_animal(animal: str) -> str:
+    """Normalize species labels so trivial spelling/spacing changes cannot bypass rotation."""
+    value = str(animal or "").casefold().strip()
+    value = re.sub(r"[^a-z0-9]+", "", value)
+    aliases = {
+        "archerfish": "archerfish",
+        "bandedarcherfish": "archerfish",
+        "spottedarcherfish": "archerfish",
+        "tigerarcherfish": "archerfish",
+    }
+    return aliases.get(value, value)
+
+
+def _get_recent_animals(channel_id: str) -> list[str]:
+    """Read the recent species rotation history, including legacy single-animal state."""
     path = _last_animal_path(channel_id)
     if not path.exists():
-        return ""
+        return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return str(data.get("animal", "")).strip()
+        if isinstance(data, dict):
+            history = data.get("recent_animals", [])
+            if not isinstance(history, list):
+                history = []
+            latest = str(data.get("animal", "")).strip()
+            values = [str(item).strip() for item in history if str(item).strip()]
+            if latest and (not values or _normalize_animal(values[-1]) != _normalize_animal(latest)):
+                values.append(latest)
+            return values[-20:]
+        return []
     except (json.JSONDecodeError, OSError, AttributeError):
-        return ""
+        return []
+
+
+def _get_last_animal(channel_id: str) -> str:
+    history = _get_recent_animals(channel_id)
+    return history[-1] if history else ""
 
 
 def _save_last_animal(channel_id: str, animal: str) -> None:
     animal = str(animal or "").strip()
     if not animal:
         return
+    history = _get_recent_animals(channel_id)
+    if not history or _normalize_animal(history[-1]) != _normalize_animal(animal):
+        history.append(animal)
+    history = history[-20:]
     path = _last_animal_path(channel_id)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     temporary_path.write_text(
-        json.dumps({"animal": animal, "updated_at": datetime.now(timezone.utc).isoformat()},
-                   ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "animal": animal,
+                "recent_animals": history,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     temporary_path.replace(path)
@@ -502,7 +541,9 @@ def _generate_winner_inspired_topic(
     rejected_candidates = []
     content_length = "a YouTube Short" if is_short else "a YouTube video"
     max_topic_attempts = 5
-    last_animal = _get_last_animal(channel_id)
+    recent_animals = _get_recent_animals(channel_id)
+    recent_animal_keys = {_normalize_animal(item) for item in recent_animals}
+    last_animal = recent_animals[-1] if recent_animals else ""
 
     prompt = f"""
 You are the topic strategist for a faceless animal and wildlife channel.
@@ -517,10 +558,11 @@ The same animal may be reused when Analytics supports a genuinely different angl
 {used_sample}
 
 CRITICAL SPECIES ROTATION:
-The immediately previous completed video featured this animal species: {last_animal or "not recorded"}.
-For this new video, choose a DIFFERENT animal species. Do not choose the same species
-again, even for a different fact or angle. Rotate species video-to-video (for example,
-lion -> fish -> spider -> orca). If the last species is unknown, choose any species.
+Recent completed-video species history (newest last): {", ".join(recent_animals[-20:]) or "not recorded"}.
+For this new video, choose a species not present in this recent history. Never repeat
+the same exact species in consecutive videos, even with a different fact or angle.
+Treat spelling variants and common-name variants as the same species. If history is
+empty, choose any species.
 Return the species name separately in the required ANIMAL field.
 
 Use actual channel Analytics as the main evidence. Prioritize subjects,
@@ -577,10 +619,11 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
                 normalized = _normalize_topic(candidate)
                 if not candidate or not animal:
                     continue
-                if last_animal and _normalize_topic(animal) == _normalize_topic(last_animal):
+                animal_key = _normalize_animal(animal)
+                if animal_key and animal_key in recent_animal_keys:
                     print(
                         f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
-                        f"rejected repeated animal species: {animal}"
+                        f"rejected recently used animal species: {animal}"
                     )
                     rejected_candidates.append(candidate)
                     continue
