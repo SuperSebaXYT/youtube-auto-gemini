@@ -1397,18 +1397,24 @@ TARGET SPECIES: {animal}
 
 IGNORE ALL NARRATION, SCRIPT, SENTENCE, ACTION, SHOT DESCRIPTION,
 SEARCH INTENT, POSE, HABITAT AND STORY CONTEXT. They are irrelevant.
-Judge the attached video frames ONLY on these three criteria:
-1. Correct animal species: the exact target species must be visibly present.
-2. Visibility: the animal is clear, prominent and recognizable.
-3. Footage quality: the clip is usable, sharp enough and visually clear.
+Judge the attached video frames ONLY for fallback suitability. The goal is
+to choose the strongest real wildlife footage of TARGET SPECIES: ${animal}.
+Ignore narration, script, sentence, action, shot description, search intent,
+pose, habitat and story context completely.
+
+Reject footage where the main subject is a drone, aircraft, camera, person,
+vehicle, landscape, or unrelated object. A drone filming wildlife is NOT a
+wildlife shot unless the target animal itself is clearly visible and prominent.
+Do not mistake a drone/aerial camera view for the animal.
 
 Score from 0 to 100:
-- 70 points: exact target species visibly present.
-- 20 points: animal visibility and recognizability.
-- 10 points: usable visual quality.
-If the exact target species is not visible, award zero species-identity points.
-Do not reward or penalize the clip for what the animal is doing or for its
-relationship to any narration or shot description.
+- 70 points: the exact target species is unmistakably visible. If absent,
+  score 0 overall.
+- 20 points: the target animal is large, clear, prominent and recognizable.
+- 10 points: footage is sharp, stable enough and visually usable.
+Prefer the candidate that shows the target animal most clearly, not merely
+the candidate with the closest-looking background or camera movement.
+Do not reward or penalize the clip for what the animal is doing.
 Return one integer from 0 to 100 and nothing else.
 """
         frame_images = [
