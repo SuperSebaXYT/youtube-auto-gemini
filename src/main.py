@@ -132,7 +132,7 @@ def build_description(
             license_name = str(item.get("license") or "License details on source page").strip()
             source_page = str(item.get("source_page") or "").strip()
             license_url = str(item.get("license_url") or "").strip()
-            line = f'- "{title_text}" by {author} | {license_name}'
+            line = f'- "{title_text}" by {author} | {license_name} | Edited: trimmed/cropped for video'
             if source_page:
                 line += f" | Source: {source_page}"
             if license_url:
