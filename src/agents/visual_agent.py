@@ -28,7 +28,7 @@ FALLBACK_VIEWS = [
 
 
 def _clean(value: object, limit: int = 180) -> str:
-    return re.sub(r"\\s+", " ", str(value or "")).strip()[:limit]
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
 
 
 def _build_fallback_shots(animal: str, shot_count: int) -> list[dict]:
