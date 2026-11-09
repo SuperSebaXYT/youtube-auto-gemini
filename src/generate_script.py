@@ -91,7 +91,10 @@ def _get_recent_animals(channel_id: str) -> list[str]:
     """Read the recent species rotation history, including legacy single-animal state."""
     path = _last_animal_path(channel_id)
     if not path.exists():
-        return []
+        # Archerfish was the most recently repeated species before rotation
+        # history was introduced. Seed it once so an empty cache cannot
+        # immediately select Archerfish again.
+        return ["Archerfish"] if channel_id == "cosmic_curious" else []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
