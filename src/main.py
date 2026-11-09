@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import argparse
+import json
 import os
 import random
 import re
@@ -94,6 +95,7 @@ def build_description(
     topic: str,
     channel_tags: list,
     is_short: bool,
+    source_credits: list | None = None,
 ) -> str:
     """Build the YouTube description."""
 
@@ -115,12 +117,33 @@ def build_description(
 
     cta = "Subscribe for more amazing animal facts every day! 🐾"
 
-    return (
+    description = (
         f"{hook}\n\n"
         f"{script_text.strip()}\n\n"
         f"{cta}\n\n"
         f"{hashtags}"
     )
+
+    if source_credits:
+        attribution_lines = []
+        for item in source_credits:
+            title_text = str(item.get("title") or "Wikimedia Commons video").strip()
+            author = str(item.get("author") or "Author not specified").strip()
+            license_name = str(item.get("license") or "License details on source page").strip()
+            source_page = str(item.get("source_page") or "").strip()
+            license_url = str(item.get("license_url") or "").strip()
+            line = f'- "{title_text}" by {author} | {license_name}'
+            if source_page:
+                line += f" | Source: {source_page}"
+            if license_url:
+                line += f" | License: {license_url}"
+            attribution_lines.append(line)
+
+        description += "\n\nVIDEO FOOTAGE CREDITS (WIKIMEDIA COMMONS)\n" + "\n".join(
+            attribution_lines
+        )
+
+    return description
 
 
 MAX_FULL_PIPELINE_ATTEMPTS = 5
@@ -522,12 +545,28 @@ def _run_once(
             is_short,
         )
 
+        source_credits = []
+        if channel_id == "cosmic_curious":
+            credits_path = clips_dir / "source_credits.json"
+            if credits_path.exists():
+                try:
+                    loaded_credits = json.loads(credits_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded_credits, list):
+                        source_credits = [
+                            item for item in loaded_credits if isinstance(item, dict)
+                        ]
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"Could not read Wikimedia Commons attribution metadata: {exc}"
+                    ) from exc
+
         description = build_description(
             editorial_title,
             script_text,
             topic,
             config["tags"] + extra_tags,
             is_short,
+            source_credits=source_credits,
         )
 
         video_tags = list(

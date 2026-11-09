@@ -30,6 +30,218 @@ import requests
 PEXELS_SEARCH_URL = "https://api.pexels.com/videos/search"
 
 
+COMMONS_API_URL = "https://commons.wikimedia.org/w/api.php"
+COMMONS_USER_AGENT = "CosmicCurious/1.0 (automated wildlife video sourcing)"
+COMMONS_VIDEO_EXTENSIONS = {".webm", ".ogv", ".ogg", ".mp4", ".m4v", ".mov", ".avi"}
+COMMONS_MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024
+
+
+def _commons_metadata_value(metadata: dict, key: str) -> str:
+    """Read a human-readable value from Commons extmetadata."""
+    import html
+
+    item = metadata.get(key, "")
+    if isinstance(item, dict):
+        item = item.get("value") or item.get("raw") or ""
+    value = html.unescape(re.sub(r"<[^>]*>", " ", str(item or "")))
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _commons_license_allowed(metadata: dict) -> bool:
+    """Allow only CC0, public-domain material, and CC BY (never SA/NC/ND)."""
+    short_name = _commons_metadata_value(metadata, "LicenseShortName")
+    usage_terms = _commons_metadata_value(metadata, "UsageTerms")
+    license_url = _commons_metadata_value(metadata, "LicenseUrl").lower()
+    combined = f"{short_name} {usage_terms}".strip().lower()
+
+    if any(marker in combined for marker in (
+        "cc0", "public domain", "public-domain", "pdm", "pd-us",
+        "pd-old", "pd-self", "pd-art", "pd-ineligible",
+    )):
+        return True
+
+    if any(marker in license_url for marker in (
+        "/publicdomain/zero/", "/publicdomain/mark/",
+    )):
+        return True
+
+    if any(marker in combined or marker in license_url for marker in (
+        "by-sa", "by-nc", "by-nd", "attribution-sharealike",
+        "noncommercial", "no derivatives", "/licenses/by-sa/",
+        "/licenses/by-nc/", "/licenses/by-nd/",
+    )):
+        return False
+
+    if re.search(r"\bcc\s*by(?:\s|$)", combined):
+        return True
+
+    return "creativecommons.org/licenses/by/" in license_url
+
+
+def _search_wikimedia_videos(animal: str, limit: int = 30) -> list[dict]:
+    """Find Commons video files for one exact animal and retain only approved licenses."""
+    from urllib.parse import urlparse
+
+    animal = str(animal or "").strip()
+    if not animal:
+        return []
+
+    params = {
+        "action": "query",
+        "format": "json",
+        "formatversion": 2,
+        "generator": "search",
+        "gsrsearch": f'filetype:video "{animal}"',
+        "gsrnamespace": 6,
+        "gsrlimit": max(1, min(int(limit), 50)),
+        "prop": "imageinfo",
+        "iiprop": "url|mime|mediatype|extmetadata",
+        "iiextmetadatafilter": (
+            "LicenseShortName|LicenseUrl|Artist|Credit|ObjectName|UsageTerms"
+        ),
+    }
+    response = requests.get(
+        COMMONS_API_URL,
+        params=params,
+        headers={
+            "User-Agent": COMMONS_USER_AGENT,
+            "Accept": "application/json",
+        },
+        timeout=(15, 35),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("error"):
+        raise RuntimeError(f"Wikimedia Commons API error: {payload['error']}")
+
+    pages = payload.get("query", {}).get("pages", [])
+    if isinstance(pages, dict):
+        pages = list(pages.values())
+
+    candidates = []
+    seen_urls = set()
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        imageinfo = page.get("imageinfo") or []
+        if not imageinfo or not isinstance(imageinfo[0], dict):
+            continue
+
+        info = imageinfo[0]
+        media_url = str(info.get("url") or "").strip()
+        source_page = str(info.get("descriptionurl") or "").strip()
+        if not media_url or not source_page or media_url in seen_urls:
+            continue
+
+        parsed = urlparse(media_url)
+        if parsed.scheme != "https" or not (
+            parsed.hostname == "wikimedia.org"
+            or (parsed.hostname or "").endswith(".wikimedia.org")
+        ):
+            continue
+
+        extension = Path(parsed.path).suffix.lower()
+        mime = str(info.get("mime") or "").lower()
+        media_type = str(info.get("mediatype") or "").upper()
+        if extension not in COMMONS_VIDEO_EXTENSIONS and not (
+            mime.startswith("video/") or media_type == "VIDEO"
+        ):
+            continue
+
+        metadata = info.get("extmetadata") or {}
+        if not isinstance(metadata, dict) or not _commons_license_allowed(metadata):
+            continue
+
+        license_name = (
+            _commons_metadata_value(metadata, "LicenseShortName")
+            or _commons_metadata_value(metadata, "UsageTerms")
+        )
+        license_url = _commons_metadata_value(metadata, "LicenseUrl")
+        author = (
+            _commons_metadata_value(metadata, "Artist")
+            or _commons_metadata_value(metadata, "Credit")
+        )
+        if "cc by" in license_name.lower() and not author:
+            continue
+
+        title = str(page.get("title") or "Wikimedia Commons video")
+        candidates.append({
+            "video_id": f"commons:{page.get('pageid', title)}",
+            "title": title,
+            "media_url": media_url,
+            "source_page": source_page,
+            "author": author or "Author not specified",
+            "license": license_name or "Public domain",
+            "license_url": license_url,
+            "credit": {
+                "title": title.removeprefix("File:"),
+                "author": author or "Author not specified",
+                "license": license_name or "Public domain",
+                "license_url": license_url,
+                "source_page": source_page,
+                "source": "Wikimedia Commons",
+            },
+        })
+        seen_urls.add(media_url)
+
+    print(
+        f"Wikimedia Commons: found {len(candidates)} video candidate(s) "
+        f"with CC BY, CC0 or Public Domain licensing for {animal!r}."
+    )
+    return candidates
+
+
+def _download_wikimedia_video(candidate: dict, clip_path: Path) -> bool:
+    """Download one Commons original with a strict host and file-size limit."""
+    from urllib.parse import urlparse
+
+    media_url = str(candidate.get("media_url") or "").strip()
+    parsed = urlparse(media_url)
+    if parsed.scheme != "https" or not (
+        parsed.hostname == "wikimedia.org"
+        or (parsed.hostname or "").endswith(".wikimedia.org")
+    ):
+        return False
+
+    total_bytes = 0
+    try:
+        with requests.get(
+            media_url,
+            headers={"User-Agent": COMMONS_USER_AGENT},
+            stream=True,
+            timeout=(20, 120),
+        ) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    if int(content_length) > COMMONS_MAX_DOWNLOAD_BYTES:
+                        print("Wikimedia Commons: skipped oversized original video.")
+                        return False
+                except ValueError:
+                    pass
+
+            with open(clip_path, "wb") as output:
+                for chunk in response.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total_bytes += len(chunk)
+                    if total_bytes > COMMONS_MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError("Commons video exceeds the 250 MB safety limit.")
+                    output.write(chunk)
+
+        if clip_path.exists() and clip_path.stat().st_size > 10000:
+            return True
+    except Exception as exc:
+        print(f"WARNING: Wikimedia Commons video download failed ({exc}).")
+
+    try:
+        clip_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
+
+
 STOPWORDS = {
     "the", "a", "an", "of", "in", "on", "to",
     "why", "what", "how", "your", "you", "we",
@@ -1240,6 +1452,8 @@ def fetch_clips_for_shots(
     used_video_ids = set()
     fallback_pool = []
     missing_fallback_slots = []
+    commons_used_ids = set()
+    source_credits_by_slot = {}
 
     # Search a bounded first page for a small set of species-specific queries.
     # The old unbounded pagination multiplied API calls for every shot.
@@ -1693,6 +1907,88 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 if new_candidate_count == 0:
                     time.sleep(5)
 
+
+        # Wikimedia Commons is a second provider, used only after all three
+        # Pexels search rounds fail to produce a verified clip for this slot.
+        # Every Commons download goes through the SAME Qwen Visual QA gate.
+        if accepted_path is None:
+            try:
+                commons_results = _search_wikimedia_videos(animal, limit=30)
+            except Exception as exc:
+                commons_results = []
+                print(
+                    f"WARNING: Wikimedia Commons search failed for {animal!r}: {exc}"
+                )
+
+            commons_batch = []
+            from urllib.parse import urlparse
+            for commons_candidate in commons_results:
+                commons_id = commons_candidate.get("video_id")
+                if not commons_id or commons_id in commons_used_ids:
+                    continue
+
+                media_extension = Path(
+                    urlparse(commons_candidate["media_url"]).path
+                ).suffix.lower()
+                if media_extension not in COMMONS_VIDEO_EXTENSIONS:
+                    media_extension = ".video"
+
+                candidate_path = out_path / (
+                    f"commons_candidate_{index:02d}_{len(commons_batch) + 1:02d}"
+                    f"{media_extension}"
+                )
+                if _download_wikimedia_video(commons_candidate, candidate_path):
+                    commons_used_ids.add(commons_id)
+                    commons_batch.append({
+                        "video_id": commons_id,
+                        "candidate": commons_candidate,
+                        "path": candidate_path,
+                    })
+                if len(commons_batch) >= 3:
+                    break
+
+            if commons_batch:
+                commons_verdicts = _verify_clip_batch_matches_shot(
+                    [item["path"] for item in commons_batch],
+                    animal=animal,
+                    strict_species=True,
+                )
+                commons_matches = []
+                for item, (qa_passed, qa_reason) in zip(
+                    commons_batch, commons_verdicts
+                ):
+                    if qa_passed:
+                        commons_matches.append(item)
+                        print(
+                            f"Wikimedia Visual QA MATCH for shot {index + 1}: "
+                            f"{item['candidate']['title']}."
+                        )
+                    else:
+                        rejected_candidates.append({
+                            "path": item["path"],
+                            "video_id": item["video_id"],
+                            "query": f"Wikimedia Commons: {animal}",
+                            "round": 4,
+                            "qa_reason": qa_reason,
+                            "source_credit": item["candidate"]["credit"],
+                        })
+                        print(
+                            f"Wikimedia Visual QA REJECTED for shot {index + 1}: "
+                            f"{item['candidate']['title']}; retained for fallback ranking."
+                        )
+
+                if commons_matches:
+                    selected_commons = commons_matches[0]
+                    accepted_path = out_path / f"clip_{index:02d}.mp4"
+                    selected_commons["path"].replace(accepted_path)
+                    source_credits_by_slot[index] = selected_commons["candidate"]["credit"]
+                    for item in commons_matches[1:]:
+                        item["path"].unlink(missing_ok=True)
+                    print(
+                        f"Downloaded verified Wikimedia Commons clip for shot "
+                        f"{index + 1}; Qwen Visual QA accepted."
+                    )
+
         if accepted_path is not None:
             for item in rejected_candidates:
                 item["path"].unlink(missing_ok=True)
@@ -1770,6 +2066,8 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             assigned_slots.add(slot_index)
             assigned_candidates.add(candidate_key)
             used_video_ids.add(candidate["video_id"])
+            if candidate.get("source_credit"):
+                source_credits_by_slot[slot_index] = candidate["source_credit"]
             print(
                 f"GLOBAL FALLBACK selected for shot {slot_index + 1}: "
                 f"score={score}/100; candidate originally collected for shot "
@@ -1810,6 +2108,22 @@ Return exactly 5 queries, one per line, no numbering or explanations.
     missing = len(shots) - len(downloaded)
     if missing:
         raise RuntimeError(f"Internal error: {missing} shot(s) remain without accepted clips.")
+
+    # Persist attribution only for Commons clips that survived final selection.
+    credit_records = []
+    for slot_index, credit in sorted(source_credits_by_slot.items()):
+        record = dict(credit)
+        record["clip_slot"] = slot_index + 1
+        record["clip_file"] = f"clip_{slot_index:02d}.mp4"
+        credit_records.append(record)
+
+    credits_path = out_path / "source_credits.json"
+    temporary_credits_path = credits_path.with_suffix(".json.tmp")
+    temporary_credits_path.write_text(
+        json.dumps(credit_records, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_credits_path.replace(credits_path)
 
     print(
         f"Cosmic Curious clip sourcing: downloaded {len(downloaded)}/{len(shots)} "
