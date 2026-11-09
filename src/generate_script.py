@@ -542,6 +542,7 @@ def _generate_winner_inspired_topic(
     )
     used_normalized = [_normalize_topic(topic) for topic in used_topics]
     rejected_candidates = []
+    rejected_animals = set()
     content_length = "a YouTube Short" if is_short else "a YouTube video"
     max_topic_attempts = 5
     recent_animals = _get_recent_animals(channel_id)
@@ -589,13 +590,26 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
 
         for attempt in range(1, max_topic_attempts + 1):
             retry_note = ""
+            retry_sections = []
             if rejected_candidates:
-                retry_note = (
-                    "\n\nDO NOT RETURN ANY OF THESE REJECTED TOPICS "
-                    "OR A NEAR-IDENTICAL VERSION:\n"
+                retry_sections.append(
+                    "DO NOT RETURN THESE REJECTED TOPICS OR NEAR-IDENTICAL VERSIONS:\n"
                     + "\n".join(f"- {item}" for item in rejected_candidates[-10:])
-                    + "\nChoose a genuinely different animal angle supported "
-                    "by the Analytics."
+                )
+            if rejected_animals:
+                retry_sections.append(
+                    "DO NOT USE THESE REJECTED ANIMAL SPECIES IN THIS SELECTION CYCLE, "
+                    "EVEN WITH A DIFFERENT FACT OR TOPIC:\n"
+                    + "\n".join(f"- {item}" for item in sorted(rejected_animals, key=str.casefold))
+                )
+            if retry_sections:
+                retry_note = (
+                    "\n\nPREVIOUS ATTEMPTS WERE REJECTED. You MUST choose a different "
+                    "species and a genuinely different topic.\n"
+                    + "\n\n".join(retry_sections)
+                    + "\n\nChoose a real species not present in the recent history "
+                    "or rejected-species list. Do not fall back to Archerfish or any "
+                    "other previously rejected species."
                 )
 
             response = _generate_with_token_budget(
@@ -629,6 +643,7 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
                         f"rejected recently used animal species: {animal}"
                     )
                     rejected_candidates.append(candidate)
+                    rejected_animals.add(animal)
                     continue
 
                 is_duplicate = any(
@@ -649,6 +664,7 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
                         f"rejected repeated topic: {candidate}"
                     )
                     rejected_candidates.append(candidate)
+                    rejected_animals.add(animal)
                     continue
 
                 selected = (score, candidate)
