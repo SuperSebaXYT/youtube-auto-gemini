@@ -122,8 +122,8 @@ Return JSON only, in this format:
     seen_queries = set()
     # Reject food/eating footage even if the model ignores the strict prompt.
     food_terms = re.compile(
-        r"\\b(food|feeding|feed|eating|eat|prey|meat|carcass|bait|"
-        r"meal|hunt(?:ing)?|fish food|fruit|insect prey|kill)\\b",
+        r"\b(food|feeding|feed|eating|eat|prey|meat|carcass|bait|"
+        r"meal|hunt(?:ing)?|fish food|fruit|insect prey|kill)\b",
         re.IGNORECASE,
     )
     for item in raw_shots:
