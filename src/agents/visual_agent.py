@@ -22,7 +22,7 @@ FALLBACK_VIEWS = [
     ("resting naturally", "the animal resting, viewed from the side", "resting side view"),
     ("moving naturally", "the animal moving toward the camera", "moving toward camera"),
     ("moving naturally", "the animal moving away from the camera", "moving away camera"),
-    ("feeding naturally when appropriate", "clear medium shot of the animal in its environment", "feeding natural behavior"),
+    ("natural movement", "clear medium shot of the animal in its environment", "clear medium shot"),
     ("natural movement", "a different close-up angle showing the full head and body", "alternate close up angle"),
 ]
 
@@ -70,7 +70,14 @@ Do not divide, summarize, quote, or align the narration. Do not make each shot
 represent a sentence or fact. Repeating an activity is allowed when the camera
 angle or framing is different. Every search phrase must explicitly name the
 same target species. Do not request generated, animated, illustrated, or AI
-made footage. Search only for real wildlife video clips."""
+made footage. Search only for real wildlife video clips.
+
+STRICT VISUAL EXCLUSION: Never request, describe, or search for food, prey,
+meat, carcasses, bait, feeding, eating, hunting a meal, or food preparation.
+Do not use food or feeding footage as generic filler, even if the narration
+mentions diet. Every shot must visibly feature the exact target animal itself
+in a natural non-feeding behavior or habitat. If a scene cannot meet this rule,
+choose a neutral species-specific camera view instead."""
 
     task = f'''Create a varied visual search plan for an existing-footage wildlife video.
 
@@ -113,6 +120,12 @@ Return JSON only, in this format:
 
     shots = []
     seen_queries = set()
+    # Reject food/eating footage even if the model ignores the strict prompt.
+    food_terms = re.compile(
+        r"\\b(food|feeding|feed|eating|eat|prey|meat|carcass|bait|"
+        r"meal|hunt(?:ing)?|fish food|fruit|insect prey|kill)\\b",
+        re.IGNORECASE,
+    )
     for item in raw_shots:
         if not isinstance(item, dict):
             continue
@@ -123,6 +136,9 @@ Return JSON only, in this format:
             query = f"{animal} {visual}"
         elif animal.casefold() not in query.casefold():
             query = f"{animal} {query}"
+        # Discard contaminated candidates instead of repurposing them as filler.
+        if food_terms.search(f"{action} {visual} {query}"):
+            continue
         normalized = re.sub(r"[^a-z0-9]+", " ", query.casefold()).strip()
         if not normalized or normalized in seen_queries:
             continue
