@@ -35,8 +35,12 @@ from aiohttp.client_exceptions import WSServerHandshakeError
 MIN_VALID_BOUNDARIES = 3
 MIN_BOUNDARY_COVERAGE = 0.70
 
-TTS_MAX_ATTEMPTS = 3
-TTS_RETRY_DELAY_SECONDS = 2
+# Edge TTS can intermittently complete a WebSocket handshake but return
+# no audio. Keep the configured voice unchanged and retry with a wider
+# backoff window before failing the slot.
+TTS_MAX_ATTEMPTS = 5
+TTS_RETRY_DELAYS_SECONDS = (3, 6, 10, 15)
+TTS_AUDIO_VALIDATION_TIMEOUT_SECONDS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +74,10 @@ async def _synthesize(
     """
     Generate audio and collect native WordBoundary events.
 
-    Retries temporary failures up to TTS_MAX_ATTEMPTS times.
-    Each attempt writes to a temporary file. The final audio file is
-    replaced only after the stream completes successfully.
+    Retries temporary failures up to TTS_MAX_ATTEMPTS times, always
+    using the exact voice supplied by the caller.
+    Each attempt writes to a temporary file. The file must contain a
+    valid, probeable audio stream before it replaces the final output.
     """
 
     last_error = None
@@ -145,7 +150,39 @@ async def _synthesize(
                     "Edge TTS returned no audio data."
                 )
 
-            # Replace the final file only after successful completion.
+            # A non-empty MP3 can still be truncated or invalid. Validate
+            # it before replacing the final output so failed attempts never
+            # leave a corrupt file for the video renderer.
+            probe = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(temp_out),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=TTS_AUDIO_VALIDATION_TIMEOUT_SECONDS,
+                check=True,
+            )
+            duration_text = probe.stdout.strip()
+            if not duration_text:
+                raise RuntimeError(
+                    "TTS audio validation failed: ffprobe returned no duration."
+                )
+
+            duration = float(duration_text)
+            if duration <= 0:
+                raise RuntimeError(
+                    f"TTS audio validation failed: invalid duration {duration}."
+                )
+
+            # Replace the final file only after successful stream and
+            # media validation.
             temp_out.replace(audio_out)
 
             print(
@@ -168,8 +205,11 @@ async def _synthesize(
             )
 
             if attempt < TTS_MAX_ATTEMPTS:
-                delay = TTS_RETRY_DELAY_SECONDS * attempt
-                print(f"TTS: retrying in {delay} seconds...")
+                delay = TTS_RETRY_DELAYS_SECONDS[attempt - 1]
+                print(
+                    f"TTS: retrying the same voice '{voice}' "
+                    f"in {delay} seconds..."
+                )
                 await asyncio.sleep(delay)
 
     if isinstance(last_error, WSServerHandshakeError):
@@ -183,8 +223,9 @@ async def _synthesize(
         ) from last_error
 
     raise RuntimeError(
-        f"Edge TTS failed after {TTS_MAX_ATTEMPTS} attempts: "
-        f"{last_error}"
+        f"Edge TTS failed after {TTS_MAX_ATTEMPTS} attempts "
+        f"using voice '{voice}'. No alternate voice was used. "
+        f"Last error: {last_error}"
     ) from last_error
 
 
