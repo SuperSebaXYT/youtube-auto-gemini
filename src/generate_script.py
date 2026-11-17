@@ -105,7 +105,9 @@ def _get_recent_animals(channel_id: str) -> list[str]:
             values = [str(item).strip() for item in history if str(item).strip()]
             if latest and (not values or _normalize_animal(values[-1]) != _normalize_animal(latest)):
                 values.append(latest)
-            return values[-20:]
+            # Keep the complete species history. This is a permanent no-repeat
+            # rule, not a rolling window of the last 20 videos.
+            return values
         return []
     except (json.JSONDecodeError, OSError, AttributeError):
         return []
@@ -123,7 +125,7 @@ def _save_last_animal(channel_id: str, animal: str) -> None:
     history = _get_recent_animals(channel_id)
     if not history or _normalize_animal(history[-1]) != _normalize_animal(animal):
         history.append(animal)
-    history = history[-20:]
+    # Never discard old species: a different fact does not make a species new.
     path = _last_animal_path(channel_id)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     temporary_path.write_text(
@@ -544,7 +546,8 @@ def _generate_winner_inspired_topic(
     rejected_candidates = []
     rejected_animals = set()
     content_length = "a YouTube Short" if is_short else "a YouTube video"
-    max_topic_attempts = 5
+    max_topic_attempts = 12
+    # This is the all-time exclusion history, not merely consecutive uploads.
     recent_animals = _get_recent_animals(channel_id)
     recent_animal_keys = {_normalize_animal(item) for item in recent_animals}
     last_animal = recent_animals[-1] if recent_animals else ""
@@ -558,15 +561,15 @@ CHANNEL PERFORMANCE DATA:
 {winner_context}
 
 PREVIOUSLY USED TOPICS. Avoid exact repeats and near-identical premises.
-The same animal may be reused when Analytics supports a genuinely different angle:
+NEVER reuse an animal species, even when Analytics supports a genuinely different fact or angle:
 {used_sample}
 
 CRITICAL SPECIES ROTATION:
-Recent completed-video species history (newest last): {", ".join(recent_animals[-20:]) or "not recorded"}.
-For this new video, choose a species not present in this recent history. Never repeat
-the same exact species in consecutive videos, even with a different fact or angle.
-Treat spelling variants and common-name variants as the same species. If history is
-empty, choose any species.
+All-time previously used species (never reuse any of them): {", ".join(recent_animals) or "not recorded"}.
+For this new video, choose a species not present anywhere in this history. Never repeat
+a species in any future video, even with a different fact, title, hook, or angle.
+Treat spelling variants, common-name variants, and scientific/common-name synonyms
+as the same species. If the list is empty, choose any real species.
 Return the species name separately in the required ANIMAL field.
 
 Use actual channel Analytics as the main evidence. Prioritize subjects,
