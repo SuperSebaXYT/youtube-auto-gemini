@@ -31,9 +31,9 @@ class SpeciesRotationTests(unittest.TestCase):
                 return_value=history_path,
             ):
                 for index in range(30):
-                    _save_last_animal("cosmic_curious", f"Animal {index}")
+                    _save_last_animal("test_channel", f"Animal {index}")
 
-                history = _get_recent_animals("cosmic_curious")
+                history = _get_recent_animals("test_channel")
 
             self.assertEqual(len(history), 30)
             self.assertEqual(history[0], "Animal 0")
