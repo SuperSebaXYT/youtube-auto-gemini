@@ -1076,6 +1076,7 @@ def generate_script(
         "language": language,
         "voice": _voice_for_language(config, language),
         "is_short": is_short,
+        "animal": selected_animal,
     }
 
 
