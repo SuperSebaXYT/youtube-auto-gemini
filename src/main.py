@@ -638,6 +638,7 @@ def _run_once(
                 {
                     "video_id": video_id,
                     "topic": topic,
+                    "animal": result.get("animal", ""),
                     "title": title,
                     "is_short": is_short,
                     "language": language,
