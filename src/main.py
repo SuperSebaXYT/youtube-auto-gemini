@@ -153,6 +153,10 @@ class QualityGateRejectedError(RuntimeError):
     """Raised only when the final script Quality Gate rejects a full attempt."""
 
 
+class VisualSourcingFailedError(RuntimeError):
+    """Raised when exact-species footage cannot fill the complete video."""
+
+
 def _run_once(
     channel_id: str,
     is_short: bool,
@@ -425,9 +429,9 @@ def _run_once(
                     )
 
                 except Exception as exc:
-                    raise RuntimeError(
-                        "Cosmic Curious visual sourcing failed; refusing to "
-                        "publish a video with unrelated stock footage. "
+                    raise VisualSourcingFailedError(
+                        "Cosmic Curious could not source enough verified footage "
+                        "for the selected species. Refusing unrelated stock footage. "
                         f"Details: {str(exc)[:300]}"
                     ) from exc
 
@@ -668,6 +672,22 @@ def run(
                 privacy_status,
                 dry_run,
             )
+        except VisualSourcingFailedError as exc:
+            if attempt >= MAX_FULL_PIPELINE_ATTEMPTS:
+                raise RuntimeError(
+                    f"Visual sourcing failed for all {MAX_FULL_PIPELINE_ATTEMPTS} "
+                    f"complete species attempts. Publishing is blocked. "
+                    f"Last failure: {exc}"
+                ) from exc
+
+            print(
+                f"VISUAL SOURCING FAILED attempt {attempt}/"
+                f"{MAX_FULL_PIPELINE_ATTEMPTS}. The failed species is already "
+                "recorded in the no-repeat history. Restarting from topic "
+                f"selection with a different unused animal "
+                f"({attempt + 1}/{MAX_FULL_PIPELINE_ATTEMPTS})."
+            )
+
         except QualityGateRejectedError as exc:
             if attempt >= MAX_FULL_PIPELINE_ATTEMPTS:
                 raise RuntimeError(
