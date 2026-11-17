@@ -77,12 +77,17 @@ def _last_animal_path(channel_id: str) -> Path:
 def _normalize_animal(animal: str) -> str:
     """Normalize species labels so trivial spelling/spacing changes cannot bypass rotation."""
     value = str(animal or "").casefold().strip()
+    # New records store the scientific binomial in parentheses. Use it as
+    # the canonical identity so different common names cannot bypass rotation.
+    scientific = re.search(r"\(([a-z][a-z-]+\s+[a-z][a-z-]+)\)", value)
+    if scientific:
+        return re.sub(r"[^a-z0-9]+", "", scientific.group(1))
     value = re.sub(r"[^a-z0-9]+", "", value)
     aliases = {
-        "archerfish": "archerfish",
-        "bandedarcherfish": "archerfish",
-        "spottedarcherfish": "archerfish",
-        "tigerarcherfish": "archerfish",
+        "archerfish": "toxotesjaculatrix",
+        "bandedarcherfish": "toxotesjaculatrix",
+        "spottedarcherfish": "toxotesjaculatrix",
+        "tigerarcherfish": "toxotesjaculatrix",
     }
     return aliases.get(value, value)
 
@@ -570,7 +575,9 @@ For this new video, choose a species not present anywhere in this history. Never
 a species in any future video, even with a different fact, title, hook, or angle.
 Treat spelling variants, common-name variants, and scientific/common-name synonyms
 as the same species. If the list is empty, choose any real species.
-Return the species name separately in the required ANIMAL field.
+Return both the common species name and its valid scientific binomial.
+Use the scientific binomial as the permanent species identity, not a genus,
+family, or broad animal group.
 
 Use actual channel Analytics as the main evidence. Prioritize subjects,
 hooks and storytelling angles associated with the highest views and strongest
@@ -585,7 +592,7 @@ adaptation. Do not invent species, abilities, statistics or discoveries.
 No astronomy, space, NASA or unrelated science.
 
 Return exactly ONE line in this format, with no explanation:
-SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic>
+SCORE: <0-100> | ANIMAL: <common species name> | SCIENTIFIC: <Genus species> | TOPIC: <specific animal topic>
 """
 
     try:
@@ -626,7 +633,9 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
             for candidate_line in lines:
                 match = re.match(
                     r"^SCORE:\s*(\d{1,3})\s*\|\s*"
-                    r"(?:ANIMAL:\s*(.*?)\s*\|\s*)?TOPIC:\s*(.+)$",
+                    r"ANIMAL:\s*(.*?)\s*\|\s*"
+                    r"SCIENTIFIC:\s*([A-Z][a-z-]+\s+[a-z][a-z-]+)\s*\|\s*"
+                    r"TOPIC:\s*(.+)$",
                     candidate_line,
                     flags=re.IGNORECASE,
                 )
@@ -635,11 +644,15 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
 
                 score = max(0, min(100, int(match.group(1))))
                 animal = str(match.group(2) or "").strip()
-                candidate = match.group(3).strip()
+                scientific_name = str(match.group(3) or "").strip()
+                candidate = match.group(4).strip()
                 normalized = _normalize_topic(candidate)
-                if not candidate or not animal:
+                if not candidate or not animal or not scientific_name:
                     continue
-                animal_key = _normalize_animal(animal)
+                # Persist both names so common-name variants resolve to the
+                # same scientific species on every future run.
+                animal_record = f"{animal} ({scientific_name})"
+                animal_key = _normalize_animal(animal_record)
                 if animal_key and animal_key in recent_animal_keys:
                     print(
                         f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
@@ -670,20 +683,20 @@ SCORE: <0-100> | ANIMAL: <specific species name> | TOPIC: <specific animal topic
                     rejected_animals.add(animal)
                     continue
 
-                selected = (score, candidate)
+                selected = (score, candidate, animal_record)
                 break
 
             if selected:
-                score, candidate = selected
+                score, candidate, animal_record = selected
                 print(
                     f"Winner Hunter selected fresh topic "
                     f"({score}/100) on attempt {attempt}/{max_topic_attempts}; "
-                    f"animal species: {animal}; topic: {candidate}"
+                    f"animal species: {animal_record}; topic: {candidate}"
                 )
                 # Return topic as usual; animal rotation is recorded only after
                 # the script successfully generates, so failed attempts don't
                 # consume the species slot.
-                return f"[ANIMAL: {animal}] {candidate}"
+                return f"[ANIMAL: {animal_record}] {candidate}"
 
             print(
                 f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
