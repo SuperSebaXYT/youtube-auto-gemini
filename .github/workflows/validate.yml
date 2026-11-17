@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install validation dependencies
-        run: python -m pip install requests pyyaml python-dotenv openai
+        run: python -m pip install requests pyyaml python-dotenv openai google-auth google-auth-oauthlib google-api-python-client
       - name: Compile all Python files
         run: python -m compileall -q src tests
       - name: Run offline agent checks
