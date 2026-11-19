@@ -64,24 +64,26 @@ def get_analytics_service(token_path: str, client_secret_path: str = None):
     """
     path, creds = load_analytics_credentials(token_path)
 
-    if creds.expired or not creds.valid:
-        try:
-            creds.refresh(Request())
-        except Exception as exc:
-            raise RuntimeError(
-                "Google rejected the YouTube Analytics refresh token "
-                f"({type(exc).__name__}: {exc}). The restored pickle was "
-                "read successfully and contains the Analytics scope, but "
-                "Google did not accept its refresh token. Check that the "
-                "GitHub secret contains the exact newly generated Analytics "
-                "pickle and that it was created with the same OAuth client."
-            ) from exc
+    # Force a refresh on every workflow start. This validates the stored
+    # refresh token before expensive topic/video work, even if its access
+    # token still appears locally unexpired.
+    try:
+        creds.refresh(Request())
+    except Exception as exc:
+        raise RuntimeError(
+            "Google rejected the YouTube Analytics refresh token "
+            f"({type(exc).__name__}: {exc}). The restored pickle was "
+            "read successfully and contains the Analytics scope, but "
+            "Google did not accept its refresh token. Check that the "
+            "GitHub secret contains the exact newly generated Analytics "
+            "pickle and that it was created with the same OAuth client."
+        ) from exc
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_suffix(path.suffix + ".tmp")
-        with temporary_path.open("wb") as token_file:
-            pickle.dump(creds, token_file)
-        temporary_path.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    with temporary_path.open("wb") as token_file:
+        pickle.dump(creds, token_file)
+    temporary_path.replace(path)
 
     return build(
         "youtubeAnalytics",
