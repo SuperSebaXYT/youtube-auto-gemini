@@ -1,7 +1,8 @@
 """
 FreeInference-backed text and vision gateway for Cosmic Curious.
 
-Text generation and image-based Visual QA: DeepSeek V4 Flash.
+Text generation: DeepSeek V4 Flash.
+Image-based Visual QA: DeepSeek V4 Flash.
 """
 from __future__ import annotations
 
@@ -87,8 +88,8 @@ def _record_usage(model: str, usage) -> None:
 
 def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
               json_mode: bool = False, images: list[tuple[bytes, str]] | None = None):
-    # All requests, including image-based Visual QA, use DeepSeek V4 Flash.
-    # Caller-supplied model names cannot change the configured route.
+    # Route strictly by input modality: text and image requests use DeepSeek V4 Flash.
+    # Caller-supplied model names cannot change either route.
     model = VISION_MODEL if images else TEXT_MODEL
     if not prompt.strip():
         raise RuntimeError("AI request has no text prompt.")
