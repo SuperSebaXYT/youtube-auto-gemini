@@ -105,7 +105,20 @@ jobs:
           ANALYTICS_TOKEN_COSMIC_CURIOUS: ${{ secrets.YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS }}
         run: |
           mkdir -p tokens
-          echo "$ANALYTICS_TOKEN_COSMIC_CURIOUS" | base64 -d > tokens/analytics_token.pickle
+          test -n "$ANALYTICS_TOKEN_COSMIC_CURIOUS" || { echo "YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS is missing."; exit 1; }
+          printf '%s' "$ANALYTICS_TOKEN_COSMIC_CURIOUS" | base64 --decode --ignore-garbage > tokens/analytics_token.pickle
+          test -s tokens/analytics_token.pickle || { echo "Restored Analytics token is empty."; exit 1; }
+
+      - name: Validate YouTube Analytics OAuth before pipeline
+        env:
+          YOUTUBE_ANALYTICS_TOKEN_PATH: tokens/analytics_token.pickle
+        run: |
+          python - <<'PY'
+          from src.analytics_auth import get_analytics_service
+
+          service = get_analytics_service("tokens/analytics_token.pickle")
+          print("YouTube Analytics OAuth validated; API client initialized.")
+          PY
 
       - name: Restore YouTube read-only token (Cosmic Curious)
         env:
