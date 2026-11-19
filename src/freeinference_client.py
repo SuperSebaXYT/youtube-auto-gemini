@@ -2,7 +2,7 @@
 FreeInference-backed text and vision gateway for Cosmic Curious.
 
 Text generation: DeepSeek V4 Flash.
-Image-based Visual QA: Qwen 3.6 35B only.
+Image-based Visual QA: MiniMax M3.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 BASE_URL = os.environ.get("FREEINFERENCE_BASE_URL", "https://freeinference.org/v1").rstrip("/")
 TEXT_MODEL = "deepseek-v4-flash"
-VISION_MODEL = "qwen3.6-35b"
+VISION_MODEL = "minimax-m3"
 USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "freeinference_usage.json"
 
 
@@ -89,7 +89,7 @@ def _record_usage(model: str, usage) -> None:
 def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
               json_mode: bool = False, images: list[tuple[bytes, str]] | None = None):
     # Route strictly by input modality: text stays on DeepSeek; image requests
-    # use Qwen vision. Caller-supplied model names cannot change either route.
+    # use MiniMax M3 vision. Caller-supplied model names cannot change either route.
     model = VISION_MODEL if images else TEXT_MODEL
     if not prompt.strip():
         raise RuntimeError("AI request has no text prompt.")
