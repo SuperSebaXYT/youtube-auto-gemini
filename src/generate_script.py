@@ -341,7 +341,12 @@ def _generate_with_token_budget(
         config=generation_config,
     )
     response = None
-    for attempt in range(3):
+    # FreeInference's DeepSeek V4 Flash route can temporarily return 5xx
+    # while its upstream is unavailable. Keep the same prompt/model and retry
+    # long enough for a short provider outage to recover; do not alter topic
+    # selection, Winner Hunter, or its analytics context.
+    max_attempts = 8
+    for attempt in range(max_attempts):
         try:
             response = chat.send_message(prompt)
             break
@@ -357,14 +362,14 @@ def _generate_with_token_budget(
                 )
             ) or isinstance(exc, TimeoutError)
 
-            if not retryable or attempt == 2:
+            if not retryable or attempt == max_attempts - 1:
                 raise
 
-            delay = (2 ** (attempt + 1)) + random.uniform(0.2, 0.9)
+            delay = min(60, 2 ** (attempt + 1)) + random.uniform(0.2, 1.5)
             print(
-                "WARNING: FreeInference script/topic request temporarily failed; "
+                "WARNING: FreeInference DeepSeek topic/script request temporarily failed; "
                 f"retrying in {delay:.1f}s "
-                f"(attempt {attempt + 2}/3): {exc}"
+                f"(attempt {attempt + 2}/{max_attempts}): {exc}"
             )
             time.sleep(delay)
 
