@@ -166,7 +166,7 @@ def _run_once(
 
     config = load_channel_config(channel_id)
 
-    # Cosmic Curious routes text tasks through DeepSeek; image-based Visual QA uses Qwen.
+    # Cosmic Curious routes text generation and image-based Visual QA through DeepSeek V4 Flash.
     os.environ["AI_PROVIDER"] = "freeinference"
 
 
