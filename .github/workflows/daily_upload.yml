@@ -79,43 +79,11 @@ jobs:
               max_retries=0,
           )
           available = {item.id for item in client.models.list().data}
-          required = {"deepseek-v4-flash"}
+          required = {"deepseek-v4-flash", "qwen3.6-35b"}
           missing = sorted(required - available)
           if missing:
               raise SystemExit("FreeInference account is missing required model(s): " + ", ".join(missing))
-
-          # Probe the exact multimodal Chat Completions format used by the
-          # pipeline. Fail here, before topic generation or video processing,
-          # if this account's DeepSeek endpoint cannot accept images.
-          import base64
-          probe_png = (
-              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
-              "/x8AAwMCAO+/pS8AAAAASUVORK5CYII="
-          )
-          try:
-              probe = client.chat.completions.create(
-                  model="deepseek-v4-flash",
-                  messages=[{
-                      "role": "user",
-                      "content": [
-                          {"type": "text", "text": "Describe this image in one word."},
-                          {"type": "image_url", "image_url": {
-                              "url": "data:image/png;base64," + probe_png
-                          }},
-                      ],
-                  }],
-                  max_tokens=16,
-              )
-              if not probe.choices or not (probe.choices[0].message.content or "").strip():
-                  raise RuntimeError("DeepSeek returned an empty image-analysis response.")
-          except Exception as exc:
-              raise SystemExit(
-                  "DeepSeek V4 Flash is listed, but image input failed on this API key. "
-                  "Visual QA cannot safely run with a single-model setup. Details: "
-                  + str(exc)
-              ) from exc
-
-          print("FreeInference authenticated; DeepSeek V4 Flash passed text and image-input checks.")
+          print("FreeInference API authenticated; DeepSeek text and Qwen vision models are listed.")
           PY
 
       - name: Restore pipeline state (avoids repeating topics)

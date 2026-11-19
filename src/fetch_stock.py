@@ -1916,7 +1916,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
 
         # Wikimedia Commons is a second provider, used only after all three
         # Pexels search rounds fail to produce a verified clip for this slot.
-        # Every Commons download goes through the same DeepSeek Visual QA gate.
+        # Every Commons download goes through the SAME Qwen Visual QA gate.
         if accepted_path is None:
             try:
                 commons_results = _search_wikimedia_videos(animal, limit=30)
@@ -1992,7 +1992,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                         item["path"].unlink(missing_ok=True)
                     print(
                         f"Downloaded verified Wikimedia Commons clip for shot "
-                        f"{index + 1}; DeepSeek Visual QA accepted."
+                        f"{index + 1}; Qwen Visual QA accepted."
                     )
 
         if accepted_path is not None:

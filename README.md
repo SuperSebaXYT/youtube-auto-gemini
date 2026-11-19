@@ -22,9 +22,9 @@ all 3 — up to you).
 ### 2. Get a FreeInference API key (text + visual AI)
 1. Go to https://freeinference.org/ and create/sign in to your account.
 2. Create an API key in your account dashboard.
-3. Confirm that your account exposes `deepseek-v4-flash` at https://freeinference.org/v1/models. The workflow also probes whether that endpoint accepts image input before starting.
+3. Confirm that your account exposes `deepseek-v4-flash` and `qwen3.6-35b` at https://freeinference.org/v1/models.
 
-Add the key to GitHub Actions as `FREEINFERENCE_API_KEY`. The pipeline routes text generation and Visual QA through DeepSeek V4 Flash. The workflow tests image input first; if the endpoint rejects images, it stops before running the pipeline.
+Add the key to GitHub Actions as `FREEINFERENCE_API_KEY`. The pipeline uses DeepSeek V4 Flash for text generation and Qwen3.6-35B for Visual QA.
 
 ### 3. Get a free Pexels API key (for stock footage)
 1. Go to https://www.pexels.com/api/
