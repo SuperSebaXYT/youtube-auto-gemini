@@ -1,55 +1,91 @@
-"""
-analytics_auth.py
-Separate OAuth flow for the YouTube Analytics API -- needs its own scope
-(yt-analytics.readonly), different from both the upload-only token
-(youtube.upload) and the live-streaming token (youtube) built earlier.
-None of your existing tokens will work here; this needs its own
-token file, generated once via the interactive browser flow.
+"""Strict OAuth authentication for the YouTube Analytics API.
+
+The Analytics credential is separate from the YouTube upload credential.
+A revoked refresh token cannot be repaired by retrying or by opening a
+browser inside GitHub Actions, so authentication errors are surfaced
+immediately and clearly.
 """
 import pickle
 from pathlib import Path
 
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-ANALYTICS_SCOPES = ["https://www.googleapis.com/auth/yt-analytics.readonly"]
+ANALYTICS_SCOPES = frozenset({
+    "https://www.googleapis.com/auth/yt-analytics.readonly"
+})
+
+
+def load_analytics_credentials(token_path: str):
+    path = Path(token_path)
+    if not path.is_file():
+        raise RuntimeError(
+            f"YouTube Analytics token file is missing: {path}. "
+            "Restore YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS in GitHub Secrets."
+        )
+
+    try:
+        with path.open("rb") as token_file:
+            creds = pickle.load(token_file)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not decode the Analytics token at {path}. "
+            "The GitHub secret must be the Base64 encoding of the original "
+            "OAuth credentials pickle file."
+        ) from exc
+
+    if not hasattr(creds, "refresh_token") or not hasattr(creds, "scopes"):
+        raise RuntimeError(
+            f"The file at {path} is not a Google OAuth credentials object."
+        )
+
+    if not creds.refresh_token:
+        raise RuntimeError(
+            f"The Analytics token at {path} has no refresh token. "
+            "It is not usable for unattended GitHub Actions runs."
+        )
+
+    scopes = set(creds.scopes or [])
+    if not ANALYTICS_SCOPES.issubset(scopes):
+        raise RuntimeError(
+            "The restored OAuth token does not contain the required "
+            "yt-analytics.readonly scope. A YouTube upload/read-only token "
+            "cannot be used for Analytics."
+        )
+
+    return path, creds
 
 
 def get_analytics_service(token_path: str, client_secret_path: str = None):
-    """Loads/refreshes/creates a token scoped for read-only Analytics
-    access. Same fall-through-to-interactive-login pattern as
-    upload_youtube.get_authenticated_service() -- a revoked token falls
-    through to a fresh browser login instead of crashing."""
-    token_path = Path(token_path)
-    creds = None
+    """Refresh the stored Analytics credential and build the API client.
 
-    if token_path.exists():
-        with open(token_path, "rb") as f:
-            creds = pickle.load(f)
+    client_secret_path remains accepted for backwards compatibility, but
+    interactive browser login is intentionally not attempted in CI.
+    """
+    path, creds = load_analytics_credentials(token_path)
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                print(f"WARNING: stored analytics token could not be "
-                      f"refreshed ({e}); falling back to interactive login.")
-                creds = None
-        if not creds:
-            if not client_secret_path:
-                raise RuntimeError(
-                    f"No valid analytics token at {token_path} and no "
-                    f"client_secret provided for interactive login. Run "
-                    f"this once locally with a browser available."
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(
-                client_secret_path, ANALYTICS_SCOPES
-            )
-            creds = flow.run_local_server(port=0)
+    if creds.expired or not creds.valid:
+        try:
+            creds.refresh(Request())
+        except Exception as exc:
+            raise RuntimeError(
+                "Google rejected the YouTube Analytics refresh token "
+                f"({type(exc).__name__}: {exc}). The restored pickle was "
+                "read successfully and contains the Analytics scope, but "
+                "Google did not accept its refresh token. Check that the "
+                "GitHub secret contains the exact newly generated Analytics "
+                "pickle and that it was created with the same OAuth client."
+            ) from exc
 
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(token_path, "wb") as f:
-            pickle.dump(creds, f)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_suffix(path.suffix + ".tmp")
+        with temporary_path.open("wb") as token_file:
+            pickle.dump(creds, token_file)
+        temporary_path.replace(path)
 
-    return build("youtubeAnalytics", "v2", credentials=creds)
+    return build(
+        "youtubeAnalytics",
+        "v2",
+        credentials=creds,
+        cache_discovery=False,
+    )
