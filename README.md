@@ -24,7 +24,7 @@ all 3 — up to you).
 2. Create an API key in your account dashboard.
 3. Confirm that your account exposes `deepseek-v4-flash` and `qwen3.6-35b` at https://freeinference.org/v1/models.
 
-Add the key to GitHub Actions as `FREEINFERENCE_API_KEY`. The pipeline uses DeepSeek V4 Flash for text generation and Qwen3.6-35B for Visual QA. The `bge-m3` model is embeddings-only and is not used for chat or image verification.
+Add the key to GitHub Actions as `FREEINFERENCE_API_KEY`. The pipeline uses DeepSeek V4 Flash for text generation and Qwen3.6-35B for Visual QA.
 
 ### 3. Get a free Pexels API key (for stock footage)
 1. Go to https://www.pexels.com/api/
