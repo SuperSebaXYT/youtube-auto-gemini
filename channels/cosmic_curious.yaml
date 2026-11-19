@@ -10,11 +10,11 @@ tone: "curious, surprising, energetic, punchy, conversational — like telling a
 video_length_seconds: 300
 short_length_seconds: 45
 
-voice: "en-US-AndrewNeural"
+voice: "en-US-GuyNeural"
 languages: ["en"]
 
 voices:
-  en: "en-US-AndrewNeural"
+  en: "en-US-GuyNeural"
 
 topics_seed_file: "channels/cosmic_curious_topics.txt"
 
