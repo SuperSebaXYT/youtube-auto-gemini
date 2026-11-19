@@ -106,7 +106,7 @@ jobs:
         run: |
           mkdir -p tokens
           test -n "$ANALYTICS_TOKEN_COSMIC_CURIOUS" || { echo "YOUTUBE_ANALYTICS_TOKEN_COSMIC_CURIOUS is missing."; exit 1; }
-          printf '%s' "$ANALYTICS_TOKEN_COSMIC_CURIOUS" | base64 --decode --ignore-garbage > tokens/analytics_token.pickle
+          printf '%s' "$ANALYTICS_TOKEN_COSMIC_CURIOUS" | base64 --decode > tokens/analytics_token.pickle
           test -s tokens/analytics_token.pickle || { echo "Restored Analytics token is empty."; exit 1; }
 
       - name: Validate YouTube Analytics OAuth before pipeline
