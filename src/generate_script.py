@@ -523,9 +523,9 @@ def _load_winner_hunter_queue(channel_id: str) -> list[tuple[int, str]] | None:
 def _parse_winner_candidate_lines(response_text: str) -> list[str]:
     """Normalize Winner Hunter output without weakening candidate validation."""
     text = str(response_text or "").strip()
-    text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
-    text = text.replace("```", "")
-    text = re.sub(r"(?m)^\\s*(?:[-*•]+|\\d+[.)])\\s*", "", text)
+    text = re.sub(r"\x60{3}[a-zA-Z0-9_-]*", "", text)
+    text = text.replace("\x60\x60\x60", "")
+    text = re.sub(r"(?m)^\s*(?:[-*•]+|\d+[.)])\s*", "", text)
 
     candidates = []
     current = ""
@@ -533,28 +533,24 @@ def _parse_winner_candidate_lines(response_text: str) -> list[str]:
         line = raw_line.strip()
         if not line:
             continue
-        if re.match(r"^SCORE\\s*:", line, flags=re.IGNORECASE):
+        if re.match(r"^SCORE\s*:", line, flags=re.IGNORECASE):
             if current:
                 candidates.append(current)
             current = line
         elif current and re.match(
-            r"^(?:ANIMAL|SCIENTIFIC|TOPIC)\\s*:",
+            r"^(?:ANIMAL|SCIENTIFIC|TOPIC)\s*:",
             line,
             flags=re.IGNORECASE,
         ):
             current += " | " + line
         elif current:
-            # Preserve wrapped topic text; the strict field parser below
-            # still decides whether the candidate is complete and valid.
             current += " " + line
 
     if current:
         candidates.append(current)
 
-    # Also accept a complete single-line response that did not start a new
-    # block due to unusual whitespace or model formatting.
-    if not candidates and re.search(r"\\bSCORE\\s*:", text, re.IGNORECASE):
-        candidates.append(re.sub(r"\\s*\\|\\s*", " | ", text))
+    if not candidates and re.search(r"\bSCORE\s*:", text, re.IGNORECASE):
+        candidates.append(re.sub(r"\s*\|\s*", " | ", text))
 
     return candidates
 
