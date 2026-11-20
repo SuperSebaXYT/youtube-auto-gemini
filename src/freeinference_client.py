@@ -80,9 +80,12 @@ def _is_model_unavailable_error(exc) -> bool:
         code = int(status)
     except (TypeError, ValueError):
         code = None
-    return code in (400, 404) and any(
-        marker in message
-        for marker in ("model", "not found", "unsupported", "not supported")
+    model_specific_markers = (
+        "model", "not found", "unsupported", "not supported",
+        "not available", "not enabled", "permission_denied",
+    )
+    return code in (400, 403, 404) and any(
+        marker in message for marker in model_specific_markers
     )
 
 
