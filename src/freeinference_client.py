@@ -9,13 +9,76 @@ import base64
 import json
 import os
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 TEXT_MODEL = "gemini-3.5-flash-lite"
 VISION_MODEL = "gemini-3.5-flash-lite"
 USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "gemini_usage.json"
+
+# Shared request gate for every Gemini text and vision call in this process.
+_REQUEST_LOCK = threading.Lock()
+_LAST_REQUEST_AT = 0.0
+_MIN_REQUEST_INTERVAL = 8.0
+_MAX_RATE_LIMIT_RETRIES = 3
+
+
+def _retry_after_seconds(exc) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    value = (headers or {}).get("Retry-After") or (headers or {}).get("retry-after")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(value))
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _is_rate_limit_error(exc) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    try:
+        if int(status) == 429:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc).upper()
+
+
+def _paced_completion(client, kwargs):
+    """Serialize Gemini calls, pace requests, and honor 429 cooldowns."""
+    global _LAST_REQUEST_AT
+    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+        with _REQUEST_LOCK:
+            wait = _MIN_REQUEST_INTERVAL - (time.monotonic() - _LAST_REQUEST_AT)
+            if wait > 0:
+                time.sleep(wait)
+            _LAST_REQUEST_AT = time.monotonic()
+            try:
+                return client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                if not _is_rate_limit_error(exc) or attempt >= _MAX_RATE_LIMIT_RETRIES:
+                    raise
+                cooldown = _retry_after_seconds(exc)
+                if cooldown is None:
+                    cooldown = min(120.0, 30.0 * (2 ** attempt))
+                cooldown = max(cooldown, _MIN_REQUEST_INTERVAL)
+                print(
+                    f"Gemini API rate limit (429); cooling down for "
+                    f"{cooldown:.0f}s before retry {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES}."
+                )
+                time.sleep(cooldown)
+                _LAST_REQUEST_AT = time.monotonic()
 
 
 def _api_key() -> str:
@@ -121,7 +184,7 @@ def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    response = _client().chat.completions.create(**kwargs)
+    response = _paced_completion(_client(), kwargs)
     _record_usage(model, getattr(response, "usage", None))
     if not response.choices:
         raise RuntimeError(f"Gemini returned no choices for {model}.")
