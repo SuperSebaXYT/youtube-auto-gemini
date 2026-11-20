@@ -520,6 +520,45 @@ def _load_winner_hunter_queue(channel_id: str) -> list[tuple[int, str]] | None:
         return None
 
 
+def _parse_winner_candidate_lines(response_text: str) -> list[str]:
+    """Normalize Winner Hunter output without weakening candidate validation."""
+    text = str(response_text or "").strip()
+    text = re.sub(r"```[a-zA-Z0-9_-]*", "", text)
+    text = text.replace("```", "")
+    text = re.sub(r"(?m)^\\s*(?:[-*•]+|\\d+[.)])\\s*", "", text)
+
+    candidates = []
+    current = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"^SCORE\\s*:", line, flags=re.IGNORECASE):
+            if current:
+                candidates.append(current)
+            current = line
+        elif current and re.match(
+            r"^(?:ANIMAL|SCIENTIFIC|TOPIC)\\s*:",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            current += " | " + line
+        elif current:
+            # Preserve wrapped topic text; the strict field parser below
+            # still decides whether the candidate is complete and valid.
+            current += " " + line
+
+    if current:
+        candidates.append(current)
+
+    # Also accept a complete single-line response that did not start a new
+    # block due to unusual whitespace or model formatting.
+    if not candidates and re.search(r"\\bSCORE\\s*:", text, re.IGNORECASE):
+        candidates.append(re.sub(r"\\s*\\|\\s*", " | ", text))
+
+    return candidates
+
+
 def _generate_winner_inspired_topic(
     channel_id: str,
     config: dict,
@@ -627,7 +666,12 @@ SCORE: <0-100> | ANIMAL: <common species name> | SCIENTIFIC: <Genus species> | T
                 prompt + retry_note,
                 500,
             )
-            lines = _parse_topic_lines(response.text)
+            lines = _parse_winner_candidate_lines(response.text)
+            if not lines:
+                print(
+                    "Winner Hunter returned an unrecognized response format: "
+                    + repr(str(response.text or "")[:350])
+                )
             selected = None
 
             for candidate_line in lines:
