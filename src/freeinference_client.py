@@ -1,7 +1,7 @@
 """
 Gemini-backed text and vision gateway for Cosmic Curious.
 
-Text generation and image-based Visual QA: Gemini 3.8 Flash.
+Text generation and image-based Visual QA: Gemini 3.5 Flash Lite.
 """
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-TEXT_MODEL = "gemini-4-hydrogen"
-VISION_MODEL = "gemini-4-hydrogen"
+TEXT_MODEL = "gemini-3.5-flash-lite"
+VISION_MODEL = "gemini-3.5-flash-lite"
 USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "gemini_usage.json"
 
 
