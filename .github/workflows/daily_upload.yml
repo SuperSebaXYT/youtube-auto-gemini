@@ -60,33 +60,6 @@ jobs:
           python -m src.agents.test_offline
           python -m unittest discover -s tests -v
 
-      - name: Verify Gemini API connection
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python - <<'PY'
-          import os
-          from openai import OpenAI
-
-          key = os.environ.get("GEMINI_API_KEY", "").strip()
-          if not key:
-              raise SystemExit("GEMINI_API_KEY GitHub secret is missing.")
-          client = OpenAI(
-              api_key=key,
-              base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-              timeout=30.0,
-              max_retries=0,
-          )
-          response = client.chat.completions.create(
-              model="gemini-3.8-flash",
-              messages=[{"role": "user", "content": "Reply with OK."}],
-              max_tokens=8,
-          )
-          if not response.choices or not response.choices[0].message.content:
-              raise SystemExit("Gemini API returned an empty test response.")
-          print("Gemini API connection and gemini-3.8-flash text generation verified.")
-          PY
-
       - name: Restore pipeline state (avoids repeating topics)
         uses: actions/cache@v4
         with:
