@@ -18,13 +18,31 @@ from types import SimpleNamespace
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 TEXT_MODEL = "gemini-3.5-flash-lite"
 VISION_MODEL = "gemini-3.5-flash-lite"
+
+# Ordered fallback chain. The primary model remains unchanged.
+# Gemini 4 Argon is last because the current free-tier dashboard shows 0/0.
+FALLBACK_MODELS = (
+    "gemini-3.1-flash-lite",
+    "gemini-4-hydrogen",
+    "gemini-3.8-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-4-argon",
+)
+MODEL_REQUEST_INTERVALS = {
+    "gemini-3.5-flash-lite": 8.0,
+    "gemini-3.1-flash-lite": 5.0,
+    "gemini-4-hydrogen": 13.0,
+    "gemini-3.8-flash": 13.0,
+    "gemini-3-flash-preview": 13.0,
+    "gemini-2.5-flash": 13.0,
+    "gemini-4-argon": 13.0,
+}
 USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "gemini_usage.json"
 
 # Shared request gate for every Gemini text and vision call in this process.
 _REQUEST_LOCK = threading.Lock()
-_LAST_REQUEST_AT = 0.0
-_MIN_REQUEST_INTERVAL = 8.0
-_MAX_RATE_LIMIT_RETRIES = 3
+_LAST_REQUEST_AT_BY_MODEL = {}
 
 
 def _retry_after_seconds(exc) -> float | None:
@@ -55,31 +73,76 @@ def _is_rate_limit_error(exc) -> bool:
     return "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc).upper()
 
 
-def _paced_completion(client, kwargs):
-    """Serialize Gemini calls, pace requests, and honor 429 cooldowns."""
-    global _LAST_REQUEST_AT
-    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-        with _REQUEST_LOCK:
-            wait = _MIN_REQUEST_INTERVAL - (time.monotonic() - _LAST_REQUEST_AT)
-            if wait > 0:
-                time.sleep(wait)
-            _LAST_REQUEST_AT = time.monotonic()
-            try:
-                return client.chat.completions.create(**kwargs)
-            except Exception as exc:
-                if not _is_rate_limit_error(exc) or attempt >= _MAX_RATE_LIMIT_RETRIES:
-                    raise
-                cooldown = _retry_after_seconds(exc)
-                if cooldown is None:
-                    cooldown = min(120.0, 30.0 * (2 ** attempt))
-                cooldown = max(cooldown, _MIN_REQUEST_INTERVAL)
-                print(
-                    f"Gemini API rate limit (429); cooling down for "
-                    f"{cooldown:.0f}s before retry {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES}."
-                )
-                time.sleep(cooldown)
-                _LAST_REQUEST_AT = time.monotonic()
+def _is_model_unavailable_error(exc) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    message = str(exc).lower()
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        code = None
+    return code in (400, 404) and any(
+        marker in message
+        for marker in ("model", "not found", "unsupported", "not supported")
+    )
 
+
+def _paced_completion(client, kwargs):
+    """Pace each model independently and fail over on quota/model availability errors."""
+    global _LAST_REQUEST_AT_BY_MODEL
+    requested_model = kwargs["model"]
+    candidates = (requested_model,) + tuple(
+        model for model in FALLBACK_MODELS if model != requested_model
+    )
+    failures = []
+
+    for model in candidates:
+        model_kwargs = dict(kwargs)
+        model_kwargs["model"] = model
+        interval = MODEL_REQUEST_INTERVALS.get(model, 13.0)
+
+        # Two attempts per model: a short quota cooldown, then move to the next model.
+        for attempt in range(2):
+            with _REQUEST_LOCK:
+                last_request = _LAST_REQUEST_AT_BY_MODEL.get(model, 0.0)
+                wait = interval - (time.monotonic() - last_request)
+                if wait > 0:
+                    time.sleep(wait)
+                _LAST_REQUEST_AT_BY_MODEL[model] = time.monotonic()
+                try:
+                    response = client.chat.completions.create(**model_kwargs)
+                    if model != requested_model:
+                        print(
+                            f"Gemini fallback activated: {requested_model} -> {model}."
+                        )
+                    return response, model
+                except Exception as exc:
+                    if _is_rate_limit_error(exc):
+                        failures.append(f"{model}: HTTP 429")
+                        if attempt == 0:
+                            cooldown = _retry_after_seconds(exc)
+                            if cooldown is None:
+                                cooldown = 30.0
+                            cooldown = max(cooldown, interval)
+                            print(
+                                f"Gemini rate limit on {model}; waiting "
+                                f"{cooldown:.0f}s before retry."
+                            )
+                            time.sleep(cooldown)
+                            _LAST_REQUEST_AT_BY_MODEL[model] = time.monotonic()
+                            continue
+                        print(f"Gemini quota exhausted for {model}; trying next model.")
+                        break
+                    if _is_model_unavailable_error(exc):
+                        failures.append(f"{model}: model unavailable")
+                        print(f"Gemini model {model} unavailable; trying next model.")
+                        break
+                    raise
+
+    details = "; ".join(failures)
+    raise RuntimeError(
+        "All configured Gemini models failed. " + details
+        + ". Check Google AI Studio quotas, model access, and billing."
+    )
 
 def _api_key() -> str:
     key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -184,8 +247,8 @@ def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    response = _paced_completion(_client(), kwargs)
-    _record_usage(model, getattr(response, "usage", None))
+    response, actual_model = _paced_completion(_client(), kwargs)
+    _record_usage(actual_model, getattr(response, "usage", None))
     if not response.choices:
         raise RuntimeError(f"Gemini returned no choices for {model}.")
     text = (response.choices[0].message.content or "").strip()
