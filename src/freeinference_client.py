@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 TEXT_MODEL = "gemini-4-hydrogen"
-VISION_MODEL = "gemini-3.8-flash"
+VISION_MODEL = "gemini-4-hydrogen"
 USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "gemini_usage.json"
 
 
