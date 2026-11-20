@@ -60,7 +60,7 @@ jobs:
           python -m src.agents.test_offline
           python -m unittest discover -s tests -v
 
-      - name: Verify Gemini API and required AI model
+      - name: Verify Gemini API connection
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -77,12 +77,14 @@ jobs:
               timeout=30.0,
               max_retries=0,
           )
-          available = {item.id for item in client.models.list().data}
-          required = {"gemini-3.8-flash"}
-          missing = sorted(required - available)
-          if missing:
-              raise SystemExit("Gemini API does not list required model(s): " + ", ".join(missing))
-          print("Gemini API authenticated; Gemini 3.8 Flash is listed for text and vision.")
+          response = client.chat.completions.create(
+              model="gemini-3.8-flash",
+              messages=[{"role": "user", "content": "Reply with OK."}],
+              max_tokens=8,
+          )
+          if not response.choices or not response.choices[0].message.content:
+              raise SystemExit("Gemini API returned an empty test response.")
+          print("Gemini API connection and gemini-3.8-flash text generation verified.")
           PY
 
       - name: Restore pipeline state (avoids repeating topics)
