@@ -341,7 +341,10 @@ def _generate_with_token_budget(
         config=generation_config,
     )
     response = None
-    for attempt in range(3):
+    # Gemini can return short-lived 503 overloads. Use a longer bounded
+    # backoff window, while keeping this request on Gemini only.
+    max_attempts = 5
+    for attempt in range(max_attempts):
         try:
             response = chat.send_message(prompt)
             break
@@ -357,14 +360,14 @@ def _generate_with_token_budget(
                 )
             ) or isinstance(exc, TimeoutError)
 
-            if not retryable or attempt == 2:
+            if not retryable or attempt == max_attempts - 1:
                 raise
 
-            delay = (2 ** (attempt + 1)) + random.uniform(0.2, 0.9)
+            delay = min(30, 5 * (2 ** attempt)) + random.uniform(0.2, 1.0)
             print(
                 "WARNING: Gemini script/topic request temporarily failed; "
                 f"retrying in {delay:.1f}s "
-                f"(attempt {attempt + 2}/3): {exc}"
+                f"(attempt {attempt + 2}/{max_attempts}): {exc}"
             )
             time.sleep(delay)
 
