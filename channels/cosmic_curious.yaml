@@ -1,6 +1,6 @@
 channel_id: cosmic_curious
 
-ai_provider: freeinference
+ai_provider: gemini
 display_name: "Animal Discovery & Compilations"
 
 niche: "Animals & wildlife facts"

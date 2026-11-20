@@ -1,8 +1,7 @@
 """
-FreeInference-backed text and vision gateway for Cosmic Curious.
+Gemini-backed text and vision gateway for Cosmic Curious.
 
-Text generation: DeepSeek V4 Flash.
-Image-based Visual QA: Qwen 3.6 35B only.
+Text generation and image-based Visual QA: Gemini 3.8 Flash.
 """
 from __future__ import annotations
 
@@ -13,16 +12,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-BASE_URL = os.environ.get("FREEINFERENCE_BASE_URL", "https://freeinference.org/v1").rstrip("/")
-TEXT_MODEL = "deepseek-v4-flash"
-VISION_MODEL = "qwen3.6-35b"
-USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "freeinference_usage.json"
+BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+TEXT_MODEL = "gemini-3.8-flash"
+VISION_MODEL = "gemini-3.8-flash"
+USAGE_PATH = Path(__file__).resolve().parent.parent / "state" / "gemini_usage.json"
 
 
 def _api_key() -> str:
-    key = os.environ.get("FREEINFERENCE_API_KEY", "").strip()
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
-        raise RuntimeError("FREEINFERENCE_API_KEY is not set.")
+        raise RuntimeError("GEMINI_API_KEY is not set.")
     return key
 
 
@@ -46,7 +45,7 @@ def _client():
 
 def _record_usage(model: str, usage) -> None:
     if usage is None:
-        print(f"FreeInference usage unavailable for {model}.")
+        print(f"Gemini usage unavailable for {model}.")
         return
 
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
@@ -78,10 +77,10 @@ def _record_usage(model: str, usage) -> None:
         temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
         temporary.replace(USAGE_PATH)
     except OSError as exc:
-        print(f"WARNING: could not persist FreeInference usage counters: {exc}")
+        print(f"WARNING: could not persist Gemini usage counters: {exc}")
 
     print(
-        f"FreeInference usage [{model}]: input={prompt_tokens}, "
+        f"Gemini usage [{model}]: input={prompt_tokens}, "
         f"output={completion_tokens}, total={total_tokens} tokens."
     )
 
@@ -125,10 +124,10 @@ def _complete(prompt: str, *, model: str, max_output_tokens: int | None = None,
     response = _client().chat.completions.create(**kwargs)
     _record_usage(model, getattr(response, "usage", None))
     if not response.choices:
-        raise RuntimeError(f"FreeInference returned no choices for {model}.")
+        raise RuntimeError(f"Gemini returned no choices for {model}.")
     text = (response.choices[0].message.content or "").strip()
     if not text:
-        raise RuntimeError(f"FreeInference returned an empty response for {model}.")
+        raise RuntimeError(f"Gemini returned an empty response for {model}.")
     return SimpleNamespace(
         text=text,
         choices=response.choices,
@@ -202,7 +201,7 @@ class _Models:
         return generate_response("\n".join(prompt_parts))
 
 
-class FreeInferenceClient:
+class GeminiClient:
     def __init__(self):
         _api_key()
         self.chats = _Chats(self)
@@ -213,7 +212,7 @@ class FreeInferenceClient:
 
 
 def get_client():
-    return FreeInferenceClient()
+    return GeminiClient()
 
 
 def generate(prompt: str, max_output_tokens: int | None = None,
