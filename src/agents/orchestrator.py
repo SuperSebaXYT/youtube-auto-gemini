@@ -1,8 +1,8 @@
 """Shared runtime for Animals & Wildlife AI agents.
 
-The agent layer is deliberately batch-oriented: a single FreeInference text model request can
+The agent layer is deliberately batch-oriented: a single Gemini text model request can
 review many topics/claims at once. This keeps the system comfortably below
-FreeInference text model free-tier request-per-minute limits and makes the agents easier to
+Gemini text model free-tier request-per-minute limits and makes the agents easier to
 scale later.
 """
 
@@ -21,7 +21,7 @@ load_dotenv()
 
 
 class AgentRateLimitError(RuntimeError):
-    """Raised after the FreeInference text model gateway exhausts its retry budget."""
+    """Raised after the Gemini text model gateway exhausts its retry budget."""
 
 
 MAX_RETRIES = 3
@@ -31,7 +31,7 @@ INITIAL_RETRY_SECONDS = 5
 def _extract_json(text: str) -> Any:
     """Parse JSON from a clean response or a fenced/extra-text response."""
     if not text:
-        raise ValueError("FreeInference text model returned an empty response.")
+        raise ValueError("Gemini text model returned an empty response.")
 
     cleaned = text.strip()
     cleaned = re.sub(
@@ -62,7 +62,7 @@ def _extract_json(text: str) -> Any:
 
     if not starts:
         raise ValueError(
-            f"FreeInference text model did not return JSON: {cleaned[:600]}"
+            f"Gemini text model did not return JSON: {cleaned[:600]}"
         )
 
     start = min(starts)
@@ -73,7 +73,7 @@ def _extract_json(text: str) -> Any:
 
     if end <= start:
         raise ValueError(
-            f"FreeInference text model did not return complete JSON: "
+            f"Gemini text model did not return complete JSON: "
             f"{cleaned[:600]}"
         )
 
@@ -83,7 +83,7 @@ def _extract_json(text: str) -> Any:
         )
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"FreeInference text model returned invalid JSON: {exc}. "
+            f"Gemini text model returned invalid JSON: {exc}. "
             f"Response: {cleaned[:600]}"
         ) from exc
 
@@ -123,7 +123,7 @@ def generate_text(
     model: str | None = None,
     json_mode: bool = False,
 ) -> str:
-    """Central FreeInference text model gateway with bounded exponential retry for transient errors."""
+    """Central Gemini text model gateway with bounded exponential retry for transient errors."""
 
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -147,7 +147,7 @@ def generate_text(
             delay = INITIAL_RETRY_SECONDS * (2 ** attempt)
 
             print(
-                "AI Gateway: temporary FreeInference text model service error "
+                "AI Gateway: temporary Gemini text model service error "
                 f"({str(exc)[:180]}); retrying in {delay}s "
                 f"(attempt {attempt + 1}/{MAX_RETRIES})..."
             )
@@ -155,7 +155,7 @@ def generate_text(
             time.sleep(delay)
 
     raise AgentRateLimitError(
-        "FreeInference text model retry budget exhausted."
+        "Gemini text model retry budget exhausted."
     )
 
 

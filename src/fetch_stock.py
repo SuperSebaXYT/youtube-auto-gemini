@@ -1173,7 +1173,7 @@ def _verify_clip_batch_matches_shot(
     if len(clip_paths) > 3:
         raise ValueError("Visual QA batches may contain at most three clips.")
     if not is_vision_available():
-        raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
+        raise RuntimeError("GEMINI_API_KEY is required for Cosmic Curious visual verification.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_batch_") as temp_dir:
         frame_images = []
@@ -1274,7 +1274,7 @@ def _verify_clip_matches_shot(
     from src.freeinference_client import generate_vision, is_vision_available
 
     if not is_vision_available():
-        raise RuntimeError("FREEINFERENCE_API_KEY is required for Cosmic Curious visual verification.")
+        raise RuntimeError("GEMINI_API_KEY is required for Cosmic Curious visual verification.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_qa_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))
@@ -1387,7 +1387,7 @@ def _score_clip_for_shot(
     from src.freeinference_client import generate_vision, is_vision_available
 
     if not is_vision_available():
-        raise RuntimeError("FREEINFERENCE_API_KEY is required for fallback clip ranking.")
+        raise RuntimeError("GEMINI_API_KEY is required for fallback clip ranking.")
 
     with tempfile.TemporaryDirectory(prefix="cosmic_visual_rank_") as temp_dir:
         frames = _extract_audit_frames(clip_path, Path(temp_dir))

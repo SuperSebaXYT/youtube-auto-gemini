@@ -330,7 +330,7 @@ def _generate_with_token_budget(
     prompt: str,
     max_output_tokens: int,
 ):
-    """Generate once through the shared FreeInference text client with an output budget."""
+    """Generate once through the shared Gemini text client with an output budget."""
     from types import SimpleNamespace
 
     generation_config = SimpleNamespace(
@@ -362,20 +362,20 @@ def _generate_with_token_budget(
 
             delay = (2 ** (attempt + 1)) + random.uniform(0.2, 0.9)
             print(
-                "WARNING: FreeInference script/topic request temporarily failed; "
+                "WARNING: Gemini script/topic request temporarily failed; "
                 f"retrying in {delay:.1f}s "
                 f"(attempt {attempt + 2}/3): {exc}"
             )
             time.sleep(delay)
 
     if response is None:
-        raise RuntimeError("FreeInference returned no response after retrying.")
+        raise RuntimeError("Gemini returned no response after retrying.")
 
     try:
         finish_reason = response.candidates[0].finish_reason
         if finish_reason and "MAX_TOKENS" in str(finish_reason).upper():
             print(
-                "WARNING: FreeInference text model response hit "
+                "WARNING: Gemini text model response hit "
                 f"max_output_tokens={max_output_tokens}."
             )
     except Exception:
@@ -530,7 +530,7 @@ def _generate_winner_inspired_topic(
         print("Winner Hunter unavailable.")
         return None
     if not is_available():
-        print("FreeInference text API unavailable; Winner Hunter cannot select a topic.")
+        print("Gemini text API unavailable; Winner Hunter cannot select a topic.")
         return None
 
     try:
@@ -748,7 +748,7 @@ def pick_next_topic(channel_id: str, config: dict) -> str:
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for channel '{channel_id}'. "
-            "Add seed topics or enable FreeInference topic generation."
+            "Add seed topics or enable Gemini topic generation."
         )
 
     topic = random.choice(unused)
@@ -913,7 +913,7 @@ SCRIPT:
         )
 
     if not result["script"]:
-        raise ValueError("FreeInference returned an empty script.")
+        raise ValueError("Gemini returned an empty script.")
 
     return result
 
@@ -925,7 +925,7 @@ def generate_with_template(
     language: str,
 ) -> dict:
     """
-    Minimal fallback used when FreeInference is unavailable.
+    Minimal fallback used when Gemini is unavailable.
 
     This avoids pretending to know specific animal facts that were not
     generated or verified. The fallback is intentionally short.
@@ -1042,11 +1042,11 @@ def generate_script(
             )
         except Exception as e:
             print(
-                f"ERROR: FreeInference script generation failed after retries ({e}). "
+                f"ERROR: Gemini script generation failed after retries ({e}). "
                 "Refusing to send a generic template to the Quality Gate."
             )
             raise RuntimeError(
-                "FreeInference script generation failed; this run is stopped before "
+                "Gemini script generation failed; this run is stopped before "
                 "quality review and video rendering."
             ) from e
 
@@ -1205,7 +1205,7 @@ def pick_next_kids_topic(
     if not unused:
         raise RuntimeError(
             f"No fresh topics available for kids content type "
-            f"'{content_type}'. Add seed topics or enable FreeInference "
+            f"'{content_type}'. Add seed topics or enable Gemini "
             "topic generation; refusing to recycle topics."
         )
 
@@ -1372,7 +1372,7 @@ def generate_kids_script(
             )
     except Exception as e:
         print(
-            f"WARNING: kids FreeInference text generation failed ({e}); "
+            f"WARNING: kids Gemini text generation failed ({e}); "
             "using template fallback."
         )
         generated = generate_kids_template(
