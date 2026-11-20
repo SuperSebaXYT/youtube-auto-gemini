@@ -1466,7 +1466,7 @@ def fetch_clips_for_shots(
     # Each slot searches indefinitely until Visual QA accepts a clip.
     pexels_per_page = 80
     max_queries_per_round = 8
-    max_parallel_searches = 8
+    max_parallel_searches = 3
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1782,137 +1782,132 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 f"Per-query counts: {search_result_counts}"
             )
 
-            # Download and visually verify up to three candidates together.
+            # Process multiple batches per search round. The old implementation
+            # downloaded only the first three candidates, then abandoned the
+            # remaining hundreds of search results even when all three failed QA.
             from concurrent.futures import FIRST_COMPLETED, wait
 
             batch_size = 3
+            max_qa_candidates_per_round = 12
             candidate_iter = iter(ranked)
-            pending = {}
-            batch_candidates = []
-            executor = ThreadPoolExecutor(max_workers=batch_size)
+            checked_this_round = 0
 
-            def submit_next_candidate():
-                """Submit the next unseen Pexels candidate, if available."""
-                nonlocal checked
-                for video_id, candidate in candidate_iter:
-                    if video_id in attempted_video_ids:
-                        continue
-                    attempted_video_ids.add(video_id)
-                    checked += 1
-                    candidate_path = out_path / (
-                        f"candidate_{index:02d}_{checked:05d}.mp4"
-                    )
-                    future = executor.submit(
-                        _download_pexels_video,
-                        candidate["video"],
-                        candidate_path,
-                    )
-                    pending[future] = (video_id, candidate, candidate_path)
-                    return True
-                return False
+            while accepted_path is None and checked_this_round < max_qa_candidates_per_round:
+                batch_candidates = []
+                pending = {}
+                executor = ThreadPoolExecutor(max_workers=batch_size)
 
-            try:
-                for _ in range(batch_size):
-                    if not submit_next_candidate():
-                        break
+                def submit_next_candidate():
+                    """Submit the next unseen Pexels candidate for this batch."""
+                    nonlocal checked, checked_this_round
+                    for video_id, candidate in candidate_iter:
+                        if video_id in attempted_video_ids:
+                            continue
+                        attempted_video_ids.add(video_id)
+                        checked += 1
+                        checked_this_round += 1
+                        candidate_path = out_path / (
+                            f"candidate_{index:02d}_{checked:05d}.mp4"
+                        )
+                        future = executor.submit(
+                            _download_pexels_video,
+                            candidate["video"],
+                            candidate_path,
+                        )
+                        pending[future] = (video_id, candidate, candidate_path)
+                        return True
+                    return False
 
-                while pending and len(batch_candidates) < batch_size:
-                    completed, _ = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in completed:
-                        video_id, candidate, candidate_path = pending.pop(future)
-                        try:
-                            was_downloaded = future.result()
-                        except Exception as exc:
-                            was_downloaded = False
-                            print(
-                                f"WARNING: parallel download failed for shot {index + 1}, "
-                                f"video {video_id}: {exc}"
-                            )
-
-                        if was_downloaded:
-                            used_video_ids.add(video_id)
-                            batch_candidates.append({
-                                "video_id": video_id,
-                                "candidate": candidate,
-                                "path": candidate_path,
-                            })
-                        else:
-                            candidate_path.unlink(missing_ok=True)
-                            if len(batch_candidates) + len(pending) < batch_size:
-                                submit_next_candidate()
-
-                    # Keep the download window full until three usable clips
-                    # have been collected or this round has no more candidates.
-                    while len(batch_candidates) + len(pending) < batch_size:
+                try:
+                    for _ in range(batch_size):
+                        if checked_this_round >= max_qa_candidates_per_round:
+                            break
                         if not submit_next_candidate():
                             break
 
-                if batch_candidates:
-                    try:
+                    while pending:
+                        completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                        for future in completed:
+                            video_id, candidate, candidate_path = pending.pop(future)
+                            try:
+                                was_downloaded = future.result()
+                            except Exception as exc:
+                                was_downloaded = False
+                                print(
+                                    f"WARNING: parallel download failed for shot {index + 1}, "
+                                    f"video {video_id}: {exc}"
+                                )
+
+                            if was_downloaded:
+                                used_video_ids.add(video_id)
+                                batch_candidates.append({
+                                    "video_id": video_id,
+                                    "candidate": candidate,
+                                    "path": candidate_path,
+                                })
+                            else:
+                                candidate_path.unlink(missing_ok=True)
+
+                        while (
+                            len(batch_candidates) + len(pending) < batch_size
+                            and checked_this_round < max_qa_candidates_per_round
+                        ):
+                            if not submit_next_candidate():
+                                break
+
+                    if batch_candidates:
                         batch_verdicts = _verify_clip_batch_matches_shot(
                             [item["path"] for item in batch_candidates],
                             animal=animal,
                             strict_species=strict_species,
                         )
-                    except Exception as exc:
-                        raise RuntimeError(
-                            f"Batch Visual QA failed for shot {index + 1}: {exc}"
-                        ) from exc
 
-                    matching_candidates = []
-                    for item, (qa_passed, qa_reason) in zip(batch_candidates, batch_verdicts):
-                        candidate = item["candidate"]
-                        if qa_passed:
-                            matching_candidates.append(item)
+                        matching_candidates = []
+                        for item, (qa_passed, qa_reason) in zip(batch_candidates, batch_verdicts):
+                            candidate = item["candidate"]
+                            if qa_passed:
+                                matching_candidates.append(item)
+                                print(
+                                    f"Visual QA MATCH for shot {index + 1}: "
+                                    f"round={retry_round}; source_query={candidate['query']!r}; "
+                                    f"{qa_reason}."
+                                )
+                            else:
+                                rejected_candidates.append({
+                                    "path": item["path"],
+                                    "video_id": item["video_id"],
+                                    "query": candidate["query"],
+                                    "round": retry_round,
+                                    "qa_reason": qa_reason,
+                                })
+                                print(
+                                    f"Visual QA REJECTED candidate for shot {index + 1}: "
+                                    f"round={retry_round}; source_query={candidate['query']!r}; "
+                                    f"{qa_reason}. Keeping it for final comparison."
+                                )
+
+                        if matching_candidates:
+                            selected = matching_candidates[0]
+                            accepted_path = out_path / f"clip_{index:02d}.mp4"
+                            selected["path"].replace(accepted_path)
+                            for item in matching_candidates[1:]:
+                                item["path"].unlink(missing_ok=True)
                             print(
-                                f"Visual QA MATCH for shot {index + 1}: "
-                                f"round={retry_round}; source_query={candidate['query']!r}; "
-                                f"{qa_reason}."
+                                f"Downloaded Pexels clip for shot {index + 1}: "
+                                f"source_query={selected['candidate']['query']!r}; "
+                                f"round={retry_round}; batch Visual QA accepted."
                             )
-                        else:
-                            rejected_candidates.append({
-                                "path": item["path"],
-                                "video_id": item["video_id"],
-                                "query": candidate["query"],
-                                "round": retry_round,
-                                "qa_reason": qa_reason,
-                            })
-                            print(
-                                f"Visual QA REJECTED candidate for shot {index + 1}: "
-                                f"round={retry_round}; source_query={candidate['query']!r}; "
-                                f"{qa_reason}. Keeping it for final comparison."
-                            )
+                    # If QA rejected the batch, continue with the NEXT batch
+                    # from the same search results instead of ending the round.
+                finally:
+                    for future in pending:
+                        future.cancel()
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    for _, _, candidate_path in pending.values():
+                        candidate_path.unlink(missing_ok=True)
 
-                    if matching_candidates:
-                        # Candidates arrive in Pexels quality-rank order;
-                        # keep the first verified match for this shot.
-                        selected = matching_candidates[0]
-                        accepted_path = out_path / f"clip_{index:02d}.mp4"
-                        selected["path"].replace(accepted_path)
-                        for item in matching_candidates[1:]:
-                            item["path"].unlink(missing_ok=True)
-                        print(
-                            f"Downloaded Pexels clip for shot {index + 1}: "
-                            f"source_query={selected['candidate']['query']!r}; "
-                            f"round={retry_round}; batch Visual QA accepted."
-                        )
-            finally:
-                for future in pending:
-                    future.cancel()
-                executor.shutdown(wait=True, cancel_futures=True)
-                for _, _, candidate_path in pending.values():
-                    candidate_path.unlink(missing_ok=True)
-
-            if accepted_path is None:
-                print(
-                    f"Clip slot {index + 1} still missing. "
-                    f"Progress: {checked} distinct videos checked; "
-                    f"{len(attempted_video_ids)} unique video IDs checked so far. "
-                    f"Search round {retry_round}/{max_search_rounds} exhausted."
-                )
-                if new_candidate_count == 0:
-                    time.sleep(5)
-
+                if not batch_candidates and checked_this_round >= max_qa_candidates_per_round:
+                    break
 
         # Wikimedia Commons is a second provider, used only after all three
         # Pexels search rounds fail to produce a verified clip for this slot.
@@ -2030,55 +2025,84 @@ Return exactly 5 queries, one per line, no numbering or explanations.
             f"{len(shots) - len(downloaded)} slots still need clips."
         )
 
-    # Global fallback assignment: score every rejected clip against every
-    # missing narration slot, then greedily assign the highest-scoring unique
-    # clip/slot pairs. This avoids choosing a weak fallback independently
-    # when a stronger candidate from another failed slot fits better.
+    # Global fallback assignment. Score each rejected clip ONCE against the
+    # species it was originally collected for. Only assign it to missing slots
+    # requiring that same species; never cross-fill different animals.
     if missing_fallback_slots:
-        ranked_pairs = []
+        candidates_by_species = {}
+        slots_by_species = {}
         ranking_errors = []
+
+        def _species_key(value):
+            return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
         for slot_index in missing_fallback_slots:
-            target = shots[slot_index]
-            target_animal = str(target.get("animal", "")).strip()
-            for candidate in fallback_pool:
-                if candidate.get("slot_ranked_for") == slot_index:
-                    continue
-                try:
-                    score, reason = _score_clip_for_shot(
-                        candidate["path"],
-                        target_animal,
-                    )
-                except Exception as exc:
-                    ranking_errors.append(str(exc))
-                    print(
-                        f"Global fallback ranking failed: candidate from shot "
-                        f"{candidate.get('source_slot', '?') + 1}, target shot "
-                        f"{slot_index + 1}: {exc}"
-                    )
-                    continue
-                ranked_pairs.append((score, slot_index, candidate, reason))
+            species_key = _species_key(shots[slot_index].get("animal", ""))
+            slots_by_species.setdefault(species_key, []).append(slot_index)
+
+        # De-duplicate candidates by video ID and retain the originating
+        # species. A candidate can be ranked once and used for one slot only.
+        unique_candidates = {}
+        for candidate in fallback_pool:
+            video_id = str(candidate.get("video_id") or "")
+            source_slot = candidate.get("source_slot")
+            if not video_id or source_slot is None or video_id in unique_candidates:
+                continue
+            source_species = _species_key(shots[source_slot].get("animal", ""))
+            unique_candidates[video_id] = (candidate, source_species)
+
+        for video_id, (candidate, source_species) in unique_candidates.items():
+            if source_species not in slots_by_species:
+                continue
+            target_animal = str(shots[candidate["source_slot"]].get("animal", "")).strip()
+            try:
+                score, reason = _score_clip_for_shot(candidate["path"], target_animal)
+            except Exception as exc:
+                ranking_errors.append(str(exc))
+                print(
+                    f"Global fallback ranking failed for candidate {video_id} "
+                    f"and species {target_animal!r}: {exc}"
+                )
+                continue
+
+            # A score below 70 means the target species was not positively
+            # identified. Do not silently fill a slot with an unrelated animal.
+            if score < 70:
+                print(
+                    f"GLOBAL FALLBACK rejected candidate {video_id}: "
+                    f"score={score}/100; exact species not sufficiently confirmed."
+                )
+                continue
+
+            candidates_by_species.setdefault(source_species, []).append(
+                (score, candidate, reason)
+            )
 
         assigned_slots = set()
         assigned_candidates = set()
-        for score, slot_index, candidate, reason in sorted(
-            ranked_pairs, key=lambda item: item[0], reverse=True
-        ):
-            candidate_key = str(candidate.get("video_id"))
-            if slot_index in assigned_slots or candidate_key in assigned_candidates:
-                continue
-            destination = out_path / f"clip_{slot_index:02d}.mp4"
-            candidate["path"].replace(destination)
-            downloaded.append(str(destination))
-            assigned_slots.add(slot_index)
-            assigned_candidates.add(candidate_key)
-            used_video_ids.add(candidate["video_id"])
-            if candidate.get("source_credit"):
-                source_credits_by_slot[slot_index] = candidate["source_credit"]
-            print(
-                f"GLOBAL FALLBACK selected for shot {slot_index + 1}: "
-                f"score={score}/100; candidate originally collected for shot "
-                f"{candidate.get('source_slot', '?') + 1}; {reason}"
+
+        for species_key, slot_indexes in slots_by_species.items():
+            ranked_species_candidates = sorted(
+                candidates_by_species.get(species_key, []),
+                key=lambda item: item[0],
+                reverse=True,
             )
+            for slot_index, (score, candidate, reason) in zip(
+                sorted(slot_indexes), ranked_species_candidates
+            ):
+                candidate_key = str(candidate.get("video_id"))
+                destination = out_path / f"clip_{slot_index:02d}.mp4"
+                candidate["path"].replace(destination)
+                assigned_slots.add(slot_index)
+                assigned_candidates.add(candidate_key)
+                used_video_ids.add(candidate["video_id"])
+                if candidate.get("source_credit"):
+                    source_credits_by_slot[slot_index] = candidate["source_credit"]
+                print(
+                    f"GLOBAL FALLBACK selected for shot {slot_index + 1}: "
+                    f"score={score}/100; candidate originally collected for shot "
+                    f"{candidate.get('source_slot', '?') + 1}; {reason}"
+                )
 
         for candidate in fallback_pool:
             if str(candidate.get("video_id")) not in assigned_candidates:
@@ -2087,10 +2111,11 @@ Return exactly 5 queries, one per line, no numbering or explanations.
         still_missing = sorted(set(missing_fallback_slots) - assigned_slots)
         if still_missing:
             raise RuntimeError(
-                f"Global fallback pool could not fill {len(still_missing)} "
+                f"Global fallback could not safely fill {len(still_missing)} "
                 f"missing shot(s): {[i + 1 for i in still_missing]}. "
                 f"Available rejected clips: {len(fallback_pool)}; "
-                f"ranking errors: {ranking_errors[:3]}"
+                f"ranking errors: {ranking_errors[:3]}. "
+                "No clip was assigned without confirming its exact target species."
             )
 
     # Rebuild the result in exact slot order. Fallback clips are assigned
