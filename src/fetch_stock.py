@@ -1906,7 +1906,10 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     for _, _, candidate_path in pending.values():
                         candidate_path.unlink(missing_ok=True)
 
-                if not batch_candidates and checked_this_round >= max_qa_candidates_per_round:
+                # No more downloadable candidates remain in this round.
+                # Break here even below the cap, otherwise an exhausted
+                # iterator would leave the retry loop spinning forever.
+                if not batch_candidates:
                     break
 
         # Wikimedia Commons is a second provider, used only after all three
