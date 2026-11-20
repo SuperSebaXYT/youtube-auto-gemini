@@ -132,9 +132,9 @@ def _is_retryable_ai_error(exc) -> bool:
 def _send_message_with_retry(
     chat,
     prompt: str,
-    max_attempts: int = 5,
+    max_attempts: int = 1,
 ):
-    """Retry transient Gemini text model failures with backoff, jitter and Retry-After."""
+    """Send once; shared Gemini gateway owns pacing and 429 recovery."""
     for attempt in range(max_attempts):
         try:
             return chat.send_message(prompt)
