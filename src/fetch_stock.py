@@ -1853,11 +1853,23 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                                 break
 
                     if batch_candidates:
-                        batch_verdicts = _verify_clip_batch_matches_shot(
-                            [item["path"] for item in batch_candidates],
-                            animal=animal,
-                            strict_species=strict_species,
-                        )
+                        try:
+                            batch_verdicts = _verify_clip_batch_matches_shot(
+                                [item["path"] for item in batch_candidates],
+                                animal=animal,
+                                strict_species=strict_species,
+                            )
+                        except Exception as qa_exc:
+                            # API/model failures count as a failed QA attempt for this
+                            # candidate. Keep processing the next single candidate.
+                            batch_verdicts = [
+                                (False, f"Visual QA error: {qa_exc}")
+                                for _ in batch_candidates
+                            ]
+                            print(
+                                f"WARNING: Visual QA failed for shot {index + 1}; "
+                                f"candidate rejected for this attempt and retained as unverified: {qa_exc}"
+                            )
 
                         matching_candidates = []
                         for item, (qa_passed, qa_reason) in zip(batch_candidates, batch_verdicts):
