@@ -249,29 +249,40 @@ def _fresh_candidate(
         return None
 
     topic = str(candidate).strip().strip('"').strip("'").strip()
-
     if not topic:
         return None
-
     if "\n" in topic:
         topic = topic.splitlines()[0].strip()
 
+    # Research metadata must not hide a repeated premise from deduplication.
+    comparison_topic = topic
+    comparison_topic = re.sub(r"^\[ANIMAL:\s*.+?\]\s*", "", comparison_topic)
+    if comparison_topic.startswith("[WIKIPEDIA_EVIDENCE: "):
+        try:
+            _, consumed = json.JSONDecoder().raw_decode(
+                comparison_topic[len("[WIKIPEDIA_EVIDENCE: "):]
+            )
+            remainder = comparison_topic[len("[WIKIPEDIA_EVIDENCE: "):]
+            comparison_topic = remainder[consumed:].lstrip("] ").strip()
+        except (json.JSONDecodeError, ValueError):
+            return None
+
     used_topics = get_used_topics(channel_id)
     if source == "Winner Hunter":
-        normalized = _normalize_topic(topic)
+        normalized = _normalize_topic(comparison_topic)
         duplicate = any(
             normalized == _normalize_topic(old)
             or SequenceMatcher(None, normalized, _normalize_topic(old)).ratio() >= 0.94
             for old in used_topics
         )
     else:
-        duplicate = _looks_like_duplicate_topic(topic, used_topics)
+        duplicate = _looks_like_duplicate_topic(comparison_topic, used_topics)
 
     if duplicate:
-        print(f"{source} generated a duplicate topic; rejecting: {topic}")
+        print(f"{source} generated a duplicate topic; rejecting: {comparison_topic}")
         return None
 
-    print(f"{source} selected fresh topic: {topic}")
+    print(f"{source} selected fresh topic: {comparison_topic}")
     return topic
 
 
@@ -882,19 +893,25 @@ def generate_script(
                 if animal_match:
                     selected_animal = animal_match.group(1).strip()
                     topic = re.sub(r"^\[ANIMAL:\s*.+?\]\s*", "", topic).strip()
-                wiki_match = re.match(r"^\[WIKIPEDIA_EVIDENCE:\s*(\{.*?\})\]\s*", topic)
-                if wiki_match:
-                    wiki_data = json.loads(wiki_match.group(1))
+                wiki_prefix = "[WIKIPEDIA_EVIDENCE: "
+                if topic.startswith(wiki_prefix):
+                    raw_metadata = topic[len(wiki_prefix):]
+                    wiki_data, consumed = json.JSONDecoder().raw_decode(raw_metadata)
+                    remainder = raw_metadata[consumed:]
+                    if not remainder.startswith("] "):
+                        raise RuntimeError("Malformed Wikipedia evidence marker.")
                     wikipedia_research_context = (
                         f"Wikipedia article: {wiki_data.get('article_title', '')}\n"
                         f"Source URL: {wiki_data.get('article_url', '')}\n"
                         f"Verified evidence: {wiki_data.get('verified_evidence', '')}"
                     )
-                    topic = re.sub(r"^\[WIKIPEDIA_EVIDENCE:\s*\{.*?\}\]\s*", "", topic).strip()
+                    topic = remainder[2:].strip()
                 if channel_id == "cosmic_curious" and (not selected_animal or not wikipedia_research_context):
                     raise RuntimeError("Cosmic Curious topic is missing its selected species or verified Wikipedia evidence.")
         except Exception as e:
             print(f"WARNING: Winner Hunter selection failed ({e}).")
+            if channel_id == "cosmic_curious":
+                raise RuntimeError("Cosmic Curious topic selection failed Wikipedia evidence validation; publishing is blocked.") from e
 
     if not topic and channel_id != "cosmic_curious":
         try:
