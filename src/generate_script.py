@@ -560,197 +560,34 @@ def _generate_winner_inspired_topic(
     config: dict,
     is_short: bool,
 ) -> str | None:
-    """Choose one fresh topic from current Analytics, retrying invalid choices."""
-    if not WINNER_HUNTER_AVAILABLE:
-        print("Winner Hunter unavailable.")
+    """Discover animal curiosities, retrieve Wikipedia evidence, then select one."""
+    if not WINNER_HUNTER_AVAILABLE or not is_available():
+        print("Winner Hunter/Gemini unavailable; Wikipedia curiosity discovery cannot run.")
         return None
-    if not is_available():
-        print("Gemini text API unavailable; Winner Hunter cannot select a topic.")
-        return None
-
     try:
         winner_context = build_winner_context(channel_id)
         if not winner_context:
             print("Winner Hunter has no performance context.")
             return None
+        recent_animals = _get_recent_animals(channel_id)
+        used_topics = sorted(get_used_topics(channel_id), key=str.casefold)
+        from src.wikipedia_research import discover_wikipedia_evidence, choose_wikipedia_topic
+
+        print("Cosmic Curious: Gemini is discovering unusual animal curiosities...")
+        evidence = discover_wikipedia_evidence(winner_context, recent_animals, used_topics)
+        selected = choose_wikipedia_topic(evidence, winner_context, recent_animals, used_topics)
+
+        animal_record = f"{selected['animal']} ({selected['scientific_name']})"
+        metadata = json.dumps({
+            "article_title": selected["source_article_title"],
+            "article_url": selected["source_article_url"],
+            "verified_evidence": selected["verified_evidence"],
+        }, ensure_ascii=False)
+        topic = str(selected["topic"]).strip()
+        print(f"Wikipedia Research selected: {animal_record} | {topic} | source: {selected['source_article_title']}")
+        return f"[ANIMAL: {animal_record}] [WIKIPEDIA_EVIDENCE: {metadata}] {topic}"
     except Exception as e:
-        print(f"WARNING: Winner Hunter context failed ({e}).")
-        return None
-
-    used_topics = get_used_topics(channel_id)
-    used_sample = "\n".join(
-        f"- {topic}"
-        for topic in sorted(used_topics, key=str.casefold)[-120:]
-    )
-    used_normalized = [_normalize_topic(topic) for topic in used_topics]
-    rejected_candidates = []
-    rejected_animals = set()
-    content_length = "a YouTube Short" if is_short else "a YouTube video"
-    max_topic_attempts = 12
-    # This is the all-time exclusion history, not merely consecutive uploads.
-    recent_animals = _get_recent_animals(channel_id)
-    recent_animal_keys = {_normalize_animal(item) for item in recent_animals}
-    last_animal = recent_animals[-1] if recent_animals else ""
-
-    prompt = f"""
-You are the topic strategist for a faceless animal and wildlife channel.
-Choose EXACTLY ONE best fresh topic for {content_length}, using the latest
-channel Analytics below. Do not create a batch or a list.
-
-CHANNEL PERFORMANCE DATA:
-{winner_context}
-
-PREVIOUSLY USED TOPICS. Avoid exact repeats and near-identical premises.
-NEVER reuse an animal species, even when Analytics supports a genuinely different fact or angle:
-{used_sample}
-
-CRITICAL SPECIES ROTATION:
-All-time previously used species (never reuse any of them): {", ".join(recent_animals) or "not recorded"}.
-For this new video, choose a species not present anywhere in this history. Never repeat
-a species in any future video, even with a different fact, title, hook, or angle.
-Treat spelling variants, common-name variants, and scientific/common-name synonyms
-as the same species. If the list is empty, choose any real species.
-Return both the common species name and its valid scientific binomial.
-Use the scientific binomial as the permanent species identity, not a genus,
-family, or broad animal group.
-
-Use actual channel Analytics as the main evidence. Prioritize subjects,
-hooks and storytelling angles associated with the highest views and strongest
-view velocity. Never invent performance evidence.
-
-Aim for the strongest realistic chance of reaching 20,000,000 views within
-30 days. This is an aggressive target, not a promise. Optimize for global reach,
-an immediate visual hook, retention, shareability and broad appeal.
-
-Accuracy is mandatory. Choose a real, well-documented animal behavior or
-adaptation. Do not invent species, abilities, statistics or discoveries.
-No astronomy, space, NASA or unrelated science.
-
-Return exactly ONE line in this format, with no explanation:
-SCORE: <0-100> | ANIMAL: <common species name> | SCIENTIFIC: <Genus species> | TOPIC: <specific animal topic>
-"""
-
-    try:
-        client = get_client()
-
-        for attempt in range(1, max_topic_attempts + 1):
-            retry_note = ""
-            retry_sections = []
-            if rejected_candidates:
-                retry_sections.append(
-                    "DO NOT RETURN THESE REJECTED TOPICS OR NEAR-IDENTICAL VERSIONS:\n"
-                    + "\n".join(f"- {item}" for item in rejected_candidates[-10:])
-                )
-            if rejected_animals:
-                retry_sections.append(
-                    "DO NOT USE THESE REJECTED ANIMAL SPECIES IN THIS SELECTION CYCLE, "
-                    "EVEN WITH A DIFFERENT FACT OR TOPIC:\n"
-                    + "\n".join(f"- {item}" for item in sorted(rejected_animals, key=str.casefold))
-                )
-            if retry_sections:
-                retry_note = (
-                    "\n\nPREVIOUS ATTEMPTS WERE REJECTED. You MUST choose a different "
-                    "species and a genuinely different topic.\n"
-                    + "\n\n".join(retry_sections)
-                    + "\n\nChoose a real species not present in the recent history "
-                    "or rejected-species list. Do not fall back to Archerfish or any "
-                    "other previously rejected species."
-                )
-
-            response = _generate_with_token_budget(
-                client,
-                prompt + retry_note,
-                500,
-            )
-            lines = _parse_winner_candidate_lines(response.text)
-            if not lines:
-                print(
-                    "Winner Hunter returned an unrecognized response format: "
-                    + repr(str(response.text or "")[:350])
-                )
-            selected = None
-
-            for candidate_line in lines:
-                match = re.match(
-                    r"^SCORE:\s*(\d{1,3})\s*\|\s*"
-                    r"ANIMAL:\s*(.*?)\s*\|\s*"
-                    r"SCIENTIFIC:\s*([A-Z][a-z-]+\s+[a-z][a-z-]+)\s*\|\s*"
-                    r"TOPIC:\s*(.+)$",
-                    candidate_line,
-                    flags=re.IGNORECASE,
-                )
-                if not match:
-                    continue
-
-                score = max(0, min(100, int(match.group(1))))
-                animal = str(match.group(2) or "").strip()
-                scientific_name = str(match.group(3) or "").strip()
-                candidate = match.group(4).strip()
-                normalized = _normalize_topic(candidate)
-                if not candidate or not animal or not scientific_name:
-                    continue
-                # Persist both names so common-name variants resolve to the
-                # same scientific species on every future run.
-                animal_record = f"{animal} ({scientific_name})"
-                animal_key = _normalize_animal(animal_record)
-                if animal_key and animal_key in recent_animal_keys:
-                    print(
-                        f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
-                        f"rejected recently used animal species: {animal}"
-                    )
-                    rejected_candidates.append(candidate)
-                    rejected_animals.add(animal)
-                    continue
-
-                is_duplicate = any(
-                    normalized == old
-                    or SequenceMatcher(None, normalized, old).ratio() >= 0.94
-                    for old in used_normalized
-                ) or any(
-                    normalized == _normalize_topic(old)
-                    or SequenceMatcher(
-                        None, normalized, _normalize_topic(old)
-                    ).ratio() >= 0.94
-                    for old in rejected_candidates
-                )
-
-                if is_duplicate:
-                    print(
-                        f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
-                        f"rejected repeated topic: {candidate}"
-                    )
-                    rejected_candidates.append(candidate)
-                    rejected_animals.add(animal)
-                    continue
-
-                selected = (score, candidate, animal_record)
-                break
-
-            if selected:
-                score, candidate, animal_record = selected
-                print(
-                    f"Winner Hunter selected fresh topic "
-                    f"({score}/100) on attempt {attempt}/{max_topic_attempts}; "
-                    f"animal species: {animal_record}; topic: {candidate}"
-                )
-                # Return topic as usual; animal rotation is recorded only after
-                # the script successfully generates, so failed attempts don't
-                # consume the species slot.
-                return f"[ANIMAL: {animal_record}] {candidate}"
-
-            print(
-                f"Winner Hunter attempt {attempt}/{max_topic_attempts} "
-                "returned no valid unused topic."
-            )
-
-        print(
-            f"Winner Hunter stopped after {max_topic_attempts} unsuccessful "
-            "topic attempts. No topic was consumed; pipeline will stop safely."
-        )
-        return None
-
-    except Exception as e:
-        print(f"WARNING: Winner Hunter generation failed ({e}).")
+        print(f"WARNING: Wikipedia-first curiosity discovery failed ({e}).")
         return None
 
 def pick_next_topic(channel_id: str, config: dict) -> str:
@@ -843,6 +680,7 @@ def generate_with_freeinference(
     config: dict,
     length_seconds: int,
     language: str,
+    research_context: str = "",
 ) -> dict:
     client = get_client()
 
@@ -891,6 +729,9 @@ You are the lead writer for a faceless YouTube channel called
 NICHE: Animals and wildlife facts.
 TONE: Curious, surprising, energetic, punchy, conversational.
 TOPIC: {topic}
+
+VERIFIED WIKIPEDIA RESEARCH (the factual basis for this script):
+{research_context or "No research context supplied. Do not add specific factual claims beyond the verified topic."}
 
 Write a high-retention voiceover about this exact topic.
 
@@ -1019,6 +860,7 @@ def generate_script(
     topic = forced_topic.strip() if forced_topic else None
     recap_topic = False
     selected_animal = ""
+    wikipedia_research_context = ""
 
     if not topic and is_short:
         topic = get_recap_topic_for_short(channel_id)
@@ -1040,6 +882,17 @@ def generate_script(
                 if animal_match:
                     selected_animal = animal_match.group(1).strip()
                     topic = re.sub(r"^\[ANIMAL:\s*.+?\]\s*", "", topic).strip()
+                wiki_match = re.match(r"^\[WIKIPEDIA_EVIDENCE:\s*(\{.*?\})\]\s*", topic)
+                if wiki_match:
+                    wiki_data = json.loads(wiki_match.group(1))
+                    wikipedia_research_context = (
+                        f"Wikipedia article: {wiki_data.get('article_title', '')}\n"
+                        f"Source URL: {wiki_data.get('article_url', '')}\n"
+                        f"Verified evidence: {wiki_data.get('verified_evidence', '')}"
+                    )
+                    topic = re.sub(r"^\[WIKIPEDIA_EVIDENCE:\s*\{.*?\}\]\s*", "", topic).strip()
+                if channel_id == "cosmic_curious" and (not selected_animal or not wikipedia_research_context):
+                    raise RuntimeError("Cosmic Curious topic is missing its selected species or verified Wikipedia evidence.")
         except Exception as e:
             print(f"WARNING: Winner Hunter selection failed ({e}).")
 
@@ -1078,7 +931,8 @@ def generate_script(
     if is_available():
         try:
             generated = generate_with_freeinference(
-                topic, config, length, language
+                topic, config, length, language,
+                research_context=wikipedia_research_context,
             )
         except Exception as e:
             print(
