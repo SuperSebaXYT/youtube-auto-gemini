@@ -78,7 +78,7 @@ def _commons_license_allowed(metadata: dict) -> bool:
     return "creativecommons.org/licenses/by/" in license_url
 
 
-def _search_wikimedia_videos(animal: str, limit: int = 30) -> list[dict]:
+def _search_wikimedia_videos(animal: str, limit: int = 30, search_term: str = "") -> list[dict]:
     """Find Commons video files for one exact animal and retain only approved licenses."""
     from urllib.parse import urlparse
 
@@ -91,7 +91,7 @@ def _search_wikimedia_videos(animal: str, limit: int = 30) -> list[dict]:
         "format": "json",
         "formatversion": 2,
         "generator": "search",
-        "gsrsearch": f'filetype:video "{animal}"',
+        "gsrsearch": f'filetype:video "{animal}" {str(search_term or "").replace(animal, "").strip()}'.strip(),
         "gsrnamespace": 6,
         "gsrlimit": max(1, min(int(limit), 50)),
         "prop": "imageinfo",
@@ -1426,11 +1426,205 @@ Return one integer from 0 to 100 and nothing else.
         return int(match.group(1)), raw[:160]
 
 
+
+
+def _fetch_commons_clips_for_shots(
+    shots: list,
+    out_dir: str,
+    orientation: str = "portrait",
+) -> list:
+    """Source Cosmic Curious footage exclusively from Wikimedia Commons."""
+    if not shots:
+        raise RuntimeError("Visual Director returned an empty shot list.")
+
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    source_credits_by_slot = {}
+    used_video_ids = set()
+    ordered_downloads = []
+
+    for index, shot in enumerate(shots):
+        if not isinstance(shot, dict):
+            raise RuntimeError(f"Visual shot {index + 1} is not a JSON object.")
+
+        animal = str(shot.get("animal", "")).strip()
+        if not animal or animal.lower() == "wild animal":
+            raise RuntimeError(
+                f"Visual shot {index + 1} has no exact target species. "
+                "Wikimedia Commons sourcing requires a named animal."
+            )
+
+        destination = out_path / f"clip_{index:02d}.mp4"
+        if destination.exists() and destination.stat().st_size > 10000:
+            ordered_downloads.append(str(destination))
+            print(
+                f"Wikimedia Commons: retaining existing verified clip "
+                f"for shot {index + 1} ({animal})."
+            )
+            continue
+
+        destination.unlink(missing_ok=True)
+        rejected = []
+        checked_ids = set()
+        accepted = False
+        search_terms = (
+            animal,
+            f"{animal} wildlife",
+            f"{animal} habitat",
+        )
+
+        for retry_round, search_term in enumerate(search_terms, start=1):
+            try:
+                candidates = _search_wikimedia_videos(
+                    animal,
+                    limit=5,
+                    search_term=search_term,
+                )
+            except Exception as exc:
+                print(
+                    f"WARNING: Wikimedia Commons search failed for "
+                    f"shot {index + 1}, round {retry_round}/3: {exc}"
+                )
+                continue
+
+            new_candidates = [
+                candidate for candidate in candidates
+                if candidate.get("video_id")
+                and candidate["video_id"] not in checked_ids
+                and candidate["video_id"] not in used_video_ids
+            ]
+            print(
+                f"Wikimedia shot {index + 1} search progress: "
+                f"round={retry_round}/3; search={search_term!r}; "
+                f"new_candidates={len(new_candidates)}"
+            )
+
+            for candidate_index, candidate in enumerate(new_candidates, start=1):
+                video_id = candidate["video_id"]
+                checked_ids.add(video_id)
+                temp_path = out_path / (
+                    f".commons_candidate_{index:02d}_{retry_round}_{candidate_index}.mp4"
+                )
+                temp_path.unlink(missing_ok=True)
+
+                if not _download_wikimedia_video(candidate, temp_path):
+                    continue
+
+                try:
+                    matched, reason = _verify_clip_matches_shot(
+                        temp_path,
+                        animal=animal,
+                        action=str(shot.get("action", "")),
+                        sentence=str(shot.get("sentence", "")),
+                        visual=str(shot.get("visual", "")),
+                        strict_species=True,
+                    )
+                except Exception as exc:
+                    reason = f"Visual QA error: {exc}"
+                    matched = False
+
+                if matched:
+                    temp_path.replace(destination)
+                    used_video_ids.add(video_id)
+                    source_credits_by_slot[index] = candidate["credit"]
+                    accepted = True
+                    print(
+                        f"Visual QA MATCH for Wikimedia clip, shot {index + 1}: "
+                        f"{candidate.get('title')!r}; {reason}"
+                    )
+                    break
+
+                rejected.append({
+                    "path": temp_path,
+                    "video_id": video_id,
+                    "candidate": candidate,
+                    "reason": reason,
+                })
+                print(
+                    f"Visual QA REJECTED Wikimedia candidate for shot "
+                    f"{index + 1}: {candidate.get('title')!r}; {reason}. "
+                    "Retained for the final same-species comparison."
+                )
+
+            if accepted:
+                break
+
+        if not accepted:
+            # Reuse only Commons clips already downloaded and rejected by
+            # Visual QA. Never fetch from another provider or change species.
+            ranked = []
+            for item in rejected:
+                if str(item["reason"]).startswith("Visual QA error:"):
+                    continue
+                try:
+                    score, reason = _score_clip_for_shot(item["path"], animal)
+                except Exception as exc:
+                    print(
+                        f"Wikimedia rejected-clip ranking failed for "
+                        f"{item['video_id']}: {exc}"
+                    )
+                    continue
+                if score >= 70:
+                    ranked.append((score, item, reason))
+
+            if ranked:
+                score, selected, reason = max(ranked, key=lambda value: value[0])
+                selected["path"].replace(destination)
+                used_video_ids.add(selected["video_id"])
+                source_credits_by_slot[index] = selected["candidate"]["credit"]
+                accepted = True
+                print(
+                    f"Wikimedia same-species rejected-pool selection for shot "
+                    f"{index + 1}: score={score}/100; {reason}"
+                )
+
+        for item in rejected:
+            item["path"].unlink(missing_ok=True)
+
+        if not accepted:
+            raise RuntimeError(
+                f"Wikimedia Commons could not provide a Visual-QA-verified "
+                f"{animal} clip for shot {index + 1} after 3 search rounds. "
+                "No other footage provider or unrelated species will be used."
+            )
+
+        ordered_downloads.append(str(destination))
+
+    credits = []
+    for slot_index, credit in sorted(source_credits_by_slot.items()):
+        record = dict(credit)
+        record["clip_slot"] = slot_index + 1
+        record["clip_file"] = f"clip_{slot_index:02d}.mp4"
+        credits.append(record)
+
+    credits_path = out_path / "source_credits.json"
+    temporary_credits_path = credits_path.with_suffix(".json.tmp")
+    temporary_credits_path.write_text(
+        json.dumps(credits, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_credits_path.replace(credits_path)
+
+    if len(ordered_downloads) != len(shots):
+        raise RuntimeError(
+            f"Wikimedia Commons returned {len(ordered_downloads)}/{len(shots)} clips."
+        )
+
+    print(
+        f"Cosmic Curious Wikimedia-only sourcing complete: "
+        f"{len(ordered_downloads)}/{len(shots)} verified clips."
+    )
+    return ordered_downloads
+
+
+
 def fetch_clips_for_shots(
     shots: list,
     out_dir: str,
     orientation: str = "portrait",
 ) -> list:
+    return _fetch_commons_clips_for_shots(shots, out_dir, orientation)
+
     """
     Fetch one Pexels clip per narration shot.
 
