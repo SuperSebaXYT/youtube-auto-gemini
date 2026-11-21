@@ -107,10 +107,6 @@ def _paced_completion(client, kwargs):
         # move to the next configured fallback; never sleep and retry the same model.
         for attempt in range(1):
             with _REQUEST_LOCK:
-                last_request = _LAST_REQUEST_AT_BY_MODEL.get(model, 0.0)
-                wait = interval - (time.monotonic() - last_request)
-                if wait > 0:
-                    time.sleep(wait)
                 _LAST_REQUEST_AT_BY_MODEL[model] = time.monotonic()
                 try:
                     response = client.chat.completions.create(**model_kwargs)
@@ -353,7 +349,7 @@ def generate_vision(prompt: str, images: list[tuple[bytes, str]], model: str | N
     if not images:
         raise RuntimeError("Visual verification requires at least one image.")
     return _complete(
-        prompt, model=VISION_MODEL, max_output_tokens=1200, images=images
+        prompt, model=VISION_MODEL, max_output_tokens=20, images=images
     )
 
 
