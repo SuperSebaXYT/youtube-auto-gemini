@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import urlencode
 import requests
 
 from src.freeinference_client import generate as gemini_generate
@@ -197,17 +196,14 @@ species overview. Do not exaggerate. Return JSON only:
                 "source_article_url", "verified_evidence")
     if any(not str(selected.get(key) or "").strip() for key in required):
         raise ValueError("Gemini selected a topic without complete Wikipedia evidence metadata.")
-    allowed = {
-        (x["animal"].casefold(), x["scientific_name"].casefold(),
-         x["article_title"], x["article_url"])
-        for x in evidence
-    }
-    identity = (
-        str(selected["animal"]).casefold(),
-        str(selected["scientific_name"]).casefold(),
-        str(selected["source_article_title"]),
-        str(selected["source_article_url"]),
-    )
-    if identity not in allowed:
-        raise ValueError("Gemini selected a species or source outside the verified Wikipedia candidates.")
+    match = next((
+        item for item in evidence
+        if item["animal"].casefold() == str(selected["animal"]).casefold()
+        and item["scientific_name"].casefold() == str(selected["scientific_name"]).casefold()
+        and item["article_title"] == str(selected["source_article_title"])
+    ), None)
+    if match is None:
+        raise ValueError("Gemini selected a species or article outside the verified Wikipedia candidates.")
+    # Use the URL retrieved from Wikipedia ourselves, never a model-invented URL.
+    selected["source_article_url"] = match["article_url"]
     return selected
