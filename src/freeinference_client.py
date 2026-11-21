@@ -89,6 +89,22 @@ def _is_model_unavailable_error(exc) -> bool:
     )
 
 
+def _is_transient_api_error(exc) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        code = None
+    if code in (408, 429, 500, 502, 503, 504):
+        return True
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    return any(marker in name or marker in message for marker in (
+        "timeout", "timed out", "connection error", "connection reset",
+        "temporarily unavailable", "service unavailable",
+    ))
+
+
 def _paced_completion(client, kwargs):
     """Pace each model independently and fail over on quota/model availability errors."""
     global _LAST_REQUEST_AT_BY_MODEL
@@ -130,6 +146,13 @@ def _paced_completion(client, kwargs):
                         failures.append(f"{model}: model unavailable")
                         print(f"Gemini model {model} unavailable; trying next model.")
                         break
+                    if _is_transient_api_error(exc):
+                        failures.append(f"{model}: transient API error ({type(exc).__name__})")
+                        print(
+                            f"Gemini transient error on {model}; immediately "
+                            "trying the next fallback model."
+                        )
+                        break
                     raise
 
     details = "; ".join(failures)
@@ -160,7 +183,7 @@ def _client():
         raise RuntimeError(
             "The openai package is required. Install dependencies from requirements.txt."
         ) from exc
-    return OpenAI(api_key=_api_key(), base_url=BASE_URL, timeout=30.0, max_retries=0)
+    return OpenAI(api_key=_api_key(), base_url=BASE_URL, timeout=15.0, max_retries=0)
 
 
 def _record_usage(model: str, usage) -> None:
