@@ -103,8 +103,9 @@ def _paced_completion(client, kwargs):
         model_kwargs["model"] = model
         interval = MODEL_REQUEST_INTERVALS.get(model, 13.0)
 
-        # Two attempts per model: a short quota cooldown, then move to the next model.
-        for attempt in range(2):
+        # Exactly one attempt per model. Quota/rate-limit failures immediately
+        # move to the next configured fallback; never sleep and retry the same model.
+        for attempt in range(1):
             with _REQUEST_LOCK:
                 last_request = _LAST_REQUEST_AT_BY_MODEL.get(model, 0.0)
                 wait = interval - (time.monotonic() - last_request)
@@ -122,17 +123,11 @@ def _paced_completion(client, kwargs):
                     if _is_rate_limit_error(exc):
                         failures.append(f"{model}: HTTP 429")
                         if attempt == 0:
-                            cooldown = _retry_after_seconds(exc)
-                            if cooldown is None:
-                                cooldown = 30.0
-                            cooldown = max(cooldown, interval)
                             print(
-                                f"Gemini rate limit on {model}; waiting "
-                                f"{cooldown:.0f}s before retry."
+                                f"Gemini rate limit on {model}; immediately "
+                                "trying the next fallback model."
                             )
-                            time.sleep(cooldown)
-                            _LAST_REQUEST_AT_BY_MODEL[model] = time.monotonic()
-                            continue
+                            break
                         print(f"Gemini quota exhausted for {model}; trying next model.")
                         break
                     if _is_model_unavailable_error(exc):
@@ -169,7 +164,7 @@ def _client():
         raise RuntimeError(
             "The openai package is required. Install dependencies from requirements.txt."
         ) from exc
-    return OpenAI(api_key=_api_key(), base_url=BASE_URL, timeout=120.0, max_retries=0)
+    return OpenAI(api_key=_api_key(), base_url=BASE_URL, timeout=30.0, max_retries=0)
 
 
 def _record_usage(model: str, usage) -> None:
