@@ -1461,9 +1461,11 @@ def fetch_clips_for_shots(
     # Search a bounded first page for a small set of species-specific queries.
     # The old unbounded pagination multiplied API calls for every shot.
     # Each slot searches indefinitely until Visual QA accepts a clip.
-    pexels_per_page = 80
-    max_queries_per_round = 8
-    max_parallel_searches = 3
+    # One Pexels result per request, two requests per shot per round.
+    # Search sequentially to avoid bursts that trigger HTTP 429.
+    pexels_per_page = 1
+    max_queries_per_round = 2
+    max_parallel_searches = 1
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1551,12 +1553,9 @@ def fetch_clips_for_shots(
                         f"{animal} macro",
                     ],
                 )
+                # Keep the original shot query, then use at most one fresh
+                # Query Brain phrase in this round. No extra alias fan-out.
                 search_modes = [(query, False)]
-                search_modes.extend(
-                    (candidate_query, False)
-                    for candidate_query in aliases[:2]
-                    if candidate_query.strip().lower() != query.lower()
-                )
             else:
                 # The final 5 shots deliberately use varied wildlife footage.
                 # Each retry asks Pexels for fresh broad wildlife results.
@@ -1584,7 +1583,7 @@ TARGET ANIMAL: {animal}
 SHOT DESCRIPTION: {visual or "not provided"}
 NARRATION CONTEXT: {sentence or action or "not provided"}
 ORIGINAL SEARCH QUERY: {query}
-Generate 5 distinct, natural English Pexels VIDEO queries. Use varied
+Generate 2 distinct, natural English Pexels VIDEO queries. Use varied
 recognizable appearance, camera framing and natural habitat descriptions.
 EVERY query must explicitly contain "{animal}" or an accepted scientific/common
 name. Never omit or replace the target species. Do not invent traits or include
@@ -1622,7 +1621,7 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                     ):
                         seen_ai_queries.add(normalized_candidate)
                         generated_queries.append(candidate_query[:100])
-                    if len(generated_queries) >= 5:
+                    if len(generated_queries) >= 2:
                         break
 
                 for candidate_query in generated_queries:
