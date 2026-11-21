@@ -1165,13 +1165,13 @@ def _verify_clip_batch_matches_shot(
     animal: str,
     strict_species: bool = True,
 ) -> list[tuple[bool, str]]:
-    """Verify up to three clips for the same shot in one vision request."""
+    """Verify exactly one candidate clip for a shot in a vision request."""
     from src.freeinference_client import generate_vision, is_vision_available
 
     if not clip_paths:
         return []
-    if len(clip_paths) > 3:
-        raise ValueError("Visual QA batches may contain at most three clips.")
+    if len(clip_paths) > 1:
+        raise ValueError("Visual QA may receive only one candidate clip per request.")
     if not is_vision_available():
         raise RuntimeError("GEMINI_API_KEY is required for Cosmic Curious visual verification.")
 
@@ -1191,25 +1191,22 @@ def _verify_clip_batch_matches_shot(
             "TARGET ANIMAL: any recognizable real wild animal. Reject humans, objects, food, toys, drawings, models, and scenery without a clearly visible animal."
         )
         prompt = f"""
-You are checking {len(clip_paths)} separate wildlife video clips for the SAME shot.
+You are checking ONE wildlife video clip for the shot.
 {identity_rule}
 
-The images are grouped by clip in order. Each clip has exactly three frames:
-clip 1 = images 1-3, clip 2 = images 4-6, clip 3 = images 7-9.
-If fewer than three clips are supplied, only evaluate the listed groups.
-For EACH clip independently, decide whether the required animal is recognizable,
-reasonably clear/prominent, and shown in usable wildlife footage.
+The clip has exactly three frames from the same video, in order.
+Decide whether the required animal is recognizable, reasonably clear/prominent,
+and shown in usable wildlife footage.
 Ignore narration, action, pose, habitat, camera angle, and background.
 Do not demand rare behavior or impossible species-level details.
 Do not let one clip affect another clip's verdict.
 
-Return exactly one line per supplied clip, in this format:
+Return exactly one line in this format:
 1 MATCH
-2 NO_MATCH
-3 MATCH
-Use only MATCH or NO_MATCH after each number. No JSON or explanation.
+or
+1 NO_MATCH No JSON or explanation.
 """
-        max_attempts = 2
+        max_attempts = 1
         last_response = ""
         for attempt in range(1, max_attempts + 1):
             try:
@@ -1782,13 +1779,13 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 f"Per-query counts: {search_result_counts}"
             )
 
-            # Process multiple batches per search round. The old implementation
-            # downloaded only the first three candidates, then abandoned the
-            # remaining hundreds of search results even when all three failed QA.
+            # One downloaded clip is sent to Visual QA at a time. Each of the
+            # three search rounds gets exactly one candidate; rejected clips are
+            # retained for the shared fallback pool instead of endless retries.
             from concurrent.futures import FIRST_COMPLETED, wait
 
-            batch_size = 3
-            max_qa_candidates_per_round = 12
+            batch_size = 1
+            max_qa_candidates_per_round = 1
             candidate_iter = iter(ranked)
             checked_this_round = 0
 
