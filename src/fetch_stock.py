@@ -192,8 +192,8 @@ def _search_wikimedia_videos(animal: str, limit: int = 30, search_term: str = ""
 
 
 def _download_wikimedia_video(candidate: dict, clip_path: Path) -> bool:
-    """Download one Commons original with a strict host and file-size limit."""
-    from urllib.parse import urlparse
+    """Download one Commons original, with bounded retries for temporary HTTP errors."""
+    from urllib.parse import urlparse, urlunparse
 
     media_url = str(candidate.get("media_url") or "").strip()
     parsed = urlparse(media_url)
@@ -203,37 +203,84 @@ def _download_wikimedia_video(candidate: dict, clip_path: Path) -> bool:
     ):
         return False
 
+    # Commons URLs may include analytics-only utm_* query parameters. They are not
+    # required for file downloads and are removed to avoid sending unnecessary data.
+    clean_query = "&".join(
+        part for part in parsed.query.split("&")
+        if part and not part.lower().startswith("utm_")
+    )
+    media_url = urlunparse(parsed._replace(query=clean_query, fragment=""))
+
+    partial_path = clip_path.with_suffix(clip_path.suffix + ".part")
+    max_attempts = 3
     total_bytes = 0
-    try:
-        with requests.get(
-            media_url,
-            headers={"User-Agent": COMMONS_USER_AGENT},
-            stream=True,
-            timeout=(20, 120),
-        ) as response:
-            response.raise_for_status()
-            content_length = response.headers.get("Content-Length")
-            if content_length:
-                try:
-                    if int(content_length) > COMMONS_MAX_DOWNLOAD_BYTES:
-                        print("Wikimedia Commons: skipped oversized original video.")
-                        return False
-                except ValueError:
-                    pass
 
-            with open(clip_path, "wb") as output:
-                for chunk in response.iter_content(chunk_size=1024 * 256):
-                    if not chunk:
+    for attempt in range(1, max_attempts + 1):
+        total_bytes = 0
+        try:
+            with requests.get(
+                media_url,
+                headers={
+                    "User-Agent": "CosmicCurious/1.0 (wildlife video sourcing; https://github.com/SuperSebaXYT/youtube-auto-gemini)",
+                    "Accept": "*/*",
+                },
+                stream=True,
+                timeout=(20, 120),
+            ) as response:
+                if response.status_code == 429 or response.status_code in (500, 502, 503, 504):
+                    retry_after = response.headers.get("Retry-After", "")
+                    try:
+                        delay = min(60, max(1, int(retry_after)))
+                    except (TypeError, ValueError):
+                        delay = min(20, 3 * (2 ** (attempt - 1)))
+                    if attempt < max_attempts:
+                        print(
+                            f"Wikimedia Commons: HTTP {response.status_code}; "
+                            f"retry {attempt}/{max_attempts - 1} after {delay}s."
+                        )
+                        time.sleep(delay)
                         continue
-                    total_bytes += len(chunk)
-                    if total_bytes > COMMONS_MAX_DOWNLOAD_BYTES:
-                        raise RuntimeError("Commons video exceeds the 250 MB safety limit.")
-                    output.write(chunk)
+                response.raise_for_status()
 
-        if clip_path.exists() and clip_path.stat().st_size > 10000:
-            return True
-    except Exception as exc:
-        print(f"WARNING: Wikimedia Commons video download failed ({exc}).")
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        if int(content_length) > COMMONS_MAX_DOWNLOAD_BYTES:
+                            print("Wikimedia Commons: skipped oversized original video.")
+                            return False
+                    except ValueError:
+                        pass
+
+                with open(partial_path, "wb") as output:
+                    for chunk in response.iter_content(chunk_size=1024 * 256):
+                        if not chunk:
+                            continue
+                        total_bytes += len(chunk)
+                        if total_bytes > COMMONS_MAX_DOWNLOAD_BYTES:
+                            raise RuntimeError("Commons video exceeds the 250 MB safety limit.")
+                        output.write(chunk)
+
+            if partial_path.exists() and partial_path.stat().st_size > 10000:
+                partial_path.replace(clip_path)
+                return True
+            raise RuntimeError("Downloaded Commons video was empty or too small.")
+
+        except (requests.RequestException, OSError, RuntimeError) as exc:
+            if attempt < max_attempts:
+                delay = min(20, 3 * (2 ** (attempt - 1)))
+                print(
+                    f"Wikimedia Commons download error (attempt {attempt}/{max_attempts}): "
+                    f"{exc}; retrying after {delay}s."
+                )
+                time.sleep(delay)
+            else:
+                print(f"WARNING: Wikimedia Commons video download failed after {max_attempts} attempts ({exc}).")
+
+        finally:
+            try:
+                partial_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     try:
         clip_path.unlink(missing_ok=True)
