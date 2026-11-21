@@ -1921,86 +1921,9 @@ Return exactly 5 queries, one per line, no numbering or explanations.
                 if not batch_candidates:
                     break
 
-        # Wikimedia Commons is a second provider, used only after all three
-        # Pexels search rounds fail to produce a verified clip for this slot.
-        # Every Commons download goes through the SAME Qwen Visual QA gate.
-        if accepted_path is None:
-            try:
-                commons_results = _search_wikimedia_videos(animal, limit=30)
-            except Exception as exc:
-                commons_results = []
-                print(
-                    f"WARNING: Wikimedia Commons search failed for {animal!r}: {exc}"
-                )
-
-            commons_batch = []
-            from urllib.parse import urlparse
-            for commons_candidate in commons_results:
-                commons_id = commons_candidate.get("video_id")
-                if not commons_id or commons_id in commons_used_ids:
-                    continue
-
-                media_extension = Path(
-                    urlparse(commons_candidate["media_url"]).path
-                ).suffix.lower()
-                if media_extension not in COMMONS_VIDEO_EXTENSIONS:
-                    media_extension = ".video"
-
-                candidate_path = out_path / (
-                    f"commons_candidate_{index:02d}_{len(commons_batch) + 1:02d}"
-                    f"{media_extension}"
-                )
-                if _download_wikimedia_video(commons_candidate, candidate_path):
-                    commons_used_ids.add(commons_id)
-                    commons_batch.append({
-                        "video_id": commons_id,
-                        "candidate": commons_candidate,
-                        "path": candidate_path,
-                    })
-                if len(commons_batch) >= 3:
-                    break
-
-            if commons_batch:
-                commons_verdicts = _verify_clip_batch_matches_shot(
-                    [item["path"] for item in commons_batch],
-                    animal=animal,
-                    strict_species=True,
-                )
-                commons_matches = []
-                for item, (qa_passed, qa_reason) in zip(
-                    commons_batch, commons_verdicts
-                ):
-                    if qa_passed:
-                        commons_matches.append(item)
-                        print(
-                            f"Wikimedia Visual QA MATCH for shot {index + 1}: "
-                            f"{item['candidate']['title']}."
-                        )
-                    else:
-                        rejected_candidates.append({
-                            "path": item["path"],
-                            "video_id": item["video_id"],
-                            "query": f"Wikimedia Commons: {animal}",
-                            "round": 4,
-                            "qa_reason": qa_reason,
-                            "source_credit": item["candidate"]["credit"],
-                        })
-                        print(
-                            f"Wikimedia Visual QA REJECTED for shot {index + 1}: "
-                            f"{item['candidate']['title']}; retained for fallback ranking."
-                        )
-
-                if commons_matches:
-                    selected_commons = commons_matches[0]
-                    accepted_path = out_path / f"clip_{index:02d}.mp4"
-                    selected_commons["path"].replace(accepted_path)
-                    source_credits_by_slot[index] = selected_commons["candidate"]["credit"]
-                    for item in commons_matches[1:]:
-                        item["path"].unlink(missing_ok=True)
-                    print(
-                        f"Downloaded verified Wikimedia Commons clip for shot "
-                        f"{index + 1}; Qwen Visual QA accepted."
-                    )
+        # Stop after exactly three Pexels candidate attempts. The rejected pool
+        # is used immediately for global best-fit selection; no extra provider
+        # downloads or QA attempts are allowed beyond this point.
 
         if accepted_path is not None:
             for item in rejected_candidates:
