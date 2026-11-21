@@ -7,6 +7,7 @@ from src.fetch_stock import (
     _commons_metadata_value,
     _search_wikimedia_videos,
     _download_wikimedia_video,
+    fetch_clips_for_shots,
 )
 
 
@@ -154,3 +155,20 @@ class WikimediaLicenseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CosmicWikimediaOnlyRoutingTests(unittest.TestCase):
+    def test_cosmic_shot_fetcher_routes_to_commons_without_pexels_key(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with patch(
+                "src.fetch_stock._fetch_commons_clips_for_shots",
+                return_value=["clip_00.mp4"],
+            ) as commons_fetch:
+                result = fetch_clips_for_shots(
+                    [{"animal": "Leopard Seal"}],
+                    "output/clips",
+                    orientation="portrait",
+                )
+
+        self.assertEqual(result, ["clip_00.mp4"])
+        commons_fetch.assert_called_once()
