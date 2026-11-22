@@ -1480,15 +1480,20 @@ def _fetch_commons_clips_for_shots(
     out_dir: str,
     orientation: str = "portrait",
 ) -> list:
-    """Source Cosmic Curious footage exclusively from Wikimedia Commons."""
+    """Source exact-species Commons footage and pool rejected clips across all shots."""
     if not shots:
         raise RuntimeError("Visual Director returned an empty shot list.")
 
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    source_credits_by_slot = {}
+
+    # The rejected pool belongs to the whole video, not to an individual shot.
+    # Keep every downloaded rejection until all missing slots have been filled.
+    rejected_pool = []
+    processed_video_ids = set()
     used_video_ids = set()
-    ordered_downloads = []
+    source_credits_by_slot = {}
+    ordered_downloads = [None] * len(shots)
 
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -1503,29 +1508,20 @@ def _fetch_commons_clips_for_shots(
 
         destination = out_path / f"clip_{index:02d}.mp4"
         if destination.exists() and destination.stat().st_size > 10000:
-            ordered_downloads.append(str(destination))
+            ordered_downloads[index] = str(destination)
             print(
                 f"Wikimedia Commons: retaining existing verified clip "
                 f"for shot {index + 1} ({animal})."
             )
             continue
-
         destination.unlink(missing_ok=True)
-        rejected = []
-        checked_ids = set()
-        accepted = False
-        search_terms = (
-            animal,
-            f"{animal} wildlife",
-            f"{animal} habitat",
-        )
 
+        accepted = False
+        search_terms = (animal, f"{animal} wildlife", f"{animal} habitat")
         for retry_round, search_term in enumerate(search_terms, start=1):
             try:
                 candidates = _search_wikimedia_videos(
-                    animal,
-                    limit=5,
-                    search_term=search_term,
+                    animal, limit=5, search_term=search_term
                 )
             except Exception as exc:
                 print(
@@ -1537,7 +1533,7 @@ def _fetch_commons_clips_for_shots(
             new_candidates = [
                 candidate for candidate in candidates
                 if candidate.get("video_id")
-                and candidate["video_id"] not in checked_ids
+                and candidate["video_id"] not in processed_video_ids
                 and candidate["video_id"] not in used_video_ids
             ]
             print(
@@ -1548,12 +1544,11 @@ def _fetch_commons_clips_for_shots(
 
             for candidate_index, candidate in enumerate(new_candidates, start=1):
                 video_id = candidate["video_id"]
-                checked_ids.add(video_id)
+                processed_video_ids.add(video_id)
                 temp_path = out_path / (
                     f".commons_candidate_{index:02d}_{retry_round}_{candidate_index}.mp4"
                 )
                 temp_path.unlink(missing_ok=True)
-
                 if not _download_wikimedia_video(candidate, temp_path):
                     continue
 
@@ -1574,6 +1569,7 @@ def _fetch_commons_clips_for_shots(
                     temp_path.replace(destination)
                     used_video_ids.add(video_id)
                     source_credits_by_slot[index] = candidate["credit"]
+                    ordered_downloads[index] = str(destination)
                     accepted = True
                     print(
                         f"Visual QA MATCH for Wikimedia clip, shot {index + 1}: "
@@ -1581,61 +1577,88 @@ def _fetch_commons_clips_for_shots(
                     )
                     break
 
-                rejected.append({
+                rejected_pool.append({
                     "path": temp_path,
                     "video_id": video_id,
                     "candidate": candidate,
+                    "animal": animal,
                     "reason": reason,
                 })
                 print(
                     f"Visual QA REJECTED Wikimedia candidate for shot "
                     f"{index + 1}: {candidate.get('title')!r}; {reason}. "
-                    "Retained for the final same-species comparison."
+                    f"Retained in shared rejected pool "
+                    f"({len(rejected_pool)} clip(s))."
                 )
 
             if accepted:
                 break
 
-        if not accepted:
-            # Reuse only Commons clips already downloaded and rejected by
-            # Visual QA. Never fetch from another provider or change species.
-            ranked = []
-            for item in rejected:
-                if str(item["reason"]).startswith("Visual QA error:"):
-                    continue
-                try:
-                    score, reason = _score_clip_for_shot(item["path"], animal)
-                except Exception as exc:
-                    print(
-                        f"Wikimedia rejected-clip ranking failed for "
-                        f"{item['video_id']}: {exc}"
-                    )
-                    continue
-                if score >= 70:
-                    ranked.append((score, item, reason))
+    # Only after every shot has had its three search attempts do we use the
+    # shared rejected pool to fill the still-empty slots. Each source clip is
+    # assigned at most once. Ranking ignores narration/action and checks only
+    # exact target species, visibility and usable footage quality.
+    missing_slots = [
+        index for index, clip_path in enumerate(ordered_downloads)
+        if clip_path is None
+    ]
+    for index in missing_slots:
+        shot = shots[index]
+        animal = str(shot.get("animal", "")).strip()
+        ranked = []
 
-            if ranked:
-                score, selected, reason = max(ranked, key=lambda value: value[0])
-                selected["path"].replace(destination)
-                used_video_ids.add(selected["video_id"])
-                source_credits_by_slot[index] = selected["candidate"]["credit"]
-                accepted = True
+        for item in rejected_pool:
+            if item["video_id"] in used_video_ids:
+                continue
+            if not item["path"].exists():
+                continue
+            try:
+                score, reason = _score_clip_for_shot(item["path"], animal)
+            except Exception as exc:
                 print(
-                    f"Wikimedia same-species rejected-pool selection for shot "
-                    f"{index + 1}: score={score}/100; {reason}"
+                    f"Wikimedia rejected-pool ranking failed for "
+                    f"{item['video_id']} against {animal}: {exc}"
                 )
+                continue
+            if score >= 70:
+                ranked.append((score, item, reason))
 
-        for item in rejected:
-            item["path"].unlink(missing_ok=True)
-
-        if not accepted:
-            raise RuntimeError(
-                f"Wikimedia Commons could not provide a Visual-QA-verified "
-                f"{animal} clip for shot {index + 1} after 3 search rounds. "
-                "No other footage provider or unrelated species will be used."
+        if not ranked:
+            print(
+                f"Wikimedia shared rejected pool has no eligible clip for "
+                f"shot {index + 1} ({animal}); "
+                f"{len(rejected_pool)} rejected clip(s) remain."
             )
+            continue
 
-        ordered_downloads.append(str(destination))
+        score, selected, reason = max(ranked, key=lambda value: value[0])
+        destination = out_path / f"clip_{index:02d}.mp4"
+        selected["path"].replace(destination)
+        used_video_ids.add(selected["video_id"])
+        source_credits_by_slot[index] = selected["candidate"]["credit"]
+        ordered_downloads[index] = str(destination)
+        print(
+            f"Wikimedia shared rejected-pool selection for shot "
+            f"{index + 1}: score={score}/100; {reason}"
+        )
+
+    # Remove only rejected files that were not selected for a missing slot.
+    for item in rejected_pool:
+        try:
+            item["path"].unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    unresolved = [
+        index + 1 for index, clip_path in enumerate(ordered_downloads)
+        if clip_path is None
+    ]
+    if unresolved:
+        raise RuntimeError(
+            f"Wikimedia Commons could not fill shots {unresolved} after "
+            "three search rounds per shot and shared rejected-pool selection. "
+            "No other footage provider or unrelated species will be used."
+        )
 
     credits = []
     for slot_index, credit in sorted(source_credits_by_slot.items()):
@@ -1652,17 +1675,12 @@ def _fetch_commons_clips_for_shots(
     )
     temporary_credits_path.replace(credits_path)
 
-    if len(ordered_downloads) != len(shots):
-        raise RuntimeError(
-            f"Wikimedia Commons returned {len(ordered_downloads)}/{len(shots)} clips."
-        )
-
     print(
         f"Cosmic Curious Wikimedia-only sourcing complete: "
-        f"{len(ordered_downloads)}/{len(shots)} verified clips."
+        f"{len(ordered_downloads)}/{len(shots)} verified clips; "
+        f"shared rejected pool processed."
     )
     return ordered_downloads
-
 
 
 def fetch_clips_for_shots(
