@@ -44,7 +44,7 @@ def _wiki_get(params: dict) -> dict:
 
 def _species_key(value: str) -> str:
     value = str(value or "").casefold().strip()
-    match = re.search(r"\\(([a-z][a-z-]+\\s+[a-z][a-z-]+)\\)", value)
+    match = re.search(r"\(([a-z][a-z-]+\s+[a-z][a-z-]+)\)", value)
     if match:
         value = match.group(1)
     return re.sub(r"[^a-z0-9]+", "", value)
