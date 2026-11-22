@@ -42,6 +42,37 @@ def _wiki_get(params: dict) -> dict:
     return payload
 
 
+def _species_key(value: str) -> str:
+    value = str(value or "").casefold().strip()
+    match = re.search(r"\\(([a-z][a-z-]+\\s+[a-z][a-z-]+)\\)", value)
+    if match:
+        value = match.group(1)
+    return re.sub(r"[^a-z0-9]+", "", value)
+
+
+def _topic_key(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+
+def _is_duplicate_topic(topic: str, used_topics: list[str]) -> bool:
+    from difflib import SequenceMatcher
+    candidate = _topic_key(topic)
+    if not candidate:
+        return True
+    candidate_words = set(candidate.split())
+    for old in used_topics:
+        previous = _topic_key(old)
+        if not previous:
+            continue
+        if candidate == previous or SequenceMatcher(None, candidate, previous).ratio() >= 0.82:
+            return True
+        previous_words = set(previous.split())
+        overlap = len(candidate_words & previous_words) / max(1, min(len(candidate_words), len(previous_words)))
+        if overlap >= 0.82:
+            return True
+    return False
+
+
 def discover_wikipedia_evidence(
     winner_context: str,
     used_animals: list[str],
@@ -98,6 +129,11 @@ the species article or a directly relevant Wikipedia article.
             continue
         key = scientific.casefold()
         if key in seen_species:
+            continue
+        # Enforce the permanent no-repeat rule in code, not merely in Gemini's prompt.
+        used_species = {_species_key(value) for value in used_animals}
+        if _species_key(scientific) in used_species or _species_key(animal) in used_species:
+            print(f"Wikipedia Research: skipping previously used species {animal} ({scientific}).")
             continue
         seen_species.add(key)
 
@@ -156,16 +192,30 @@ the species article or a directly relevant Wikipedia article.
 
 def choose_wikipedia_topic(evidence: list[dict], winner_context: str,
                            used_animals: list[str], used_topics: list[str]) -> dict:
-    """Select one curiosity only from retrieved Wikipedia evidence."""
-    compact = [{
-        "animal": x["animal"],
-        "scientific_name": x["scientific_name"],
-        "curiosity_angle": x["curiosity_angle"],
-        "article_title": x["article_title"],
-        "article_url": x["article_url"],
-        "wikipedia_extract": x["extract"],
-    } for x in evidence]
-    prompt = f"""
+    """Select a verified curiosity; reject duplicates and try another species."""
+    eligible = [
+        item for item in evidence
+        if _species_key(item.get("scientific_name", "")) not in
+        {_species_key(value) for value in used_animals}
+        and _species_key(item.get("animal", "")) not in
+        {_species_key(value) for value in used_animals}
+    ]
+    rejected = []
+    max_attempts = min(len(eligible), 8)
+
+    for attempt in range(max_attempts):
+        remaining = [item for item in eligible if item not in rejected]
+        if not remaining:
+            break
+        compact = [{
+            "animal": x["animal"],
+            "scientific_name": x["scientific_name"],
+            "curiosity_angle": x["curiosity_angle"],
+            "article_title": x["article_title"],
+            "article_url": x["article_url"],
+            "wikipedia_extract": x["extract"],
+        } for x in remaining]
+        prompt = f"""
 Choose the single strongest, most surprising, visually explainable animal
 curiosity for a 35-55 second global-audience YouTube Short.
 
@@ -179,8 +229,10 @@ extract. Do not add outside knowledge or infer details not stated there.
 
 Permanently excluded species:
 {json.dumps(used_animals, ensure_ascii=False)}
-Previously used topics:
+Previously used topic premises:
 {json.dumps(used_topics[-120:], ensure_ascii=False)}
+Previously rejected selections in this run:
+{json.dumps([{ "animal": x["animal"], "scientific_name": x["scientific_name"], "angle": x["curiosity_angle"] } for x in rejected], ensure_ascii=False)}
 
 Choose one exact species and one specific curiosity. Do not choose a generic
 species overview. Do not exaggerate. Return JSON only:
@@ -190,20 +242,35 @@ species overview. Do not exaggerate. Return JSON only:
   "source_article_url":"exact article URL",
   "verified_evidence":"2-4 concise sentences paraphrased only from the extract"}}
 """
-    raw = gemini_generate(prompt, max_output_tokens=1100, json_mode=True)
-    selected = _json_object(raw)
-    required = ("animal", "scientific_name", "topic", "source_article_title",
-                "source_article_url", "verified_evidence")
-    if any(not str(selected.get(key) or "").strip() for key in required):
-        raise ValueError("Gemini selected a topic without complete Wikipedia evidence metadata.")
-    match = next((
-        item for item in evidence
-        if item["animal"].casefold() == str(selected["animal"]).casefold()
-        and item["scientific_name"].casefold() == str(selected["scientific_name"]).casefold()
-        and item["article_title"] == str(selected["source_article_title"])
-    ), None)
-    if match is None:
-        raise ValueError("Gemini selected a species or article outside the verified Wikipedia candidates.")
-    # Use the URL retrieved from Wikipedia ourselves, never a model-invented URL.
-    selected["source_article_url"] = match["article_url"]
-    return selected
+        raw = gemini_generate(prompt, max_output_tokens=1100, json_mode=True)
+        selected = _json_object(raw)
+        required = ("animal", "scientific_name", "topic", "source_article_title",
+                    "source_article_url", "verified_evidence")
+        if any(not str(selected.get(key) or "").strip() for key in required):
+            raise ValueError("Gemini selected a topic without complete Wikipedia evidence metadata.")
+        match = next((
+            item for item in remaining
+            if item["animal"].casefold() == str(selected["animal"]).casefold()
+            and item["scientific_name"].casefold() == str(selected["scientific_name"]).casefold()
+            and item["article_title"] == str(selected["source_article_title"])
+        ), None)
+        if match is None:
+            raise ValueError("Gemini selected a species or article outside the verified Wikipedia candidates.")
+
+        selected_species = _species_key(match["scientific_name"])
+        if selected_species in {_species_key(value) for value in used_animals}:
+            rejected.append(match)
+            continue
+        topic = str(selected["topic"]).strip()
+        if _is_duplicate_topic(topic, used_topics):
+            print(f"Wikipedia Research: duplicate topic rejected; trying another verified species: {topic}")
+            rejected.append(match)
+            continue
+
+        selected["source_article_url"] = match["article_url"]
+        return selected
+
+    raise RuntimeError(
+        "Wikipedia Research exhausted verified unused species: every selected candidate "
+        "was already used or had a duplicate topic. Publishing is blocked."
+    )
