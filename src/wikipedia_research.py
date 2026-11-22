@@ -17,14 +17,25 @@ MAX_RESEARCH_CANDIDATES = 8
 
 
 def _json_object(text: str) -> dict:
-    value = str(text or "").strip()
-    value = re.sub(r"^\x60{3}[a-zA-Z]*", "", value).replace("\x60\x60\x60", "").strip()
-    start, end = value.find("{"), value.rfind("}")
-    if start < 0 or end < start:
+    """Extract the first complete JSON object from Gemini output.
+
+    Gemini sometimes appends commentary or a second JSON fragment after the
+    requested object. json.loads() on the entire response then raises
+    'Extra data'; raw_decode() safely stops at the first complete object.
+    """
+    value = str(text or "").strip().lstrip("\\ufeff")
+    value = re.sub(r"^\\s*`{3}[a-zA-Z0-9_-]*\\s*", "", value)
+    start = value.find("{")
+    if start < 0:
         raise ValueError("Gemini did not return a JSON object for Wikipedia research.")
-    data = json.loads(value[start:end + 1])
+    try:
+        data, _end = json.JSONDecoder().raw_decode(value[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Gemini Wikipedia response did not contain a valid complete JSON object: {exc}"
+        ) from exc
     if not isinstance(data, dict):
-        raise ValueError("Wikipedia research response is not an object.")
+        raise ValueError("Wikipedia research response is not a JSON object.")
     return data
 
 
