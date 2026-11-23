@@ -263,7 +263,7 @@ def main():
 
                     if (
                         slot_id not in done_slots
-                        now.hour == int(time_str.split(":")[0])
+                        and now.hour == int(time_str.split(":")[0])
                         and _time_to_minutes(time_str) <= now_minutes
                     ):
                         jobs_due.append(
@@ -292,7 +292,7 @@ def main():
 
                     if (
                         long_slot_id not in done_slots
-                        now.hour == int(upload_time.split(":")[0])
+                        and now.hour == int(upload_time.split(":")[0])
                         and _time_to_minutes(upload_time) <= now_minutes
                         and _is_longform_day(
                             channel_id,
