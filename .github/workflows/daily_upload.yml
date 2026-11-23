@@ -27,20 +27,42 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ffmpeg and fonts
+      - name: Cache custom fonts
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/fonts
+          key: chewy-font-v1
+
+      - name: Install only missing system tools and fonts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-freefont-ttf wget
+          NEED_APT=false
 
-          mkdir -p ~/.local/share/fonts
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg is missing"
+            NEED_APT=true
+          fi
 
-          wget -O ~/.local/share/fonts/Chewy-Regular.ttf \
-            https://github.com/google/fonts/raw/main/apache/chewy/Chewy-Regular.ttf
+          if ! dpkg-query -W -f='${Status}' fonts-freefont-ttf 2>/dev/null | grep -q "install ok installed"; then
+            echo "FreeFont package is missing"
+            NEED_APT=true
+          fi
 
-          fc-cache -f
+          if [ "$NEED_APT" = "true" ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg fonts-freefont-ttf
+          fi
 
-          echo "Checking Chewy font:"
+          mkdir -p "$HOME/.local/share/fonts"
+          if ! find "$HOME/.local/share/fonts" -iname 'Chewy-Regular.ttf' -print -quit | grep -q .; then
+            curl -fsSL               https://raw.githubusercontent.com/google/fonts/main/apache/chewy/Chewy-Regular.ttf               -o "$HOME/.local/share/fonts/Chewy-Regular.ttf"
+            fc-cache -f "$HOME/.local/share/fonts"
+          fi
+
+          echo "ffmpeg: $(ffmpeg -version | head -n 1)"
+          echo "Chewy font:"
           fc-match Chewy
+          echo "FreeSans font:"
+          fc-match FreeSans
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
