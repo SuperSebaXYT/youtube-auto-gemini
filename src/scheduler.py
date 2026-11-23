@@ -263,9 +263,8 @@ def main():
 
                     if (
                         slot_id not in done_slots
-                        and _time_to_minutes(
-                            time_str
-                        ) <= now_minutes
+                        now.hour == int(time_str.split(":")[0])
+                        and _time_to_minutes(time_str) <= now_minutes
                     ):
                         jobs_due.append(
                             (
@@ -293,9 +292,8 @@ def main():
 
                     if (
                         long_slot_id not in done_slots
-                        and _time_to_minutes(
-                            upload_time
-                        ) <= now_minutes
+                        now.hour == int(upload_time.split(":")[0])
+                        and _time_to_minutes(upload_time) <= now_minutes
                         and _is_longform_day(
                             channel_id,
                             config,
@@ -316,8 +314,8 @@ def main():
 
             if jobs_due:
 
-                # Sort by scheduled time and select only
-                # the earliest overdue job.
+                # Only slots in the current UTC hour are eligible.
+                # Missed slots from earlier hours are skipped, never caught up.
                 jobs_due.sort(
                     key=lambda job: _time_to_minutes(
                         job[2]
