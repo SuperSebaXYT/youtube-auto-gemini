@@ -35,26 +35,25 @@ jobs:
 
       - name: Install only missing system tools and fonts
         run: |
-          NEED_APT=false
+          PACKAGES=()
 
           if ! command -v ffmpeg >/dev/null 2>&1; then
-            echo "ffmpeg is missing"
-            NEED_APT=true
+            PACKAGES+=(ffmpeg)
           fi
 
           if ! dpkg-query -W -f='${Status}' fonts-freefont-ttf 2>/dev/null | grep -q "install ok installed"; then
-            echo "FreeFont package is missing"
-            NEED_APT=true
+            PACKAGES+=(fonts-freefont-ttf)
           fi
 
-          if [ "$NEED_APT" = "true" ]; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ffmpeg fonts-freefont-ttf
+          if [ "${#PACKAGES[@]}" -gt 0 ]; then
+            sudo apt-get install -y --no-install-recommends "${PACKAGES[@]}"
           fi
 
           mkdir -p "$HOME/.local/share/fonts"
           if ! find "$HOME/.local/share/fonts" -iname 'Chewy-Regular.ttf' -print -quit | grep -q .; then
-            curl -fsSL               https://raw.githubusercontent.com/google/fonts/main/apache/chewy/Chewy-Regular.ttf               -o "$HOME/.local/share/fonts/Chewy-Regular.ttf"
+            curl -fsSL \
+              https://raw.githubusercontent.com/google/fonts/main/apache/chewy/Chewy-Regular.ttf \
+              -o "$HOME/.local/share/fonts/Chewy-Regular.ttf"
             fc-cache -f "$HOME/.local/share/fonts"
           fi
 
