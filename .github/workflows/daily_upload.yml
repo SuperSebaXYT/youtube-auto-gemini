@@ -1,10 +1,6 @@
 name: Daily Upload Pipeline
 
 on:
-  schedule:
-    # Run at minutes 14, 19, 33 and 48 of every hour (UTC).
-    - cron: "14,19,33,48 * * * *"
-
   workflow_dispatch:
     inputs:
       channel:
@@ -82,7 +78,7 @@ jobs:
             ${{ inputs.dry_run == true && '--dry-run' || '' }}
 
       - name: Scheduled run
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == '')
+        if: github.event_name == 'workflow_dispatch' && inputs.channel == ''
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
