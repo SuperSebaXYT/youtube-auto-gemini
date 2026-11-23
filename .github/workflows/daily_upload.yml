@@ -1,5 +1,10 @@
 name: Daily Upload Pipeline
 
+# Prevent overlapping cron-triggered runs from reading the same old schedule state.
+concurrency:
+  group: cosmic-curious-upload
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
